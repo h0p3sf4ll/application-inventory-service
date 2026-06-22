@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "appsec-scan-router"
-version = "1.1.0"
-description = "SDK and CLI for routing mobile app inventory scans across Azure DevOps and GitHub Enterprise"
+version = "1.2.0"
+description = "SDK, CLI, and UI for routing mobile app inventory scans across Azure DevOps and GitHub Enterprise"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -46,9 +46,14 @@ Issues = "https://github.com/h0p3sf4ll/mobile-app-inventory-tracer/issues"
 
 [project.scripts]
 appsec-scan-router = "appsec_scan_router.cli:main"
+appsec-scan-router-ui = "appsec_scan_router.ui:main"
+appsec-scan-router-container = "appsec_scan_router.entrypoint:main"
 mobile-app-inventory-tracer = "appsec_scan_router.cli:main"
 ado-mobile-scanner = "appsec_scan_router.cli:main"
 
 [tool.setuptools]
-packages = ["appsec_scan_router", "mobile_scanner"]
+packages = ["appsec_scan_router", "appsec_scan_router.ui_static", "mobile_scanner"]
 py-modules = ["ado_mobile_scanner", "mobile_app_inventory_tracer"]
+
+[tool.setuptools.package-data]
+appsec_scan_router = ["ui_static/*"]

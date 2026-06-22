@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AppSec Scan Router</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Mobile inventory</p>
+          <h1>AppSec Scan Router</h1>
+        </div>
+        <div class="topbar-actions">
+          <button class="ghost" id="refreshScans" type="button">Refresh</button>
+          <button class="primary" id="startScan" type="button">Run scan</button>
+        </div>
+      </header>
+
+      <section class="layout">
+        <form class="panel form-panel" id="scanForm">
+          <div class="section-heading">
+            <h2>Source</h2>
+            <span class="status-chip idle" id="formStatus">Ready</span>
+          </div>
+
+          <div class="segmented" role="radiogroup" aria-label="Provider">
+            <label>
+              <input type="radio" name="provider" value="azure-devops" checked>
+              <span>Azure DevOps</span>
+            </label>
+            <label>
+              <input type="radio" name="provider" value="github-enterprise">
+              <span>GitHub Enterprise</span>
+            </label>
+          </div>
+
+          <div class="field-grid">
+            <label>
+              <span>Organization</span>
+              <input name="org" autocomplete="organization" required>
+            </label>
+            <label class="provider-azure">
+              <span>Project</span>
+              <input name="project">
+            </label>
+            <label class="provider-github hidden">
+              <span>Repository</span>
+              <input name="repo">
+            </label>
+            <label class="provider-github hidden full">
+              <span>GitHub API URL</span>
+              <input name="baseUrl" placeholder="https://github.example.com/api/v3">
+            </label>
+            <div class="full secret-field">
+              <label for="scanToken">Token</label>
+              <input id="scanToken" name="token" type="password" autocomplete="off">
+              <button class="icon-button" id="toggleToken" type="button" title="Show token">Show</button>
+            </div>
+          </div>
+
+          <div class="section-heading compact">
+            <h2>Scan</h2>
+            <button class="ghost small" id="resetForm" type="button">Reset</button>
+          </div>
+
+          <div class="field-grid">
+            <label>
+              <span>Output prefix</span>
+              <input name="outPrefix" value="appsec_scan_router">
+            </label>
+            <label>
+              <span>Confidence</span>
+              <select name="minConfidence">
+                <option value="low">Low</option>
+                <option value="medium" selected>Medium</option>
+                <option value="high">High</option>
+              </select>
+            </label>
+            <label>
+              <span>Activity</span>
+              <select name="activityMode">
+                <option value="latest" selected>Latest</option>
+                <option value="contributors">Contributors</option>
+              </select>
+            </label>
+            <label>
+              <span>Branch age days</span>
+              <input name="branchAgeDays" type="number" min="1" value="90">
+            </label>
+            <label>
+              <span>Repo workers</span>
+              <input name="maxWorkers" type="number" min="1" value="8">
+            </label>
+            <label>
+              <span>Branch workers</span>
+              <input name="branchWorkers" type="number" min="1" value="16">
+            </label>
+            <label>
+              <span>Content workers</span>
+              <input name="contentWorkers" type="number" min="1" value="16">
+            </label>
+            <label>
+              <span>Commit limit</span>
+              <input name="maxCommitsPerRepo" type="number" min="0" value="0">
+            </label>
+            <label>
+              <span>Timeout</span>
+              <input name="timeout" type="number" min="1" value="30">
+            </label>
+            <label>
+              <span>Store country</span>
+              <input name="storeCountry" maxlength="2" value="US">
+            </label>
+            <label>
+              <span>Store timeout</span>
+              <input name="storeTimeout" type="number" min="1" value="15">
+            </label>
+            <label class="toggle-row">
+              <input name="storeLookup" type="checkbox">
+              <span>Store lookup</span>
+            </label>
+            <label class="toggle-row">
+              <input name="verbose" type="checkbox">
+              <span>Verbose logs</span>
+            </label>
+          </div>
+        </form>
+
+        <section class="workspace">
+          <div class="panel hero-panel">
+            <div class="metric-row">
+              <div>
+                <span class="metric-label">Status</span>
+                <strong id="activeStatus">Idle</strong>
+              </div>
+              <div>
+                <span class="metric-label">Apps</span>
+                <strong id="detectedCount">0</strong>
+              </div>
+              <div>
+                <span class="metric-label">Runtime</span>
+                <strong id="runtimeValue">0s</strong>
+              </div>
+            </div>
+            <div class="active-run">
+              <div>
+                <p class="eyebrow">Active scan</p>
+                <h2 id="activeTitle">No scan selected</h2>
+              </div>
+              <div class="run-actions">
+                <button class="ghost" id="copyCommand" type="button" disabled>Copy command</button>
+                <button class="danger" id="stopScan" type="button" disabled>Stop</button>
+              </div>
+            </div>
+            <pre class="command-line" id="commandLine">appsec-scan-router</pre>
+          </div>
+
+          <div class="work-grid">
+            <section class="panel runs-panel">
+              <div class="section-heading">
+                <h2>Runs</h2>
+                <span id="scanCount">0</span>
+              </div>
+              <div class="run-list" id="runList"></div>
+            </section>
+
+            <section class="panel reports-panel">
+              <div class="section-heading">
+                <h2>Reports</h2>
+                <span id="reportCount">0</span>
+              </div>
+              <div class="report-list" id="reportList"></div>
+            </section>
+          </div>
+
+          <section class="panel log-panel">
+            <div class="section-heading">
+              <h2>Console</h2>
+              <div class="log-actions">
+                <button class="ghost small" id="clearLogs" type="button">Clear</button>
+                <button class="ghost small" id="downloadLogs" type="button" disabled>Download</button>
+              </div>
+            </div>
+            <pre class="logs" id="logs"></pre>
+          </section>
+        </section>
+      </section>
+    </main>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="/static/app.js" type="module"></script>
+  </body>
+</html>

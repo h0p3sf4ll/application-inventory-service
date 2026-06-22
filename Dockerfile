@@ -19,6 +19,7 @@ RUN python -m pip install . \
 USER scanner
 
 VOLUME ["/reports"]
+EXPOSE 48731
 
-ENTRYPOINT ["appsec-scan-router"]
+ENTRYPOINT ["appsec-scan-router-container"]
 CMD ["--help"]

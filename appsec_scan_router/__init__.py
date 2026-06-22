@@ -144,6 +144,15 @@ from .utils import (
     yaml_has_flutter_dependency,
     yaml_scalar,
 )
+from .ui import (
+    DEFAULT_UI_HOST,
+    DEFAULT_UI_PORT,
+    ScanManager,
+    ScanRun,
+    build_scan_command,
+    normalize_scan_config,
+    redact_command,
+)
 
 __all__ = [
     "AzureDevOpsClient",
@@ -162,6 +171,8 @@ __all__ = [
     "DEFAULT_STORE_COUNTRY",
     "DEFAULT_STORE_TIMEOUT_SECONDS",
     "DEFAULT_TIMEOUT_SECONDS",
+    "DEFAULT_UI_HOST",
+    "DEFAULT_UI_PORT",
     "FALLBACK_BRANCH_PRIORITY",
     "BranchScanTarget",
     "DetectionEvidence",
@@ -174,6 +185,8 @@ __all__ = [
     "RepoActivityMetadata",
     "RepoScanTarget",
     "ScanConfig",
+    "ScanManager",
+    "ScanRun",
     "StoreListing",
     "StoreLookupClient",
     "StreamingReportWriter",
@@ -194,6 +207,7 @@ __all__ = [
     "branch_name_from_ref",
     "branch_names_from_build_definitions",
     "branch_names_from_refs",
+    "build_scan_command",
     "clean_value",
     "clean_version",
     "category_columns",
@@ -258,8 +272,10 @@ __all__ = [
     "parse_pubspec",
     "parse_xcode_settings_metadata",
     "normalize_google_play_title",
+    "normalize_scan_config",
     "normalize_github_api_url",
     "regex_value",
+    "redact_command",
     "resolve_property_value",
     "pipeline_fallback_branch_name",
     "scan",

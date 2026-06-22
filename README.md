@@ -20,7 +20,7 @@ mobile code without cloning every repository or relying on loose keyword search.
 - Splits Excel output into `Active 90d` and `Older 90d` worksheets by default
 - Streams CSV and JSON rows as apps are detected
 - Optionally enriches detected identifiers with public Apple App Store and Google Play data
-- Runs as a CLI, SDK, importable library, or container
+- Runs as a CLI, SDK, browser UI, importable library, or container
 
 ## Install
 
@@ -108,6 +108,24 @@ Build:
 docker build -t appsec-scan-router .
 ```
 
+Open the browser UI on port `48731`:
+
+```bash
+mkdir -p reports
+docker run --rm \
+  -p 48731:48731 \
+  -e ADO_PAT="$ADO_PAT" \
+  -e GITHUB_TOKEN="$GITHUB_TOKEN" \
+  -v "$PWD/reports:/reports" \
+  appsec-scan-router \
+  ui \
+  --host 0.0.0.0 \
+  --port 48731 \
+  --reports-dir /reports
+```
+
+Then open `http://localhost:48731`.
+
 Run against Azure DevOps:
 
 ```bash
@@ -151,6 +169,33 @@ docker run --rm \
 ```
 
 The image runs as a non-root `scanner` user and writes reports to the mounted output directory.
+
+The container entrypoint supports both modes:
+
+```bash
+docker run --rm appsec-scan-router ui --host 0.0.0.0 --port 48731 --reports-dir /reports
+docker run --rm appsec-scan-router --provider azure-devops --org FabrikamCloud --out-dir /reports
+```
+
+## Browser UI
+
+The UI runs from the Python package and uses browser JavaScript for the client. It is designed as a scan workbench:
+
+- Source selection for Azure DevOps or GitHub Enterprise
+- Token entry or inherited environment token support
+- Confidence, activity, branch age, worker, timeout, and store lookup controls
+- Live console output through server-sent events
+- Run status, elapsed time, detected app count, and stop control
+- Report downloads for generated CSV, JSON, and XLSX files
+- Local form persistence without storing tokens
+
+Start it locally:
+
+```bash
+appsec-scan-router-ui --host 127.0.0.1 --port 48731 --reports-dir reports
+```
+
+The default UI port is `48731`. Override it with `--port` or `APPSEC_SCAN_ROUTER_UI_PORT`.
 
 ## Permissions
 
@@ -448,6 +493,7 @@ appsec_scan_router/
   cli.py
   constants.py
   detection.py
+  entrypoint.py
   github.py
   metadata.py
   models.py
@@ -455,6 +501,8 @@ appsec_scan_router/
   scanner.py
   sdk.py
   store_lookup.py
+  ui.py
+  ui_static/
   utils.py
 mobile_scanner/
 ado_mobile_scanner.py

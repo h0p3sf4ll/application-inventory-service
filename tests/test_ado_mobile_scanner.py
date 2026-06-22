@@ -103,6 +103,73 @@ class ProviderClientTests(unittest.TestCase):
             client.close()
 
 
+class UiServiceTests(unittest.TestCase):
+    def test_normalize_scan_config_requires_org(self):
+        with self.assertRaises(ValueError):
+            scanner.normalize_scan_config({"provider": "azure-devops"})
+
+    def test_normalize_scan_config_requires_github_base_url(self):
+        with self.assertRaises(ValueError):
+            scanner.normalize_scan_config(
+                {
+                    "provider": "github-enterprise",
+                    "org": "FabrikamCloud",
+                }
+            )
+
+    def test_build_scan_command_for_github_enterprise(self):
+        config = scanner.normalize_scan_config(
+            {
+                "provider": "github-enterprise",
+                "org": "FabrikamCloud",
+                "repo": "mobile-app",
+                "baseUrl": "https://github.fabrikam.example/api/v3",
+                "outPrefix": "inventory scan",
+                "minConfidence": "medium",
+                "activityMode": "latest",
+                "storeLookup": True,
+            }
+        )
+
+        command = scanner.build_scan_command(config, Path("/reports/scan-1"))
+
+        self.assertIn("--provider", command)
+        self.assertIn("github-enterprise", command)
+        self.assertIn("--base-url", command)
+        self.assertIn("https://github.fabrikam.example/api/v3", command)
+        self.assertIn("--repo", command)
+        self.assertIn("mobile-app", command)
+        self.assertIn("--store-lookup", command)
+        self.assertIn("inventory_scan", command)
+
+    def test_build_scan_command_for_azure_devops(self):
+        config = scanner.normalize_scan_config(
+            {
+                "provider": "azure-devops",
+                "org": "FabrikamCloud",
+                "project": "Go_To_Market",
+                "activityMode": "contributors",
+                "maxWorkers": 4,
+            }
+        )
+
+        command = scanner.build_scan_command(config, Path("/reports/scan-2"))
+
+        self.assertIn("--provider", command)
+        self.assertIn("azure-devops", command)
+        self.assertIn("--project", command)
+        self.assertIn("Go_To_Market", command)
+        self.assertNotIn("--base-url", command)
+        self.assertIn("4", command)
+
+    def test_redact_command_hides_pat_values(self):
+        command = ("appsec-scan-router", "--pat", "secret", "--org", "FabrikamCloud")
+
+        redacted = scanner.redact_command(command)
+
+        self.assertEqual(redacted, ["appsec-scan-router", "--pat", "[redacted]", "--org", "FabrikamCloud"])
+
+
 class DetectionTests(unittest.TestCase):
     def test_detects_react_native_android_repo(self):
         paths = [
