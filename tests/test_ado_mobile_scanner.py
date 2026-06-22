@@ -36,16 +36,16 @@ plugins {
 }
 
 android {
-    namespace 'com.pepsico.agsnap'
+    namespace 'com.fabrikam.agsnap'
     defaultConfig {
-        applicationId 'com.pepsico.agsnap'
+        applicationId 'com.fabrikam.agsnap'
         versionName '1.0.2'
     }
 }
 """,
             "/android/app/src/main/AndroidManifest.xml": """\
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.pepsico.agsnap" />
+    package="com.fabrikam.agsnap" />
 """,
         }
 
@@ -99,7 +99,7 @@ android {
         confidence, evidence, score = scanner.detect_mobile_repo(
             ["/gradle.properties", "/android/app/build.gradle"],
             {
-                "/gradle.properties": "appId=com.pepsico.agsnap\n",
+                "/gradle.properties": "appId=com.fabrikam.agsnap\n",
                 "/android/app/build.gradle": """\
 plugins {
     id 'com.android.application'
@@ -116,7 +116,7 @@ android {
         details = {item.detail for item in evidence}
         self.assertEqual(confidence, "high")
         self.assertGreaterEqual(score, 7)
-        self.assertIn("Gradle applicationId com.pepsico.agsnap", details)
+        self.assertIn("Gradle applicationId com.fabrikam.agsnap", details)
 
     def test_should_fetch_allowed_content_files(self):
         self.assertTrue(scanner.should_fetch_content("/src/MyApp.csproj"))
@@ -138,7 +138,7 @@ class MetadataExtractionTests(unittest.TestCase):
             {
                 "/android/app/src/main/AndroidManifest.xml": """\
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.pepsico.agsnap"
+    package="com.fabrikam.agsnap"
     android:versionName="1.0.2">
     <application android:label="@string/app_name" />
 </manifest>
@@ -153,16 +153,16 @@ class MetadataExtractionTests(unittest.TestCase):
 
         self.assertEqual(metadata.name, "Agsnap")
         self.assertEqual(metadata.version, "1.0.2")
-        self.assertEqual(metadata.identifier, "com.pepsico.agsnap")
+        self.assertEqual(metadata.identifier, "com.fabrikam.agsnap")
 
     def test_extracts_gradle_identifier_and_version(self):
         metadata = scanner.extract_mobile_metadata(
             {
                 "/android/app/build.gradle.kts": """\
 android {
-    namespace = "com.pepsico.agsnap"
+    namespace = "com.fabrikam.agsnap"
     defaultConfig {
-        applicationId = "com.pepsico.agsnap"
+        applicationId = "com.fabrikam.agsnap"
         versionName = "1.0.2"
     }
 }
@@ -171,13 +171,13 @@ android {
         )
 
         self.assertEqual(metadata.version, "1.0.2")
-        self.assertEqual(metadata.identifier, "com.pepsico.agsnap")
+        self.assertEqual(metadata.identifier, "com.fabrikam.agsnap")
         self.assertEqual(metadata.identifier_source, "Gradle applicationId/namespace")
 
     def test_resolves_gradle_identifier_from_properties(self):
         metadata = scanner.extract_mobile_metadata(
             {
-                "/gradle.properties": "appId=com.pepsico.agsnap\n",
+                "/gradle.properties": "appId=com.fabrikam.agsnap\n",
                 "/android/app/build.gradle": """\
 android {
     defaultConfig {
@@ -188,7 +188,7 @@ android {
             }
         )
 
-        self.assertEqual(metadata.identifier, "com.pepsico.agsnap")
+        self.assertEqual(metadata.identifier, "com.fabrikam.agsnap")
         self.assertEqual(metadata.identifier_source, "Gradle applicationId/namespace")
 
     def test_extracts_ios_info_plist_metadata(self):
@@ -200,7 +200,7 @@ android {
 <dict>
   <key>CFBundleDisplayName</key><string>Agsnap</string>
   <key>CFBundleShortVersionString</key><string>1.0.2</string>
-  <key>CFBundleIdentifier</key><string>com.pepsico.agsnap</string>
+  <key>CFBundleIdentifier</key><string>com.fabrikam.agsnap</string>
 </dict>
 </plist>
 """
@@ -209,7 +209,7 @@ android {
 
         self.assertEqual(metadata.name, "Agsnap")
         self.assertEqual(metadata.version, "1.0.2")
-        self.assertEqual(metadata.identifier, "com.pepsico.agsnap")
+        self.assertEqual(metadata.identifier, "com.fabrikam.agsnap")
 
     def test_extracts_ios_metadata_from_xcode_settings(self):
         metadata = scanner.extract_mobile_metadata(
@@ -217,14 +217,14 @@ android {
                 "/ios/App.xcodeproj/project.pbxproj": """\
 PRODUCT_NAME = Agsnap;
 MARKETING_VERSION = 1.0.2;
-PRODUCT_BUNDLE_IDENTIFIER = com.pepsico.agsnap;
+PRODUCT_BUNDLE_IDENTIFIER = com.fabrikam.agsnap;
 """
             }
         )
 
         self.assertEqual(metadata.name, "Agsnap")
         self.assertEqual(metadata.version, "1.0.2")
-        self.assertEqual(metadata.identifier, "com.pepsico.agsnap")
+        self.assertEqual(metadata.identifier, "com.fabrikam.agsnap")
         self.assertEqual(metadata.identifier_source, "Xcode build settings")
 
     def test_resolves_ios_plist_identifier_from_xcode_settings(self):
@@ -239,12 +239,12 @@ PRODUCT_BUNDLE_IDENTIFIER = com.pepsico.agsnap;
 """,
                 "/ios/App.xcodeproj/project.pbxproj": """\
 PRODUCT_BUNDLE_IDENTIFIER = $(PRODUCT_BUNDLE_IDENTIFIER);
-PRODUCT_BUNDLE_IDENTIFIER = com.pepsico.agsnap;
+PRODUCT_BUNDLE_IDENTIFIER = com.fabrikam.agsnap;
 """,
             }
         )
 
-        self.assertEqual(metadata.identifier, "com.pepsico.agsnap")
+        self.assertEqual(metadata.identifier, "com.fabrikam.agsnap")
         self.assertEqual(metadata.identifier_source, "Info.plist")
 
     def test_filters_placeholder_versions(self):
@@ -270,8 +270,8 @@ PRODUCT_BUNDLE_IDENTIFIER = com.pepsico.agsnap;
                         "expo": {
                             "name": "Agsnap",
                             "version": "1.0.2",
-                            "ios": {"bundleIdentifier": "com.pepsico.agsnap"},
-                            "android": {"package": "com.pepsico.agsnap"},
+                            "ios": {"bundleIdentifier": "com.fabrikam.agsnap"},
+                            "android": {"package": "com.fabrikam.agsnap"},
                         }
                     }
                 )
@@ -280,14 +280,14 @@ PRODUCT_BUNDLE_IDENTIFIER = com.pepsico.agsnap;
 
         self.assertEqual(metadata.name, "Agsnap")
         self.assertEqual(metadata.version, "1.0.2")
-        self.assertEqual(metadata.identifier, "com.pepsico.agsnap")
+        self.assertEqual(metadata.identifier, "com.fabrikam.agsnap")
 
     def test_extracts_capacitor_metadata(self):
         metadata = scanner.extract_mobile_metadata(
             {
                 "/capacitor.config.ts": """\
 export default {
-  appId: 'com.pepsico.agsnap',
+  appId: 'com.fabrikam.agsnap',
   appName: 'Agsnap',
   version: '1.0.2'
 }
@@ -297,7 +297,7 @@ export default {
 
         self.assertEqual(metadata.name, "Agsnap")
         self.assertEqual(metadata.version, "1.0.2")
-        self.assertEqual(metadata.identifier, "com.pepsico.agsnap")
+        self.assertEqual(metadata.identifier, "com.fabrikam.agsnap")
 
 
 class RepoActivityTests(unittest.TestCase):
@@ -410,7 +410,7 @@ class OutputTests(unittest.TestCase):
             "web_url": "https://example.invalid/repo",
             "mobile_name": "Agsnap",
             "mobile_version": "1.0.2",
-            "mobile_identifier": "com.pepsico.agsnap",
+            "mobile_identifier": "com.fabrikam.agsnap",
             "mobile_identifier_source": "Gradle applicationId/namespace",
             "mobile_identifier_status": "found",
             "contributing_developers": "Alice Adams <alice@example.com>; Bob Brown <bob@example.com>",
@@ -424,7 +424,7 @@ class OutputTests(unittest.TestCase):
                     {
                         "category": "android",
                         "source": "/android/app/build.gradle",
-                        "detail": "Gradle applicationId com.pepsico.agsnap",
+                        "detail": "Gradle applicationId com.fabrikam.agsnap",
                         "weight": 3,
                     }
                 ]
@@ -476,7 +476,7 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(columns["category_ios"], "FALSE")
 
     def test_identifier_status(self):
-        self.assertEqual(scanner.identifier_status("com.pepsico.agsnap"), "found")
+        self.assertEqual(scanner.identifier_status("com.fabrikam.agsnap"), "found")
         self.assertEqual(scanner.identifier_status(""), "missing_from_scanned_files")
 
     def test_branch_name_from_ref(self):
@@ -589,7 +589,7 @@ class StoreLookupTests(unittest.TestCase):
                     platform=scanner.APPLE_PLATFORM,
                     status="found",
                     name="Agsnap",
-                    identifier="com.pepsico.agsnap",
+                    identifier="com.fabrikam.agsnap",
                     url="https://apps.apple.com/app/id123",
                     version="1.0.2",
                     last_updated="2026-01-01T00:00:00Z",
@@ -597,7 +597,7 @@ class StoreLookupTests(unittest.TestCase):
                 scanner.StoreListing(
                     platform=scanner.GOOGLE_PLATFORM,
                     status="not_found_publicly",
-                    identifier="com.pepsico.agsnap",
+                    identifier="com.fabrikam.agsnap",
                 ),
             ]
         )
@@ -606,7 +606,7 @@ class StoreLookupTests(unittest.TestCase):
         self.assertEqual(columns["store_validation_passed"], "FALSE")
         self.assertEqual(columns["store_platforms"], "Apple App Store")
         self.assertEqual(columns["apple_app_store_name"], "Agsnap")
-        self.assertEqual(columns["apple_app_store_identifier"], "com.pepsico.agsnap")
+        self.assertEqual(columns["apple_app_store_identifier"], "com.fabrikam.agsnap")
         self.assertEqual(columns["apple_app_store_validation_passed"], "TRUE")
         self.assertEqual(columns["google_play_validation_passed"], "FALSE")
         self.assertEqual(columns["google_play_lookup_status"], "not_found_publicly")
@@ -617,7 +617,7 @@ class StoreLookupTests(unittest.TestCase):
                 scanner.StoreListing(
                     platform=scanner.APPLE_PLATFORM,
                     status="found",
-                    identifier="com.pepsico.agsnap",
+                    identifier="com.fabrikam.agsnap",
                 ),
                 scanner.StoreListing(
                     platform=scanner.GOOGLE_PLATFORM,
@@ -631,7 +631,7 @@ class StoreLookupTests(unittest.TestCase):
         self.assertEqual(columns["google_play_validation_passed"], "FALSE")
 
     def test_store_columns_disabled_and_identifier_missing(self):
-        disabled = scanner.store_columns("com.pepsico.agsnap", ["android"], None)
+        disabled = scanner.store_columns("com.fabrikam.agsnap", ["android"], None)
         missing = scanner.store_columns("", ["ios"], object())
 
         self.assertEqual(disabled["store_lookup_status"], "disabled")
@@ -648,7 +648,7 @@ class StoreLookupTests(unittest.TestCase):
 <head>
   <title>Agsnap - Apps on Google Play</title>
   <meta property="og:title" content="Agsnap - Apps on Google Play" />
-  <meta property="og:url" content="https://play.google.com/store/apps/details?id=com.pepsico.agsnap" />
+  <meta property="og:url" content="https://play.google.com/store/apps/details?id=com.fabrikam.agsnap" />
   <script>{"softwareVersion":"1.0.2","dateModified":"2026-01-02"}</script>
 </head>
 </html>
@@ -657,8 +657,8 @@ class StoreLookupTests(unittest.TestCase):
         parser.feed(html)
 
         self.assertEqual(scanner.normalize_google_play_title(parser.meta["og:title"]), "Agsnap")
-        self.assertTrue(scanner.google_play_app_page(parser.meta, parser.meta["og:title"], "com.pepsico.agsnap"))
-        self.assertFalse(scanner.google_play_app_page({}, "Google Play", "com.pepsico.agsnap"))
+        self.assertTrue(scanner.google_play_app_page(parser.meta, parser.meta["og:title"], "com.fabrikam.agsnap"))
+        self.assertFalse(scanner.google_play_app_page({}, "Google Play", "com.fabrikam.agsnap"))
         self.assertEqual(scanner.extract_google_play_version(html), "1.0.2")
         self.assertEqual(scanner.extract_google_play_updated(html), "2026-01-02")
 

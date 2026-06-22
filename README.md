@@ -65,7 +65,7 @@ When possible, the scanner extracts:
 
 - `mobile_name`, such as `Agsnap`
 - `mobile_version`, such as `1.0.2`
-- `mobile_identifier`, such as `com.pepsico.agsnap`
+- `mobile_identifier`, such as `com.fabrikam.agsnap`
 - `mobile_identifier_source`, such as `Info.plist`, `Gradle applicationId/namespace`, or `Xcode build settings`
 - `mobile_identifier_status`, either `found` or `missing_from_scanned_files`
 
@@ -130,26 +130,26 @@ export ADO_PAT="your-token-here"
 Scan every project in an Azure DevOps organization:
 
 ```bash
-appsec-scan-router --org PepsiCoIT --out-dir reports
+appsec-scan-router --org FabrikamCloud --out-dir reports
 ```
 
 Scan one project:
 
 ```bash
-appsec-scan-router --org PepsiCoIT --project "Go_To_Market" --out-dir reports
+appsec-scan-router --org FabrikamCloud --project "Go_To_Market" --out-dir reports
 ```
 
 Only include medium and high confidence matches:
 
 ```bash
-appsec-scan-router --org PepsiCoIT --out-dir reports --min-confidence medium
+appsec-scan-router --org FabrikamCloud --out-dir reports --min-confidence medium
 ```
 
 Fast profile for very large organizations:
 
 ```bash
 appsec-scan-router \
-  --org PepsiCoIT \
+  --org FabrikamCloud \
   --out-dir reports \
   --min-confidence medium \
   --max-workers 12 \
@@ -161,20 +161,20 @@ appsec-scan-router \
 Enable public store enrichment:
 
 ```bash
-appsec-scan-router --org PepsiCoIT --out-dir reports --store-lookup --store-country US
+appsec-scan-router --org FabrikamCloud --out-dir reports --store-lookup --store-country US
 ```
 
 Legacy commands remain available for compatibility:
 
 ```bash
-mobile-app-inventory-tracer --org PepsiCoIT --out-dir reports
-ado-mobile-scanner --org PepsiCoIT --out-dir reports
+mobile-app-inventory-tracer --org FabrikamCloud --out-dir reports
+ado-mobile-scanner --org FabrikamCloud --out-dir reports
 ```
 
 You can also run from source:
 
 ```bash
-python -m appsec_scan_router --org PepsiCoIT --out-dir reports
+python -m appsec_scan_router --org FabrikamCloud --out-dir reports
 ```
 
 ## Docker
@@ -193,7 +193,7 @@ docker run --rm \
   -e ADO_PAT="$ADO_PAT" \
   -v "$PWD/reports:/reports" \
   appsec-scan-router \
-  --org PepsiCoIT \
+  --org FabrikamCloud \
   --out-dir /reports \
   --min-confidence medium
 ```
@@ -205,7 +205,7 @@ docker run --rm \
   -e ADO_PAT="$ADO_PAT" \
   -v "$PWD/reports:/reports" \
   appsec-scan-router \
-  --org PepsiCoIT \
+  --org FabrikamCloud \
   --out-dir /reports \
   --store-lookup \
   --store-country US
@@ -309,7 +309,7 @@ from pathlib import Path
 from appsec_scan_router import ScanConfig, scan_to_reports
 
 config = ScanConfig(
-    org="PepsiCoIT",
+    org="FabrikamCloud",
     pat="your-token-here",
     project=None,
     out_dir=Path("reports"),
@@ -399,7 +399,7 @@ Store metadata is not the same as source metadata. App Store and Google Play val
 Start with:
 
 ```bash
-appsec-scan-router --org PepsiCoIT --out-dir reports --max-workers 8 --content-workers 16 --min-confidence medium
+appsec-scan-router --org FabrikamCloud --out-dir reports --max-workers 8 --content-workers 16 --min-confidence medium
 ```
 
 For very large organizations, the scanner uses three independent pools:
