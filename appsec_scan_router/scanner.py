@@ -6,6 +6,7 @@ import re
 import time
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -32,6 +33,7 @@ from .models import (
     RepoScanTarget,
     ScanConfig,
 )
+from .postgres import PostgresInventoryWriter
 from .reports import StreamingReportWriter
 from .store_lookup import StoreLookupClient, store_columns
 from .utils import clean_value, clean_version, confidence_rank, load_json_object, should_fetch_content, xml_text, yaml_scalar
@@ -41,11 +43,21 @@ LOGGER = logging.getLogger("appsec_scan_router")
 
 
 def scan_to_reports(config: ScanConfig) -> tuple[list[dict[str, Any]], Path, Path, Path]:
-    with StreamingReportWriter(config.out_dir, config.out_prefix, config.branch_age_days) as writer:
+    with ExitStack() as stack:
+        writer = stack.enter_context(StreamingReportWriter(config.out_dir, config.out_prefix, config.branch_age_days))
+        postgres_writer = stack.enter_context(PostgresInventoryWriter(config)) if config.postgres_dsn else None
         LOGGER.info("Streaming CSV report to %s", writer.csv_path)
         LOGGER.info("Streaming JSON report to %s", writer.json_path)
         LOGGER.info("Streaming Excel report to %s", writer.xlsx_path)
-        results = scan(config, on_result=writer.write_result)
+        if postgres_writer:
+            LOGGER.info("Streaming PostgreSQL updates to table %s", config.postgres_table)
+
+        def write_result(result: dict[str, Any]) -> None:
+            writer.write_result(result)
+            if postgres_writer:
+                postgres_writer.write_result(result)
+
+        results = scan(config, on_result=write_result)
         return results, writer.csv_path, writer.json_path, writer.xlsx_path
 
 
@@ -59,6 +71,8 @@ def scan(
     try:
         targets = collect_targets(client, config.project)
         LOGGER.info("Scanning resolved default or fallback branches for %s repositories", len(targets))
+        if config.application_types:
+            LOGGER.info("Filtering inventory to application types: %s", ", ".join(config.application_types))
 
         results: list[dict[str, Any]] = []
         repo_workers = max(1, min(config.max_workers, len(targets) or 1))
@@ -80,12 +94,14 @@ def scan(
             pending_branch_scans: set[Future[dict[str, Any] | None]] = set()
             submitted_branches = 0
             completed_branches = 0
+            log_scan_progress(0, len(targets), 0, 0)
 
             for repo_index, future in completed_branch_lists:
                 try:
                     branch_targets = future.result()
                 except Exception as exc:
                     LOGGER.warning("Failed to resolve repository branch: %s", exc)
+                    log_scan_progress(repo_index, len(targets), completed_branches, submitted_branches)
                     continue
 
                 for branch_target in branch_targets:
@@ -108,6 +124,7 @@ def scan(
                             config.branch_age_days,
                             config.activity_mode,
                             store_client,
+                            config.application_types,
                         )
                     )
                     submitted_branches += 1
@@ -118,6 +135,7 @@ def scan(
                     on_result=on_result,
                     block=False,
                 )
+                log_scan_progress(repo_index, len(targets), completed_branches, submitted_branches)
 
                 if repo_index % 25 == 0:
                     LOGGER.info(
@@ -135,6 +153,7 @@ def scan(
                     on_result=on_result,
                     block=True,
                 )
+                log_scan_progress(len(targets), len(targets), completed_branches, submitted_branches)
                 if completed_branches % 100 == 0:
                     LOGGER.info("Progress: %s/%s resolved branches scanned", completed_branches, submitted_branches)
 
@@ -209,6 +228,7 @@ def scan_branch_target(
     branch_age_days: int,
     activity_mode: str,
     store_client: StoreLookupClient | None,
+    application_types: Iterable[str] = (),
 ) -> dict[str, Any] | None:
     return scan_branch(
         client=client,
@@ -220,6 +240,7 @@ def scan_branch_target(
         branch_age_days=branch_age_days,
         activity_mode=activity_mode,
         store_client=store_client,
+        application_types=application_types,
     )
 
 
@@ -232,6 +253,7 @@ def scan_repo(
     branch_age_days: int,
     store_client: StoreLookupClient | None,
     activity_mode: str = DEFAULT_ACTIVITY_MODE,
+    application_types: Iterable[str] = (),
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for branch_target in list_branch_targets(client, target):
@@ -245,6 +267,7 @@ def scan_repo(
                 branch_age_days=branch_age_days,
                 activity_mode=activity_mode,
                 store_client=store_client,
+                application_types=application_types,
             )
         except AzureDevOpsError as exc:
             LOGGER.info(
@@ -305,6 +328,7 @@ def scan_branch(
     branch_age_days: int,
     activity_mode: str,
     store_client: StoreLookupClient | None,
+    application_types: Iterable[str] = (),
 ) -> dict[str, Any] | None:
     repo = target.repo
     repo_id = repo.get("id", "")
@@ -326,12 +350,26 @@ def scan_branch(
     content_paths = [path for path in paths if should_fetch_content(path)]
     contents = fetch_contents(client, target.project_name, repo_id, branch_name, content_paths, content_executor)
     confidence, evidence, score = detect_inventory_repo(paths, contents)
-    metadata = extract_mobile_metadata(contents)
 
     if confidence == "none" or confidence_rank(confidence) < min_confidence_rank:
         LOGGER.debug("No match: %s/%s@%s", target.project_name, repo_name, branch_name)
         return None
 
+    categories = sorted({item.category for item in evidence})
+    inventory_types = inventory_types_from_categories(categories)
+    normalized_application_types = normalize_application_types(application_types)
+    if not inventory_type_matches(inventory_types, normalized_application_types):
+        LOGGER.debug(
+            "Skipping type-filtered match: %s/%s@%s types=%s filter=%s",
+            target.project_name,
+            repo_name,
+            branch_name,
+            ", ".join(inventory_types) or "(unknown)",
+            ", ".join(normalized_application_types),
+        )
+        return None
+
+    metadata = extract_mobile_metadata(contents)
     activity = fetch_repo_activity(
         client=client,
         project_name=target.project_name,
@@ -340,7 +378,6 @@ def scan_branch(
         max_commits=max_commits_per_repo,
         activity_mode=activity_mode,
     )
-    categories = sorted({item.category for item in evidence})
 
     return build_scan_row(
         target=target,
@@ -709,6 +746,49 @@ def inventory_types_from_categories(categories: Iterable[str]) -> list[str]:
     return [inventory_type for inventory_type in KNOWN_INVENTORY_TYPES if inventory_type in types]
 
 
+def normalize_application_types(application_types: Iterable[str] | None) -> tuple[str, ...]:
+    if not application_types:
+        return ()
+    requested = {str(application_type).strip() for application_type in application_types if str(application_type).strip()}
+    unknown = sorted(requested - set(KNOWN_INVENTORY_TYPES))
+    if unknown:
+        valid = ", ".join(KNOWN_INVENTORY_TYPES)
+        raise ValueError(f"Unknown application type {', '.join(unknown)}. Use: {valid}")
+    return tuple(application_type for application_type in KNOWN_INVENTORY_TYPES if application_type in requested)
+
+
+def inventory_type_matches(inventory_types: Iterable[str], application_types: Iterable[str] | None) -> bool:
+    normalized_application_types = normalize_application_types(application_types)
+    if not normalized_application_types:
+        return True
+    return bool(set(inventory_types) & set(normalized_application_types))
+
+
+def store_lookup_allowed(application_types: Iterable[str] | None) -> bool:
+    normalized_application_types = normalize_application_types(application_types)
+    return not normalized_application_types or "mobile_app" in normalized_application_types
+
+
+def log_scan_progress(
+    repositories_prepared: int,
+    repositories_total: int,
+    branches_scanned: int,
+    branches_total: int,
+) -> None:
+    LOGGER.info(
+        "SCAN_PROGRESS %s",
+        json.dumps(
+            {
+                "repositoriesPrepared": max(0, repositories_prepared),
+                "repositoriesTotal": max(0, repositories_total),
+                "branchesScanned": max(0, branches_scanned),
+                "branchesTotal": max(0, branches_total),
+            },
+            separators=(",", ":"),
+        ),
+    )
+
+
 def repo_source_url(repo: dict[str, Any]) -> str:
     return clean_value(repo.get("remoteUrl")) or clean_value(repo.get("sshUrl")) or clean_value(repo.get("webUrl"))
 
@@ -980,6 +1060,7 @@ def iter_completed_repo_scans(
     branch_age_days: int,
     store_client: StoreLookupClient | None,
     activity_mode: str = DEFAULT_ACTIVITY_MODE,
+    application_types: Iterable[str] = (),
 ) -> Iterable[tuple[int, Future[list[dict[str, Any]]]]]:
     target_iter = iter(targets)
     pending: set[Future[list[dict[str, Any]]]] = set()
@@ -1003,6 +1084,7 @@ def iter_completed_repo_scans(
                 branch_age_days,
                 store_client,
                 activity_mode,
+                application_types,
             )
         )
         submitted += 1

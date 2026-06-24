@@ -8,6 +8,8 @@ from unittest.mock import patch
 import appsec_scan_router as scanner
 import ado_mobile_scanner
 import mobile_scanner
+from appsec_scan_router.auth import CredentialStore
+from appsec_scan_router.postgres import POSTGRES_COLUMNS
 from openpyxl import load_workbook
 
 
@@ -27,6 +29,22 @@ class PublicApiTests(unittest.TestCase):
         self.assertTrue(callable(scanner.AppSecInventoryService))
         self.assertTrue(callable(scanner.AppSecScanRouter))
         self.assertTrue(callable(scanner.GitHubEnterpriseClient))
+        self.assertTrue(callable(scanner.PostgresInventoryWriter))
+        self.assertIn("mobile_app", scanner.KNOWN_INVENTORY_TYPES)
+        self.assertEqual(scanner.APPLICATION_TYPE_LABELS["ai_enabled"], "AI-enabled")
+
+
+class AuthTests(unittest.TestCase):
+    def test_credential_store_encrypts_saved_tokens(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = CredentialStore(Path(tmpdir))
+
+            store.save_token("user-1", "azure-devops", "secret-token")
+
+            self.assertEqual(store.token("user-1", "azure-devops"), "secret-token")
+            self.assertTrue(store.statuses("user-1")["azure-devops"])
+            encrypted = (Path(tmpdir) / "credentials.json.enc").read_bytes()
+            self.assertNotIn(b"secret-token", encrypted)
 
 
 class ProviderClientTests(unittest.TestCase):
@@ -75,6 +93,10 @@ class ProviderClientTests(unittest.TestCase):
                     "FabrikamCloud",
                     "--repo",
                     "mobile-app",
+                    "--application-type",
+                    "mobile_app",
+                    "--application-type",
+                    "ai_enabled",
                     "--out-dir",
                     "reports",
                 ]
@@ -85,6 +107,7 @@ class ProviderClientTests(unittest.TestCase):
         self.assertEqual(config.org, "FabrikamCloud")
         self.assertEqual(config.project, "mobile-app")
         self.assertEqual(config.pat, "token")
+        self.assertEqual(config.application_types, ("mobile_app", "ai_enabled"))
 
     def test_create_source_client_supports_github_enterprise(self):
         config = scanner.ScanConfig(
@@ -132,6 +155,7 @@ class UiServiceTests(unittest.TestCase):
                 "repo": "mobile-app",
                 "baseUrl": "https://github.fabrikam.example/api/v3",
                 "outPrefix": "inventory scan",
+                "applicationTypes": ["mobile_app", "ai_enabled"],
                 "minConfidence": "medium",
                 "activityMode": "latest",
                 "storeLookup": True,
@@ -147,7 +171,37 @@ class UiServiceTests(unittest.TestCase):
         self.assertIn("--repo", command)
         self.assertIn("mobile-app", command)
         self.assertIn("--store-lookup", command)
-        self.assertIn("inventory_scan", command)
+        self.assertIn("appsec_inventory_service", command)
+        self.assertIn("--owner-user-id", command)
+        self.assertIn("--owner-user-login", command)
+        self.assertIn("--postgres-table", command)
+        self.assertEqual(command.count("--application-type"), 2)
+        self.assertIn("mobile_app", command)
+        self.assertIn("ai_enabled", command)
+
+    def test_normalize_scan_config_uses_fixed_prefix_and_postgres_default(self):
+        config = scanner.normalize_scan_config(
+            {
+                "provider": "azure-devops",
+                "org": "FabrikamCloud",
+                "outPrefix": "custom-prefix",
+            }
+        )
+
+        self.assertEqual(config["outPrefix"], "appsec_inventory_service")
+        self.assertTrue(config["postgresEnabled"])
+        self.assertEqual(config["ownerUserId"], "anonymous")
+        self.assertEqual(config["ownerUserLogin"], "anonymous")
+
+    def test_normalize_scan_config_rejects_unknown_application_types(self):
+        with self.assertRaises(ValueError):
+            scanner.normalize_scan_config(
+                {
+                    "provider": "azure-devops",
+                    "org": "FabrikamCloud",
+                    "applicationTypes": ["mobile_app", "unknown"],
+                }
+            )
 
     def test_build_scan_command_scans_all_github_repos_when_repo_empty(self):
         config = scanner.normalize_scan_config(
@@ -161,6 +215,44 @@ class UiServiceTests(unittest.TestCase):
         command = scanner.build_scan_command(config, Path("/reports/scan-1"))
 
         self.assertNotIn("--repo", command)
+
+    def test_postgres_config_builds_environment_without_exposing_dsn_in_command(self):
+        config = scanner.normalize_scan_config(
+            {
+                "provider": "azure-devops",
+                "org": "FabrikamCloud",
+                "postgresEnabled": True,
+                "postgresHost": "localhost",
+                "postgresPort": 5432,
+                "postgresDatabase": "postgres",
+                "postgresUser": "postgres",
+                "postgresPassword": "postgres",
+                "postgresTable": "appsec_inventory_assets",
+            }
+        )
+
+        command = scanner.build_scan_command(config, Path("/reports/scan-1"))
+        env = scanner.scan_environment(config)
+
+        self.assertEqual(config["postgresDsn"], "postgresql://postgres:postgres@localhost:5432/postgres")
+        self.assertIn("--postgres-table", command)
+        self.assertIn("appsec_inventory_assets", command)
+        self.assertNotIn(config["postgresDsn"], command)
+        self.assertEqual(env["APPSEC_INVENTORY_POSTGRES_DSN"], config["postgresDsn"])
+        self.assertEqual(env["APPSEC_INVENTORY_POSTGRES_TABLE"], "appsec_inventory_assets")
+
+    def test_postgres_dsn_url_encodes_credentials(self):
+        dsn = scanner.postgres_dsn_from_config(
+            {
+                "postgresHost": "localhost",
+                "postgresPort": 5432,
+                "postgresDatabase": "inventory db",
+                "postgresUser": "app user",
+                "postgresPassword": "p@ss word",
+            }
+        )
+
+        self.assertEqual(dsn, "postgresql://app%20user:p%40ss%20word@localhost:5432/inventory%20db")
 
     def test_build_scan_command_for_azure_devops(self):
         config = scanner.normalize_scan_config(
@@ -194,26 +286,70 @@ class UiServiceTests(unittest.TestCase):
 
         self.assertNotIn("--project", command)
 
-    def test_redact_command_hides_pat_values(self):
-        command = ("appsec-scan-router", "--pat", "secret", "--org", "FabrikamCloud")
+    def test_normalize_application_types_uses_known_order(self):
+        self.assertEqual(
+            scanner.normalize_application_types(["ai_enabled", "mobile_app", "mobile_app"]),
+            ("mobile_app", "ai_enabled"),
+        )
+
+    def test_inventory_type_matches_defaults_to_all_types(self):
+        self.assertTrue(scanner.inventory_type_matches(["web_app"], ()))
+        self.assertTrue(scanner.inventory_type_matches(["web_app", "api_service"], ["api_service"]))
+        self.assertFalse(scanner.inventory_type_matches(["web_app"], ["mobile_app"]))
+
+    def test_store_lookup_is_mobile_only(self):
+        self.assertTrue(scanner.store_lookup_allowed(()))
+        self.assertTrue(scanner.store_lookup_allowed(("mobile_app",)))
+        self.assertFalse(scanner.store_lookup_allowed(("web_app", "ai_enabled")))
+        config = scanner.normalize_scan_config(
+            {
+                "provider": "azure-devops",
+                "org": "FabrikamCloud",
+                "applicationTypes": ["web_app"],
+                "storeLookup": True,
+            }
+        )
+        self.assertFalse(config["storeLookup"])
+
+    def test_redact_command_hides_sensitive_values(self):
+        command = (
+            "appsec-scan-router",
+            "--pat",
+            "secret",
+            "--postgres-dsn",
+            "postgresql://postgres:postgres@localhost:5432/postgres",
+            "--org",
+            "FabrikamCloud",
+        )
 
         redacted = scanner.redact_command(command)
 
-        self.assertEqual(redacted, ["appsec-scan-router", "--pat", "[redacted]", "--org", "FabrikamCloud"])
+        self.assertEqual(
+            redacted,
+            [
+                "appsec-scan-router",
+                "--pat",
+                "[redacted]",
+                "--postgres-dsn",
+                "[redacted]",
+                "--org",
+                "FabrikamCloud",
+            ],
+        )
 
     def test_scan_progress_estimates_from_progress_logs(self):
         started_at = (datetime.now(timezone.utc) - timedelta(seconds=100)).isoformat()
         progress = scanner.scan_progress(
             [
                 "Scanning resolved default or fallback branches for 100 repositories",
-                "Progress: 50/100 repositories prepared; 25/50 resolved branches scanned",
+                'SCAN_PROGRESS {"repositoriesPrepared":50,"repositoriesTotal":100,"branchesScanned":25,"branchesTotal":50}',
             ],
             started_at,
             "",
             "running",
         )
 
-        self.assertEqual(progress["percent"], 50)
+        self.assertEqual(progress["percent"], 45)
         self.assertEqual(progress["repositoriesPrepared"], 50)
         self.assertEqual(progress["repositoriesTotal"], 100)
         self.assertEqual(progress["branchesScanned"], 25)
@@ -858,6 +994,46 @@ class OutputTests(unittest.TestCase):
             workbook = load_workbook(writer.xlsx_path)
             self.assertEqual(workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "mobile_name", 2), "Agsnap")
 
+    def test_streaming_report_writer_removes_illegal_workbook_characters(self):
+        result = self.sample_result()
+        result["contributing_developers"] = "Alice\x08 Adams <alice@example.com>"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with scanner.StreamingReportWriter(Path(tmpdir), "scan") as writer:
+                writer.write_result(result)
+
+            workbook = load_workbook(writer.xlsx_path)
+            self.assertEqual(
+                workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "contributing_developers", 2),
+                "Alice Adams <alice@example.com>",
+            )
+
+    def test_workbook_cell_value_removes_illegal_characters(self):
+        self.assertEqual(scanner.workbook_cell_value("Ag\x08snap"), "Agsnap")
+        self.assertEqual(scanner.workbook_cell_value(42), 42)
+
+    def test_postgres_rows_include_owner_scope(self):
+        config = scanner.ScanConfig(
+            org="FabrikamCloud",
+            pat="token",
+            project=None,
+            out_dir=Path("reports"),
+            out_prefix="scan",
+            max_workers=1,
+            branch_workers=1,
+            content_workers=1,
+            max_commits_per_repo=0,
+            timeout_seconds=30,
+            min_confidence="low",
+            owner_user_id="42",
+            owner_user_login="alice",
+        )
+        writer = scanner.PostgresInventoryWriter(config)
+        values = dict(zip(POSTGRES_COLUMNS, writer.row_values(self.sample_result())))
+
+        self.assertEqual(values["owner_user_id"], "42")
+        self.assertEqual(values["owner_user_login"], "alice")
+
     def test_category_columns_are_excel_filter_friendly(self):
         columns = scanner.category_columns(["android", "react_native", "ai_enabled"])
 
@@ -1047,6 +1223,35 @@ class StoreLookupTests(unittest.TestCase):
         self.assertEqual(missing["store_validation_passed"], "FALSE")
         self.assertEqual(missing["apple_app_store_lookup_status"], "identifier_missing")
 
+    def test_store_columns_rejects_invalid_identifiers_without_network_lookup(self):
+        class FailingStoreClient:
+            def lookup(self, identifier, categories):
+                raise AssertionError("invalid identifiers should not call store lookup")
+
+        columns = scanner.store_columns("#ID#Configuration:CONNECTIONS_CONFIG", ["android"], FailingStoreClient())
+
+        self.assertEqual(columns["store_lookup_status"], "identifier_invalid")
+        self.assertEqual(columns["store_validation_passed"], "FALSE")
+        self.assertEqual(columns["google_play_lookup_status"], "identifier_invalid")
+        self.assertEqual(columns["google_play_identifier"], "#ID#Configuration:CONNECTIONS_CONFIG")
+        self.assertFalse(scanner.is_store_identifier_candidate("#ID#Configuration:CONNECTIONS_CONFIG"))
+        self.assertTrue(scanner.is_store_identifier_candidate("com.fabrikam.agsnap"))
+
+    def test_store_columns_reports_tls_errors_without_retrying_reads(self):
+        columns = scanner.store_columns_from_listings(
+            [
+                scanner.StoreListing(
+                    platform=scanner.GOOGLE_PLATFORM,
+                    status="tls_error",
+                    identifier="com.fabrikam.agsnap",
+                )
+            ]
+        )
+
+        self.assertEqual(columns["store_lookup_status"], "error")
+        self.assertEqual(columns["store_validation_passed"], "FALSE")
+        self.assertEqual(columns["google_play_lookup_status"], "tls_error")
+
     def test_google_play_helpers(self):
         html = """\
 <html>
@@ -1146,6 +1351,18 @@ class CliTests(unittest.TestCase):
             scanner.parse_args(["--org", "example", "--pat", "token", "--store-country", "usa"])
         with self.assertRaises(SystemExit):
             scanner.parse_args(["--org", "example", "--pat", "token", "--store-timeout", "0"])
+        with self.assertRaises(SystemExit):
+            scanner.parse_args(
+                [
+                    "--org",
+                    "example",
+                    "--pat",
+                    "token",
+                    "--application-type",
+                    "web_app",
+                    "--store-lookup",
+                ]
+            )
 
     def test_parse_args_rejects_invalid_branch_workers(self):
         with self.assertRaises(SystemExit):

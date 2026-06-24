@@ -29,6 +29,7 @@ APPLE_DISPLAY_NAME = "Apple App Store"
 GOOGLE_DISPLAY_NAME = "Google Play"
 CROSS_PLATFORM_CATEGORIES = frozenset({"flutter", "react_native", "ionic_capacitor_cordova", "xamarin_maui"})
 BOTH_STORE_PLATFORMS = (APPLE_PLATFORM, GOOGLE_PLATFORM)
+STORE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9][A-Za-z0-9_-]*)+$")
 
 
 class StoreLookupClient:
@@ -45,8 +46,10 @@ class StoreLookupClient:
         self._cache_lock = threading.Lock()
         self._retry = Retry(
             total=3,
-            connect=2,
-            read=2,
+            connect=0,
+            read=0,
+            other=0,
+            status=3,
             backoff_factor=0.5,
             status_forcelist=(429, 500, 502, 503, 504),
             allowed_methods=frozenset({"GET"}),
@@ -61,7 +64,7 @@ class StoreLookupClient:
             session.headers.update(
                 {
                     "Accept": "application/json,text/html,application/xhtml+xml",
-                    "User-Agent": "appsec-inventory-service/1.3",
+                    "User-Agent": "appsec-inventory-service/1.5",
                 }
             )
             adapter = HTTPAdapter(max_retries=self._retry, pool_connections=8, pool_maxsize=8)
@@ -122,6 +125,9 @@ class StoreLookupClient:
             )
             response.raise_for_status()
             data = response.json()
+        except requests.exceptions.SSLError as exc:
+            LOGGER.debug("Apple App Store TLS lookup failed for %s: %s", identifier, exc)
+            return StoreListing(platform=APPLE_PLATFORM, status="tls_error", identifier=identifier, error=str(exc))
         except (requests.RequestException, ValueError) as exc:
             LOGGER.debug("Apple App Store lookup failed for %s: %s", identifier, exc)
             return StoreListing(platform=APPLE_PLATFORM, status="error", identifier=identifier, error=str(exc))
@@ -155,6 +161,9 @@ class StoreLookupClient:
             if response.status_code == 404:
                 return StoreListing(platform=GOOGLE_PLATFORM, status="not_found_publicly", identifier=identifier)
             response.raise_for_status()
+        except requests.exceptions.SSLError as exc:
+            LOGGER.debug("Google Play TLS lookup failed for %s: %s", identifier, exc)
+            return StoreListing(platform=GOOGLE_PLATFORM, status="tls_error", identifier=identifier, error=str(exc))
         except requests.RequestException as exc:
             LOGGER.debug("Google Play lookup failed for %s: %s", identifier, exc)
             return StoreListing(platform=GOOGLE_PLATFORM, status="error", identifier=identifier, error=str(exc))
@@ -243,6 +252,8 @@ def store_columns(
     cleaned_identifier = clean_value(identifier)
     if not cleaned_identifier:
         return store_columns_from_listings(identifier_missing_store_listings(categories))
+    if not is_store_identifier_candidate(cleaned_identifier):
+        return store_columns_from_listings(invalid_identifier_store_listings(categories, cleaned_identifier))
 
     return store_columns_from_listings(store_client.lookup(cleaned_identifier, categories))
 
@@ -266,6 +277,31 @@ def identifier_missing_store_listings(categories: Iterable[str]) -> list[StoreLi
             status="identifier_missing" if GOOGLE_PLATFORM in requested else "not_requested",
         ),
     ]
+
+
+def invalid_identifier_store_listings(categories: Iterable[str], identifier: str) -> list[StoreListing]:
+    requested = set(target_store_platforms(categories))
+    return [
+        StoreListing(
+            platform=APPLE_PLATFORM,
+            status="identifier_invalid" if APPLE_PLATFORM in requested else "not_requested",
+            identifier=identifier if APPLE_PLATFORM in requested else "",
+        ),
+        StoreListing(
+            platform=GOOGLE_PLATFORM,
+            status="identifier_invalid" if GOOGLE_PLATFORM in requested else "not_requested",
+            identifier=identifier if GOOGLE_PLATFORM in requested else "",
+        ),
+    ]
+
+
+def is_store_identifier_candidate(identifier: str) -> bool:
+    cleaned_identifier = clean_value(identifier)
+    return bool(
+        cleaned_identifier
+        and len(cleaned_identifier) <= 255
+        and STORE_IDENTIFIER_PATTERN.match(cleaned_identifier)
+    )
 
 
 def store_columns_from_listings(listings: Iterable[StoreListing]) -> dict[str, str]:
@@ -322,11 +358,13 @@ def aggregate_store_status(listings: Iterable[StoreListing]) -> str:
         return "disabled"
     if all(status == "identifier_missing" for status in requested):
         return "identifier_missing"
+    if all(status == "identifier_invalid" for status in requested):
+        return "identifier_invalid"
     if any(status == "found" for status in requested):
         if all(status in {"found", "not_requested"} for status in statuses):
             return "found"
         return "partial_found"
-    if any(status == "error" for status in requested):
+    if any(status in {"error", "tls_error"} for status in requested):
         return "error"
     if all(status in {"not_found", "not_found_publicly"} for status in requested):
         return "not_found"

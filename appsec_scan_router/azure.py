@@ -31,12 +31,13 @@ class AzureDevOpsClient:
         self._headers = {
             "Authorization": self._auth_header_value(pat),
             "Accept": "application/json",
-            "User-Agent": "appsec-inventory-service/1.3",
+            "User-Agent": "appsec-inventory-service/1.5",
         }
         self._retry = Retry(
             total=5,
-            connect=3,
+            connect=0,
             read=3,
+            other=0,
             backoff_factor=0.6,
             status_forcelist=(429, 500, 502, 503, 504),
             allowed_methods=frozenset({"GET"}),
@@ -73,12 +74,15 @@ class AzureDevOpsClient:
     def _url(self, path: str) -> str:
         return f"https://dev.azure.com/{self.org}{path}"
 
+    def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        url = self._url(path)
+        try:
+            return self.session.get(url, params=self._with_api_version(params), timeout=self.timeout_seconds)
+        except requests.RequestException as exc:
+            raise AzureDevOpsError(provider_connection_message("Azure DevOps", url, exc)) from exc
+
     def get_json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        response = self.session.get(
-            self._url(path),
-            params=self._with_api_version(params),
-            timeout=self.timeout_seconds,
-        )
+        response = self.get(path, params)
         self._raise_for_status(response)
         try:
             data = response.json()
@@ -89,11 +93,7 @@ class AzureDevOpsClient:
         return data
 
     def get_text_or_content(self, path: str, params: dict[str, Any] | None = None) -> str:
-        response = self.session.get(
-            self._url(path),
-            params=self._with_api_version(params),
-            timeout=self.timeout_seconds,
-        )
+        response = self.get(path, params)
         self._raise_for_status(response)
 
         content_type = response.headers.get("content-type", "")
@@ -135,11 +135,7 @@ class AzureDevOpsClient:
             if continuation:
                 params["continuationToken"] = continuation
 
-            response = self.session.get(
-                self._url("/_apis/projects"),
-                params=self._with_api_version(params),
-                timeout=self.timeout_seconds,
-            )
+            response = self.get("/_apis/projects", params)
             self._raise_for_status(response)
             projects.extend(response.json().get("value", []))
 
@@ -160,11 +156,7 @@ class AzureDevOpsClient:
             if continuation:
                 params["continuationToken"] = continuation
 
-            response = self.session.get(
-                self._url(f"/{project_name}/_apis/git/repositories/{repo_id}/refs"),
-                params=self._with_api_version(params),
-                timeout=self.timeout_seconds,
-            )
+            response = self.get(f"/{project_name}/_apis/git/repositories/{repo_id}/refs", params)
             self._raise_for_status(response)
             refs.extend(response.json().get("value", []))
 
@@ -186,11 +178,7 @@ class AzureDevOpsClient:
             if continuation:
                 params["continuationToken"] = continuation
 
-            response = self.session.get(
-                self._url(f"/{project_name}/_apis/build/definitions"),
-                params=self._with_api_version(params),
-                timeout=self.timeout_seconds,
-            )
+            response = self.get(f"/{project_name}/_apis/build/definitions", params)
             self._raise_for_status(response)
             definitions.extend(response.json().get("value", []))
 
@@ -237,11 +225,7 @@ class AzureDevOpsClient:
             elif skip:
                 params["searchCriteria.$skip"] = skip
 
-            response = self.session.get(
-                self._url(f"/{project_name}/_apis/git/repositories/{repo_id}/commits"),
-                params=self._with_api_version(params),
-                timeout=self.timeout_seconds,
-            )
+            response = self.get(f"/{project_name}/_apis/git/repositories/{repo_id}/commits", params)
             self._raise_for_status(response)
             batch = response.json().get("value", [])
             if not batch:
@@ -305,3 +289,10 @@ class AzureDevOpsClient:
             "searchCriteria.itemVersion.version": branch_name,
             "searchCriteria.itemVersion.versionType": "branch",
         }
+
+
+def provider_connection_message(provider: str, url: str, exc: Exception) -> str:
+    return (
+        f"{provider} connection failed for {url}: {exc}. "
+        "Check DNS, VPN/proxy access, container network settings, and whether the provider host is reachable."
+    )

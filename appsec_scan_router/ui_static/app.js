@@ -4,6 +4,11 @@ const stopScanButton = document.querySelector("#stopScan");
 const refreshButton = document.querySelector("#refreshScans");
 const resetDefaultsButton = document.querySelector("#resetDefaults");
 const toggleTokenButton = document.querySelector("#toggleToken");
+const loginGitHub = document.querySelector("#loginGitHub");
+const logoutGitHub = document.querySelector("#logoutGitHub");
+const forgetToken = document.querySelector("#forgetToken");
+const authStatus = document.querySelector("#authStatus");
+const saveTokenHint = document.querySelector("#saveTokenHint");
 const copyCommandButton = document.querySelector("#copyCommand");
 const clearLogsButton = document.querySelector("#clearLogs");
 const downloadLogsButton = document.querySelector("#downloadLogs");
@@ -11,6 +16,8 @@ const activeStatus = document.querySelector("#activeStatus");
 const activeTitle = document.querySelector("#activeTitle");
 const detectedCount = document.querySelector("#detectedCount");
 const progressValue = document.querySelector("#progressValue");
+const progressFill = document.querySelector("#progressFill");
+const progressDetail = document.querySelector("#progressDetail");
 const etaValue = document.querySelector("#etaValue");
 const runtimeValue = document.querySelector("#runtimeValue");
 const commandLine = document.querySelector("#commandLine");
@@ -21,6 +28,7 @@ const scanCount = document.querySelector("#scanCount");
 const logsElement = document.querySelector("#logs");
 const toast = document.querySelector("#toast");
 const formStatus = document.querySelector("#formStatus");
+const tabButtons = document.querySelectorAll("[data-view]");
 
 const state = {
   scans: [],
@@ -28,10 +36,12 @@ const state = {
   eventSource: null,
   logs: [],
   timer: null,
+  session: null,
 };
 
 const defaultValues = {
   outPrefix: "appsec_inventory_service",
+  applicationTypes: [],
   minConfidence: "medium",
   activityMode: "latest",
   branchAgeDays: "90",
@@ -43,6 +53,14 @@ const defaultValues = {
   storeCountry: "US",
   storeTimeout: "15",
   storeLookup: false,
+  saveToken: false,
+  postgresEnabled: true,
+  postgresHost: "host.docker.internal",
+  postgresPort: "5432",
+  postgresDatabase: "postgres",
+  postgresUser: "postgres",
+  postgresPassword: "",
+  postgresTable: "appsec_inventory_assets",
   verbose: false,
 };
 
@@ -52,7 +70,7 @@ const persistedFields = [
   "project",
   "repo",
   "baseUrl",
-  "outPrefix",
+  "applicationTypes",
   "minConfidence",
   "activityMode",
   "branchAgeDays",
@@ -64,20 +82,33 @@ const persistedFields = [
   "storeLookup",
   "storeCountry",
   "storeTimeout",
+  "postgresEnabled",
+  "postgresHost",
+  "postgresPort",
+  "postgresDatabase",
+  "postgresUser",
+  "postgresTable",
   "verbose",
 ];
 
 document.addEventListener("DOMContentLoaded", async () => {
   loadForm();
   syncProviderFields();
+  syncDatabaseFields();
+  syncMobileOptions();
   bindEvents();
+  await loadSession();
   await loadScans();
+  showAuthResult();
   state.timer = window.setInterval(tick, 1000);
 });
 
 function bindEvents() {
   form.addEventListener("change", () => {
     syncProviderFields();
+    syncDatabaseFields();
+    syncMobileOptions();
+    syncCredentialFields();
     saveForm();
   });
   form.addEventListener("input", saveForm);
@@ -86,12 +117,17 @@ function bindEvents() {
   refreshButton.addEventListener("click", loadScans);
   resetDefaultsButton.addEventListener("click", resetDefaults);
   toggleTokenButton.addEventListener("click", toggleToken);
+  logoutGitHub.addEventListener("click", logout);
+  forgetToken.addEventListener("click", forgetSavedToken);
   copyCommandButton.addEventListener("click", copyCommand);
   clearLogsButton.addEventListener("click", () => {
     state.logs = [];
     renderLogs();
   });
   downloadLogsButton.addEventListener("click", downloadLogs);
+  tabButtons.forEach((button) => {
+    button.addEventListener("click", () => setActiveView(button.dataset.view));
+  });
 }
 
 async function startScan() {
@@ -103,7 +139,7 @@ async function startScan() {
   try {
     const response = await fetch("/api/scans", {
       method: "POST",
-      headers: {"Content-Type": "application/json"},
+      headers: authHeaders(true),
       body: JSON.stringify(payload),
     });
     const data = await response.json();
@@ -114,6 +150,7 @@ async function startScan() {
     state.logs = data.scan.logsTail || [];
     await loadScans(data.scan.id);
     listenToScan(data.scan.id);
+    await loadSession();
     notify("Scan started.");
   } catch (error) {
     notify(error.message || "Scan could not be started.");
@@ -127,7 +164,10 @@ async function stopScan() {
     return;
   }
   try {
-    const response = await fetch(`/api/scans/${state.activeScan.id}/stop`, {method: "POST"});
+    const response = await fetch(`/api/scans/${state.activeScan.id}/stop`, {
+      method: "POST",
+      headers: authHeaders(false),
+    });
     const data = await response.json();
     if (!response.ok) {
       throw new Error(data.error || "Stop failed.");
@@ -137,6 +177,60 @@ async function stopScan() {
     notify("Stop requested.");
   } catch (error) {
     notify(error.message || "Stop failed.");
+  }
+}
+
+async function loadSession() {
+  try {
+    const response = await fetch("/api/session");
+    const data = await response.json();
+    state.session = data.session || null;
+    renderAuth();
+    syncCredentialFields();
+  } catch (error) {
+    state.session = null;
+    renderAuth();
+  }
+}
+
+async function logout() {
+  try {
+    const response = await fetch("/api/auth/logout", {
+      method: "POST",
+      headers: authHeaders(false),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Sign out failed.");
+    }
+    state.session = data.session || null;
+    form.elements.saveToken.checked = false;
+    renderAuth();
+    syncCredentialFields();
+    notify("Signed out.");
+  } catch (error) {
+    notify(error.message || "Sign out failed.");
+  }
+}
+
+async function forgetSavedToken() {
+  const provider = new FormData(form).get("provider") || "azure-devops";
+  try {
+    const response = await fetch("/api/credentials/delete", {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify({provider}),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Could not remove saved token.");
+    }
+    state.session = data.session || state.session;
+    renderAuth();
+    syncCredentialFields();
+    notify("Saved token removed.");
+  } catch (error) {
+    notify(error.message || "Could not remove saved token.");
   }
 }
 
@@ -240,6 +334,8 @@ function renderActiveScan() {
     activeTitle.textContent = "No scan selected";
     detectedCount.textContent = "0";
     progressValue.textContent = "0%";
+    progressFill.style.width = "0%";
+    progressDetail.textContent = "No scan running";
     etaValue.textContent = "Not started";
     runtimeValue.textContent = "0s";
     commandLine.textContent = "appsec-inventory-service";
@@ -250,9 +346,11 @@ function renderActiveScan() {
   }
   activeStatus.textContent = capitalize(scan.status);
   activeStatus.className = `status-${scan.status}`;
-  activeTitle.textContent = `${scan.org || "Unknown"} · ${scan.target || "all"} · ${providerLabel(scan.provider)}`;
+  activeTitle.textContent = `${scan.org || "Unknown"} · ${scan.target || "all"} · ${providerLabel(scan.provider)} · ${applicationTypesLabel(scan.applicationTypes)}`;
   detectedCount.textContent = String(scan.detectedCount || 0);
   progressValue.textContent = scanProgress(scan);
+  progressFill.style.width = `${scanPercent(scan)}%`;
+  progressDetail.textContent = scanProgressDetail(scan);
   etaValue.textContent = scanEta(scan);
   runtimeValue.textContent = scanRuntime(scan);
   commandLine.textContent = scan.command || "appsec-inventory-service";
@@ -277,6 +375,8 @@ function renderRuns() {
         </span>
         <span class="run-meta">
           <span>${escapeHtml(providerLabel(scan.provider))}</span>
+          <span>${escapeHtml(applicationTypesLabel(scan.applicationTypes))}</span>
+          <span>${scan.postgresEnabled ? `PostgreSQL: ${escapeHtml(scan.postgresTable || "enabled")}` : "Files only"}</span>
           <span>${escapeHtml(formatDate(scan.startedAt))}</span>
         </span>
       </button>
@@ -293,7 +393,7 @@ function renderRuns() {
 }
 
 function renderReports() {
-  const reports = state.activeScan ? state.activeScan.reports || [] : [];
+  const reports = state.scans.flatMap((scan) => (scan.reports || []).map((report) => ({...report, scan})));
   reportCount.textContent = String(reports.length);
   if (!reports.length) {
     reportList.innerHTML = '<div class="empty-state">No reports</div>';
@@ -301,7 +401,10 @@ function renderReports() {
   }
   reportList.innerHTML = reports.map((report) => `
     <a class="report-item" href="${escapeHtml(report.url)}">
-      <strong>${escapeHtml(report.name)}</strong>
+      <span>
+        <strong>${escapeHtml(report.name)}</strong>
+        <small>${escapeHtml(report.scan.org || "Unknown")} · ${escapeHtml(report.scan.target || "all")}</small>
+      </span>
       <span>${escapeHtml(formatBytes(report.size))}</span>
     </a>
   `).join("");
@@ -323,7 +426,8 @@ function formPayload() {
     repo: provider === "github-enterprise" ? value(data, "repo") : "",
     baseUrl: provider === "github-enterprise" ? value(data, "baseUrl") : "",
     token: value(data, "token"),
-    outPrefix: value(data, "outPrefix") || defaultValues.outPrefix,
+    outPrefix: defaultValues.outPrefix,
+    applicationTypes: checkedValues("applicationTypes"),
     minConfidence: value(data, "minConfidence") || defaultValues.minConfidence,
     activityMode: value(data, "activityMode") || defaultValues.activityMode,
     branchAgeDays: numberValue(data, "branchAgeDays", Number(defaultValues.branchAgeDays)),
@@ -333,8 +437,16 @@ function formPayload() {
     maxCommitsPerRepo: numberValue(data, "maxCommitsPerRepo", Number(defaultValues.maxCommitsPerRepo)),
     timeout: numberValue(data, "timeout", Number(defaultValues.timeout)),
     storeLookup: data.has("storeLookup"),
+    saveToken: data.has("saveToken"),
     storeCountry: value(data, "storeCountry") || defaultValues.storeCountry,
     storeTimeout: numberValue(data, "storeTimeout", Number(defaultValues.storeTimeout)),
+    postgresEnabled: data.has("postgresEnabled"),
+    postgresHost: value(data, "postgresHost") || defaultValues.postgresHost,
+    postgresPort: numberValue(data, "postgresPort", Number(defaultValues.postgresPort)),
+    postgresDatabase: value(data, "postgresDatabase") || defaultValues.postgresDatabase,
+    postgresUser: value(data, "postgresUser") || defaultValues.postgresUser,
+    postgresPassword: value(data, "postgresPassword"),
+    postgresTable: value(data, "postgresTable") || defaultValues.postgresTable,
     verbose: data.has("verbose"),
   };
 }
@@ -352,6 +464,48 @@ function syncProviderFields() {
   form.querySelector('[name="repo"]').required = false;
 }
 
+function syncDatabaseFields() {
+  const enabled = form.querySelector('[name="postgresEnabled"]').checked;
+  document.querySelectorAll(".database-fields").forEach((node) => {
+    node.classList.toggle("hidden", !enabled);
+  });
+  for (const name of ["postgresHost", "postgresPort", "postgresDatabase", "postgresUser", "postgresTable"]) {
+    form.elements[name].required = enabled;
+  }
+}
+
+function syncMobileOptions() {
+  const selected = checkedValues("applicationTypes");
+  const mobileApplies = selected.length === 0 || selected.includes("mobile_app");
+  document.querySelectorAll(".mobile-option").forEach((node) => {
+    node.classList.toggle("hidden", !mobileApplies);
+    node.querySelectorAll("input, select, button").forEach((control) => {
+      control.disabled = !mobileApplies;
+    });
+  });
+  if (!mobileApplies) {
+    form.elements.storeLookup.checked = false;
+  }
+}
+
+function syncCredentialFields() {
+  const session = state.session || {};
+  const provider = new FormData(form).get("provider") || "azure-devops";
+  const loggedIn = Boolean(session.loggedIn);
+  const hasSavedToken = Boolean((session.credentials || {})[provider]);
+  form.elements.saveToken.disabled = !loggedIn;
+  if (!loggedIn) {
+    form.elements.saveToken.checked = false;
+  }
+  form.elements.token.placeholder = hasSavedToken ? "Uses saved token if blank" : "Uses environment token if blank";
+  saveTokenHint.textContent = loggedIn
+    ? hasSavedToken
+      ? "Saved token available for this provider"
+      : "Checked tokens are encrypted and saved for your GitHub user"
+    : "Sign in with GitHub to save or reuse provider tokens";
+  forgetToken.classList.toggle("hidden", !loggedIn || !hasSavedToken);
+}
+
 function loadForm() {
   const saved = JSON.parse(localStorage.getItem("appsec-inventory-service-ui") || "{}");
   applyDefaultValues();
@@ -363,7 +517,9 @@ function loadForm() {
     if (!element) {
       continue;
     }
-    if (element instanceof RadioNodeList) {
+    if (Array.isArray(saved[name])) {
+      setCheckboxGroup(name, saved[name]);
+    } else if (element instanceof RadioNodeList) {
       element.value = saved[name];
     } else if (element.type === "checkbox") {
       element.checked = Boolean(saved[name]);
@@ -379,7 +535,9 @@ function saveForm() {
   for (const name of persistedFields) {
     if (name === "provider") {
       saved[name] = data.get(name);
-    } else if (name === "storeLookup" || name === "verbose") {
+    } else if (name === "applicationTypes") {
+      saved[name] = checkedValues(name);
+    } else if (name === "storeLookup" || name === "postgresEnabled" || name === "verbose") {
       saved[name] = data.has(name);
     } else {
       saved[name] = value(data, name);
@@ -391,6 +549,9 @@ function saveForm() {
 function resetDefaults() {
   applyDefaultValues();
   syncProviderFields();
+  syncDatabaseFields();
+  syncMobileOptions();
+  syncCredentialFields();
   saveForm();
   notify("Scan defaults restored.");
 }
@@ -403,6 +564,8 @@ function applyDefaultValues() {
     }
     if (element.type === "checkbox") {
       element.checked = Boolean(defaultValue);
+    } else if (Array.isArray(defaultValue)) {
+      setCheckboxGroup(name, defaultValue);
     } else {
       element.value = defaultValue;
     }
@@ -442,6 +605,43 @@ function setBusy(isBusy) {
   formStatus.className = `status-chip ${isBusy ? "status-running" : "idle"}`;
 }
 
+function renderAuth() {
+  const session = state.session || {};
+  const loggedIn = Boolean(session.loggedIn);
+  const enabled = Boolean(session.githubLoginEnabled);
+  authStatus.textContent = loggedIn
+    ? `Signed in as ${session.user && session.user.login ? session.user.login : "GitHub user"}`
+    : enabled
+      ? "Not signed in"
+      : "GitHub login not configured";
+  loginGitHub.classList.toggle("hidden", loggedIn || !enabled);
+  logoutGitHub.classList.toggle("hidden", !loggedIn);
+}
+
+function authHeaders(jsonBody) {
+  const headers = {};
+  if (jsonBody) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (state.session && state.session.csrfToken) {
+    headers["X-CSRF-Token"] = state.session.csrfToken;
+  }
+  return headers;
+}
+
+function showAuthResult() {
+  const params = new URLSearchParams(window.location.search);
+  const auth = params.get("auth");
+  if (auth === "success") {
+    notify("Signed in with GitHub.");
+  } else if (auth === "failed") {
+    notify("GitHub sign-in failed.");
+  }
+  if (auth) {
+    window.history.replaceState({}, "", window.location.pathname);
+  }
+}
+
 function tick() {
   if (state.activeScan) {
     runtimeValue.textContent = scanRuntime(state.activeScan);
@@ -468,15 +668,39 @@ function scanRuntime(scan) {
 }
 
 function scanProgress(scan) {
+  return `${scanPercent(scan)}%`;
+}
+
+function scanPercent(scan) {
   const progress = scan.progress || {};
   if (scan.status === "succeeded") {
-    return "100%";
+    return 100;
   }
   const percent = Number(progress.percent || 0);
   if (!Number.isFinite(percent) || percent <= 0) {
-    return scan.status === "running" ? "Starting" : "0%";
+    return 0;
   }
-  return `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
+  return Math.max(0, Math.min(100, Math.round(percent)));
+}
+
+function scanProgressDetail(scan) {
+  const progress = scan.progress || {};
+  if (scan.status === "succeeded") {
+    return "Scan complete";
+  }
+  if (scan.status === "failed") {
+    return "Scan failed";
+  }
+  if (scan.status === "stopped") {
+    return "Scan stopped";
+  }
+  const repoDone = Number(progress.repositoriesPrepared || 0);
+  const repoTotal = Number(progress.repositoriesTotal || 0);
+  const branchDone = Number(progress.branchesScanned || 0);
+  const branchTotal = Number(progress.branchesTotal || 0);
+  const repoText = repoTotal ? `${repoDone}/${repoTotal} repositories prepared` : "Preparing repositories";
+  const branchText = branchTotal ? `${branchDone}/${branchTotal} branches scanned` : "Branches pending";
+  return `${repoText} · ${branchText}`;
 }
 
 function scanEta(scan) {
@@ -516,6 +740,40 @@ function durationText(totalSeconds) {
 
 function providerLabel(provider) {
   return provider === "github-enterprise" ? "GitHub Enterprise" : "Azure DevOps";
+}
+
+function applicationTypesLabel(applicationTypes) {
+  const values = Array.isArray(applicationTypes) ? applicationTypes : [];
+  if (!values.length) {
+    return "All types";
+  }
+  return values.map((type) => applicationTypeLabel(type)).join(", ");
+}
+
+function applicationTypeLabel(type) {
+  const labels = {
+    mobile_app: "Mobile app",
+    web_app: "Web app",
+    api_service: "API service",
+    microservice: "Microservice",
+    middleware: "Middleware",
+    serverless: "Serverless",
+    library: "Library",
+    infrastructure: "Infrastructure",
+    ai_enabled: "AI-enabled",
+  };
+  return labels[type] || String(type || "").replaceAll("_", " ");
+}
+
+function checkedValues(name) {
+  return Array.from(form.querySelectorAll(`[name="${name}"]:checked`)).map((node) => node.value);
+}
+
+function setCheckboxGroup(name, values) {
+  const selected = new Set(Array.isArray(values) ? values : []);
+  form.querySelectorAll(`[name="${name}"]`).forEach((node) => {
+    node.checked = selected.has(node.value);
+  });
 }
 
 function value(data, name) {
@@ -558,6 +816,20 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function setActiveView(viewId) {
+  document.querySelectorAll(".tab-view").forEach((view) => {
+    const active = view.id === viewId;
+    view.hidden = !active;
+    view.classList.toggle("hidden", !active);
+    view.classList.toggle("active", active);
+  });
+  tabButtons.forEach((button) => {
+    const active = button.dataset.view === viewId;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
 }
 
 function notify(message) {

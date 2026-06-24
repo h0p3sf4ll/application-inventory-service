@@ -14,6 +14,11 @@
           <h1>AppSec Inventory Service</h1>
         </div>
         <div class="topbar-actions">
+          <div class="auth-card" id="authPanel">
+            <span id="authStatus">Checking sign-in</span>
+            <a class="ghost small hidden" id="loginGitHub" href="/api/auth/github/start">Sign in with GitHub</a>
+            <button class="ghost small hidden" id="logoutGitHub" type="button">Sign out</button>
+          </div>
           <button class="ghost" id="refreshScans" type="button">Refresh</button>
           <button class="primary" id="startScan" type="button">Run scan</button>
         </div>
@@ -76,6 +81,16 @@
               <input id="scanToken" name="token" type="password" autocomplete="off" placeholder="Uses environment token if blank">
               <button class="icon-button" id="toggleToken" type="button" title="Show token">Show</button>
             </div>
+            <div class="full credential-row">
+              <label class="toggle-row compact">
+                <input name="saveToken" type="checkbox">
+                <span class="toggle-copy">
+                  <span>Save token securely</span>
+                  <small id="saveTokenHint">Sign in with GitHub to save or reuse provider tokens</small>
+                </span>
+              </label>
+              <button class="ghost small hidden" id="forgetToken" type="button">Forget saved token</button>
+            </div>
           </div>
 
           <div class="section-heading compact">
@@ -83,18 +98,63 @@
             <button class="ghost small" id="resetDefaults" type="button">Reset defaults</button>
           </div>
 
+          <fieldset class="type-picker">
+            <legend>
+              <span>Application types</span>
+              <span class="default-badge">Default: All types</span>
+            </legend>
+            <div class="type-options">
+              <label class="type-option">
+                <input name="applicationTypes" type="checkbox" value="mobile_app">
+                <span>Mobile app</span>
+              </label>
+              <label class="type-option">
+                <input name="applicationTypes" type="checkbox" value="web_app">
+                <span>Web app</span>
+              </label>
+              <label class="type-option">
+                <input name="applicationTypes" type="checkbox" value="api_service">
+                <span>API service</span>
+              </label>
+              <label class="type-option">
+                <input name="applicationTypes" type="checkbox" value="microservice">
+                <span>Microservice</span>
+              </label>
+              <label class="type-option">
+                <input name="applicationTypes" type="checkbox" value="middleware">
+                <span>Middleware</span>
+              </label>
+              <label class="type-option">
+                <input name="applicationTypes" type="checkbox" value="serverless">
+                <span>Serverless</span>
+              </label>
+              <label class="type-option">
+                <input name="applicationTypes" type="checkbox" value="library">
+                <span>Library</span>
+              </label>
+              <label class="type-option">
+                <input name="applicationTypes" type="checkbox" value="infrastructure">
+                <span>Infrastructure</span>
+              </label>
+              <label class="type-option">
+                <input name="applicationTypes" type="checkbox" value="ai_enabled">
+                <span>AI-enabled</span>
+              </label>
+            </div>
+          </fieldset>
+
           <div class="field-grid">
-            <label>
+            <div class="static-field">
               <span class="label-line">
-                <span>Output prefix</span>
-                <span class="default-badge">Default: appsec_inventory_service</span>
+                <span>Report prefix</span>
+                <span class="default-badge">Fixed default</span>
               </span>
-              <input name="outPrefix" value="appsec_inventory_service">
-            </label>
+              <strong>appsec_inventory_service</strong>
+            </div>
             <label>
               <span class="label-line">
-                <span>Confidence</span>
-                <span class="default-badge">Default: Medium</span>
+                <span>Detection confidence</span>
+                <span class="default-badge">Default confidence: Medium</span>
               </span>
               <select name="minConfidence">
                 <option value="low">Low</option>
@@ -154,21 +214,21 @@
               </span>
               <input name="timeout" type="number" min="1" value="30">
             </label>
-            <label>
+            <label class="mobile-option">
               <span class="label-line">
                 <span>Store country</span>
                 <span class="default-badge">Default: US</span>
               </span>
               <input name="storeCountry" maxlength="2" value="US">
             </label>
-            <label>
+            <label class="mobile-option">
               <span class="label-line">
                 <span>Store timeout</span>
                 <span class="default-badge">Default: 15</span>
               </span>
               <input name="storeTimeout" type="number" min="1" value="15">
             </label>
-            <label class="toggle-row">
+            <label class="toggle-row mobile-option">
               <input name="storeLookup" type="checkbox">
               <span class="toggle-copy">
                 <span>Store lookup</span>
@@ -183,54 +243,138 @@
               </span>
             </label>
           </div>
+
+          <div class="section-heading compact">
+            <h2>Database</h2>
+            <span class="default-badge">Default: PostgreSQL on</span>
+          </div>
+
+          <label class="toggle-row full">
+            <input name="postgresEnabled" type="checkbox" checked>
+            <span class="toggle-copy">
+              <span>Sync to PostgreSQL</span>
+              <small>Default on; rows are scoped by signed-in user</small>
+            </span>
+          </label>
+
+          <div class="field-grid database-fields hidden">
+            <label>
+              <span class="label-line">
+                <span>PostgreSQL host</span>
+                <span class="default-badge">Default: host.docker.internal</span>
+              </span>
+              <input name="postgresHost" value="host.docker.internal">
+            </label>
+            <label>
+              <span class="label-line">
+                <span>PostgreSQL port</span>
+                <span class="default-badge">Default: 5432</span>
+              </span>
+              <input name="postgresPort" type="number" min="1" max="65535" value="5432">
+            </label>
+            <label>
+              <span class="label-line">
+                <span>Database</span>
+                <span class="default-badge">Default: postgres</span>
+              </span>
+              <input name="postgresDatabase" value="postgres">
+            </label>
+            <label>
+              <span class="label-line">
+                <span>User</span>
+                <span class="default-badge">Default: postgres</span>
+              </span>
+              <input name="postgresUser" value="postgres">
+            </label>
+            <label>
+              <span class="label-line">
+                <span>Password</span>
+                <span class="field-badge optional">Optional</span>
+              </span>
+              <input name="postgresPassword" type="password" autocomplete="off" placeholder="Local dev: postgres">
+            </label>
+            <label>
+              <span class="label-line">
+                <span>Table</span>
+                <span class="default-badge">Default: appsec_inventory_assets</span>
+              </span>
+              <input name="postgresTable" value="appsec_inventory_assets">
+            </label>
+          </div>
         </form>
 
         <section class="workspace">
-          <div class="panel hero-panel">
-            <div class="metric-row">
-              <div>
-                <span class="metric-label">Status</span>
-                <strong id="activeStatus">Idle</strong>
-              </div>
-              <div>
-                <span class="metric-label">Assets</span>
-                <strong id="detectedCount">0</strong>
-              </div>
-              <div>
-                <span class="metric-label">Progress</span>
-                <strong id="progressValue">0%</strong>
-              </div>
-              <div>
-                <span class="metric-label">ETA</span>
-                <strong id="etaValue">Not started</strong>
-              </div>
-              <div>
-                <span class="metric-label">Runtime</span>
-                <strong id="runtimeValue">0s</strong>
-              </div>
-            </div>
-            <div class="active-run">
-              <div>
-                <p class="eyebrow">Active scan</p>
-                <h2 id="activeTitle">No scan selected</h2>
-              </div>
-              <div class="run-actions">
-                <button class="ghost" id="copyCommand" type="button" disabled>Copy command</button>
-                <button class="danger" id="stopScan" type="button" disabled>Stop</button>
-              </div>
-            </div>
-            <pre class="command-line" id="commandLine">appsec-inventory-service</pre>
-          </div>
+          <nav class="view-tabs" aria-label="Workspace" role="tablist">
+            <button class="tab-button active" type="button" data-view="scanView" role="tab" aria-controls="scanView" aria-selected="true">Scan</button>
+            <button class="tab-button" type="button" data-view="reportsView" role="tab" aria-controls="reportsView" aria-selected="false">Reports</button>
+          </nav>
 
-          <div class="work-grid">
-            <section class="panel runs-panel">
-              <div class="section-heading">
-                <h2>Runs</h2>
-                <span id="scanCount">0</span>
+          <section class="tab-view active" id="scanView" role="tabpanel">
+            <div class="panel hero-panel">
+              <div class="metric-row">
+                <div>
+                  <span class="metric-label">Status</span>
+                  <strong id="activeStatus">Idle</strong>
+                </div>
+                <div>
+                  <span class="metric-label">Assets</span>
+                  <strong id="detectedCount">0</strong>
+                </div>
+                <div>
+                  <span class="metric-label">Progress</span>
+                  <strong id="progressValue">0%</strong>
+                </div>
+                <div>
+                  <span class="metric-label">ETA</span>
+                  <strong id="etaValue">Not started</strong>
+                </div>
+                <div>
+                  <span class="metric-label">Runtime</span>
+                  <strong id="runtimeValue">0s</strong>
+                </div>
               </div>
-              <div class="run-list" id="runList"></div>
-            </section>
+              <div class="status-bar">
+                <div class="status-track">
+                  <span id="progressFill"></span>
+                </div>
+                <div class="status-detail" id="progressDetail">No scan running</div>
+              </div>
+              <div class="active-run">
+                <div>
+                  <p class="eyebrow">Active scan</p>
+                  <h2 id="activeTitle">No scan selected</h2>
+                </div>
+                <div class="run-actions">
+                  <button class="ghost" id="copyCommand" type="button" disabled>Copy command</button>
+                  <button class="danger" id="stopScan" type="button" disabled>Stop</button>
+                </div>
+              </div>
+              <pre class="command-line" id="commandLine">appsec-inventory-service</pre>
+            </div>
 
+            <div class="work-grid scan-grid">
+              <section class="panel runs-panel">
+                <div class="section-heading">
+                  <h2>Runs</h2>
+                  <span id="scanCount">0</span>
+                </div>
+                <div class="run-list" id="runList"></div>
+              </section>
+
+              <section class="panel log-panel">
+                <div class="section-heading">
+                  <h2>Console</h2>
+                  <div class="log-actions">
+                    <button class="ghost small" id="clearLogs" type="button">Clear</button>
+                    <button class="ghost small" id="downloadLogs" type="button" disabled>Download</button>
+                  </div>
+                </div>
+                <pre class="logs" id="logs"></pre>
+              </section>
+            </div>
+          </section>
+
+          <section class="tab-view hidden" id="reportsView" role="tabpanel" hidden>
             <section class="panel reports-panel">
               <div class="section-heading">
                 <h2>Reports</h2>
@@ -238,17 +382,6 @@
               </div>
               <div class="report-list" id="reportList"></div>
             </section>
-          </div>
-
-          <section class="panel log-panel">
-            <div class="section-heading">
-              <h2>Console</h2>
-              <div class="log-actions">
-                <button class="ghost small" id="clearLogs" type="button">Clear</button>
-                <button class="ghost small" id="downloadLogs" type="button" disabled>Download</button>
-              </div>
-            </div>
-            <pre class="logs" id="logs"></pre>
           </section>
         </section>
       </section>

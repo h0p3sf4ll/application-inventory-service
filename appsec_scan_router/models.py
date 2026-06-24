@@ -8,6 +8,7 @@ from .constants import (
     DEFAULT_ACTIVITY_MODE,
     DEFAULT_BRANCH_AGE_DAYS,
     DEFAULT_BRANCH_WORKERS,
+    DEFAULT_POSTGRES_TABLE,
     DEFAULT_STORE_COUNTRY,
     DEFAULT_STORE_TIMEOUT_SECONDS,
 )
@@ -39,6 +40,11 @@ class ScanConfig:
     store_timeout_seconds: int = DEFAULT_STORE_TIMEOUT_SECONDS
     provider: str = "azure-devops"
     base_url: str = ""
+    application_types: tuple[str, ...] = ()
+    postgres_dsn: str = ""
+    postgres_table: str = DEFAULT_POSTGRES_TABLE
+    owner_user_id: str = "anonymous"
+    owner_user_login: str = "anonymous"
 
 
 @dataclass(frozen=True)

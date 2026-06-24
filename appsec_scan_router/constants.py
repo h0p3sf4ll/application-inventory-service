@@ -8,7 +8,16 @@ DEFAULT_BRANCH_AGE_DAYS = 90
 DEFAULT_STORE_COUNTRY = "US"
 DEFAULT_STORE_TIMEOUT_SECONDS = 15
 DEFAULT_ACTIVITY_MODE = "contributors"
+DEFAULT_OUT_PREFIX = "appsec_inventory_service"
+DEFAULT_POSTGRES_TABLE = "appsec_inventory_assets"
+DEFAULT_POSTGRES_HOST = "localhost"
+DEFAULT_POSTGRES_PORT = 5432
+DEFAULT_POSTGRES_DATABASE = "postgres"
+DEFAULT_POSTGRES_USER = "postgres"
+DEFAULT_POSTGRES_PASSWORD = ""
 MISSING_REQUESTS_MESSAGE = "Missing dependency: requests. Install it with `python -m pip install -r requirements.txt`."
+MISSING_PSYCOPG_MESSAGE = "Missing dependency: psycopg. Install it with `python -m pip install 'psycopg[binary]>=3.2.0'`."
+MISSING_CRYPTOGRAPHY_MESSAGE = "Missing dependency: cryptography. Install it with `python -m pip install 'cryptography>=42.0.0'`."
 
 FALLBACK_BRANCH_PRIORITY = (
     ("production", 100),
@@ -78,6 +87,18 @@ KNOWN_INVENTORY_TYPES = (
 )
 
 TYPE_FIELDNAMES = tuple(f"type_{inventory_type}" for inventory_type in KNOWN_INVENTORY_TYPES)
+
+APPLICATION_TYPE_LABELS = {
+    "mobile_app": "Mobile app",
+    "web_app": "Web app",
+    "api_service": "API service",
+    "microservice": "Microservice",
+    "middleware": "Middleware",
+    "serverless": "Serverless",
+    "library": "Library",
+    "infrastructure": "Infrastructure",
+    "ai_enabled": "AI-enabled",
+}
 
 STORE_FIELDNAMES = (
     "store_lookup_status",

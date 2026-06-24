@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TextIO
 
 from openpyxl import Workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
@@ -227,7 +228,7 @@ class StreamingReportWriter:
         if self._workbook is None:
             return
         sheet = self._sheets.get(result.get("branch_age_bucket")) or self._sheets[self.older_sheet_name]
-        sheet.append([result.get(field, "") for field in CSV_FIELDNAMES])
+        sheet.append([workbook_cell_value(result.get(field, "")) for field in CSV_FIELDNAMES])
 
     def _save_workbook(self) -> None:
         if self._workbook is None:
@@ -260,3 +261,9 @@ def sonarqube_project_row(result: dict[str, object]) -> dict[str, object]:
         "inventory_types": result.get("inventory_types", ""),
         "categories": result.get("categories", ""),
     }
+
+
+def workbook_cell_value(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    return ILLEGAL_CHARACTERS_RE.sub("", value)

@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 from .constants import DEFAULT_COMMIT_PAGE_SIZE, MISSING_REQUESTS_MESSAGE
 from .models import AzureDevOpsError
+from .azure import provider_connection_message
 from .utils import clean_value
 
 try:
@@ -37,12 +38,13 @@ class GitHubEnterpriseClient:
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "appsec-inventory-service/1.3",
+            "User-Agent": "appsec-inventory-service/1.5",
         }
         self._retry = Retry(
             total=5,
-            connect=3,
+            connect=0,
             read=3,
+            other=0,
             backoff_factor=0.6,
             status_forcelist=(429, 500, 502, 503, 504),
             allowed_methods=frozenset({"GET"}),
@@ -74,8 +76,14 @@ class GitHubEnterpriseClient:
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path}"
 
+    def get(self, url: str, params: dict[str, Any] | None = None) -> Any:
+        try:
+            return self.session.get(url, params=params, timeout=self.timeout_seconds)
+        except requests.RequestException as exc:
+            raise AzureDevOpsError(provider_connection_message("GitHub Enterprise", url, exc)) from exc
+
     def get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        response = self.session.get(self._url(path), params=params, timeout=self.timeout_seconds)
+        response = self.get(self._url(path), params)
         self._raise_for_status(response)
         try:
             return response.json()
@@ -99,7 +107,7 @@ class GitHubEnterpriseClient:
         request_params = dict(params or {})
 
         while next_url:
-            response = self.session.get(next_url, params=request_params, timeout=self.timeout_seconds)
+            response = self.get(next_url, request_params)
             self._raise_for_status(response)
             data = response.json()
             if isinstance(data, list):
@@ -234,7 +242,7 @@ class GitHubEnterpriseClient:
         request_params = params
 
         while next_url:
-            response = self.session.get(next_url, params=request_params, timeout=self.timeout_seconds)
+            response = self.get(next_url, request_params)
             self._raise_for_status(response)
             batch = response.json()
             if not isinstance(batch, list) or not batch:

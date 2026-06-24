@@ -73,6 +73,8 @@ Scan every project in an organization:
 appsec-inventory-service \
   --provider azure-devops \
   --org FabrikamCloud \
+  --application-type mobile_app \
+  --application-type ai_enabled \
   --out-dir reports
 ```
 
@@ -87,6 +89,25 @@ appsec-inventory-service \
 ```
 
 `azure-devops` is the default provider, so `--provider azure-devops` can be omitted.
+
+Use `--application-type` to narrow results. It can be repeated and defaults to all supported types when omitted.
+Valid values are `mobile_app`, `web_app`, `api_service`, `microservice`, `middleware`, `serverless`, `library`,
+`infrastructure`, and `ai_enabled`.
+
+Stream results into a local PostgreSQL table while reports are being written:
+
+```bash
+export APPSEC_INVENTORY_POSTGRES_DSN="postgresql://postgres:postgres@localhost:5432/postgres"
+
+appsec-inventory-service \
+  --provider azure-devops \
+  --org FabrikamCloud \
+  --out-dir reports \
+  --postgres-table appsec_inventory_assets
+```
+
+Those PostgreSQL credentials are for local development only. Use a secret manager or environment-level secret injection
+for shared environments.
 
 ## GitHub Enterprise
 
@@ -135,6 +156,7 @@ docker run --rm \
   -p 48731:48731 \
   -e ADO_PAT="$ADO_PAT" \
   -e GITHUB_TOKEN="$GITHUB_TOKEN" \
+  -e APPSEC_INVENTORY_POSTGRES_PASSWORD=postgres \
   -v "$PWD/reports:/reports" \
   appsec-inventory-service \
   ui \
@@ -144,6 +166,19 @@ docker run --rm \
 ```
 
 Open `http://localhost:48731`.
+
+PostgreSQL sync is enabled by default in the UI. For local development from Docker, use:
+
+| Field | Local development value |
+| --- | --- |
+| Host | `host.docker.internal` |
+| Port | `5432` |
+| Database | `postgres` |
+| User | `postgres` |
+| Password | `postgres` |
+| Table | `appsec_inventory_assets` |
+
+The local password can be supplied as `APPSEC_INVENTORY_POSTGRES_PASSWORD=postgres` so it is not stored in the browser.
 
 Run a CLI scan in the container:
 
@@ -180,10 +215,13 @@ The image runs as a non-root user and writes reports to `/reports`.
 appsec-inventory-service-ui --host 127.0.0.1 --port 48731 --reports-dir reports
 ```
 
-The UI includes provider selection, token entry, whole-organization scans, confidence controls, activity mode,
-branch age cutoff, worker tuning, store lookup, live logs, stop control, and report downloads. Required and optional
-fields are labeled, scan defaults are shown inline, and the active scan panel shows live progress with an ETA once
-enough progress data exists.
+The UI includes provider selection, GitHub sign-in, secure token saving, whole-organization scans, confidence controls,
+activity mode, application type filters, branch age cutoff, worker tuning, mobile-only store lookup, live logs, stop
+control, a scan status bar, and a dedicated reports tab. Required and optional fields are labeled, scan defaults are
+shown inline, and ETA is calculated from structured scanner progress events.
+
+The report prefix is fixed to `appsec_inventory_service`. It controls generated report names only; it is not an
+application type, scan target, or service instance name.
 
 Preferred environment variables:
 
@@ -192,8 +230,23 @@ Preferred environment variables:
 | `APPSEC_INVENTORY_SERVICE_UI_HOST` | Default UI host |
 | `APPSEC_INVENTORY_SERVICE_UI_PORT` | Default UI port |
 | `APPSEC_INVENTORY_SERVICE_REPORTS_DIR` | Default reports directory |
+| `APPSEC_INVENTORY_SERVICE_GITHUB_CLIENT_ID` | GitHub OAuth app client ID for UI sign-in |
+| `APPSEC_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET` | GitHub OAuth app secret for UI sign-in |
+| `APPSEC_INVENTORY_SERVICE_SECRET_KEY` | Optional Fernet key for encrypted token storage |
+| `APPSEC_INVENTORY_SERVICE_STATE_DIR` | Optional secure storage directory |
+| `APPSEC_INVENTORY_POSTGRES_PASSWORD` | Server-side PostgreSQL password used by the UI DSN builder |
 
 Legacy `APPSEC_SCAN_ROUTER_*` UI variables are still accepted.
+
+For GitHub sign-in, create a GitHub OAuth app and set the callback URL to:
+
+```text
+http://localhost:48731/api/auth/github/callback
+```
+
+Saved provider tokens are encrypted at rest under the UI state directory and are never returned to the browser. In
+shared deployments, set `APPSEC_INVENTORY_SERVICE_SECRET_KEY` from a secret manager instead of relying on the generated
+local key file.
 
 ## Branch Selection
 
@@ -341,7 +394,8 @@ SonarQube Scanner, SCA scanners, or custom security checks.
 | `--base-url` | env | GitHub Enterprise API URL |
 | `--pat` | env | Provider token; prefer `ADO_PAT`, `GITHUB_TOKEN`, or `GHE_TOKEN` |
 | `--out-dir` | current directory | Output directory |
-| `--out-prefix` | `appsec_inventory_service` | Output filename prefix |
+| `--out-prefix` | `appsec_inventory_service` | Output filename prefix, not the service name |
+| `--application-type` | all | Repeatable inventory type filter |
 | `--max-workers` | `8` | Concurrent repository preparation tasks |
 | `--branch-workers` | `16` | Concurrent branch scans |
 | `--content-workers` | `16` | Concurrent selected-file fetches |
@@ -353,7 +407,14 @@ SonarQube Scanner, SCA scanners, or custom security checks.
 | `--store-lookup` | disabled | Enable public app store enrichment |
 | `--store-country` | `US` | Two-letter store country code |
 | `--store-timeout` | `15` | Store lookup timeout in seconds |
+| `--postgres-dsn` | env | PostgreSQL DSN for streaming upserts; prefer `APPSEC_INVENTORY_POSTGRES_DSN` |
+| `--postgres-table` | `appsec_inventory_assets` | Target table for inventory upserts |
 | `--verbose` | disabled | Debug logging |
+
+When PostgreSQL sync is enabled, the service creates the table if needed and upserts rows by
+`provider`, `organization`, `project`, `repo_name`, and `branch_name`. Rows include `owner_user_id` and
+`owner_user_login` so UI-driven scans can be filtered by signed-in user. The typed columns cover common reporting and
+scanner-routing fields, and the complete scanner row is retained in `row_data` as JSONB.
 
 ## Performance Guidance
 
@@ -399,11 +460,14 @@ config = ScanConfig(
     max_commits_per_repo=2000,
     timeout_seconds=30,
     min_confidence="medium",
+    application_types=("mobile_app", "ai_enabled"),
     branch_age_days=90,
     activity_mode="contributors",
     store_lookup=True,
     store_country="US",
     store_timeout_seconds=15,
+    postgres_dsn="postgresql://postgres:postgres@localhost:5432/postgres",
+    postgres_table="appsec_inventory_assets",
 )
 
 results, csv_path, json_path, xlsx_path = scan_to_reports(config)

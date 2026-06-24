@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "appsec-scan-router"
-version = "1.3.3"
+version = "1.5.0"
 description = "SDK, CLI, UI, and scanner target manifests for application inventory across Azure DevOps and GitHub Enterprise"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,7 +31,7 @@ keywords = [
     "app-store",
     "google-play",
 ]
-dependencies = ["openpyxl>=3.1.0", "requests>=2.31.0"]
+dependencies = ["cryptography>=42.0.0", "openpyxl>=3.1.0", "psycopg[binary]>=3.2.0", "requests>=2.31.0"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Environment :: Console",

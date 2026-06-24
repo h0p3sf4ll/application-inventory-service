@@ -12,12 +12,15 @@ from .constants import (
     DEFAULT_BRANCH_WORKERS,
     DEFAULT_CONTENT_WORKERS,
     DEFAULT_MAX_WORKERS,
+    DEFAULT_OUT_PREFIX,
+    DEFAULT_POSTGRES_TABLE,
     DEFAULT_STORE_COUNTRY,
     DEFAULT_STORE_TIMEOUT_SECONDS,
     DEFAULT_TIMEOUT_SECONDS,
+    KNOWN_INVENTORY_TYPES,
 )
 from .models import ScanConfig
-from .scanner import scan_to_reports
+from .scanner import normalize_application_types, scan_to_reports, store_lookup_allowed
 
 
 def parse_args(argv: list[str]) -> ScanConfig:
@@ -51,8 +54,20 @@ def parse_args(argv: list[str]) -> ScanConfig:
     )
     parser.add_argument(
         "--out-prefix",
-        default="appsec_inventory_service",
-        help="Output file prefix. Defaults to appsec_inventory_service.",
+        default=DEFAULT_OUT_PREFIX,
+        help=f"Report file prefix. Defaults to {DEFAULT_OUT_PREFIX}.",
+    )
+    parser.add_argument(
+        "--application-type",
+        "--inventory-type",
+        action="append",
+        choices=KNOWN_INVENTORY_TYPES,
+        default=[],
+        dest="application_types",
+        help=(
+            "Application type to include in reports. May be repeated. "
+            f"Defaults to all types. Valid values: {', '.join(KNOWN_INVENTORY_TYPES)}."
+        ),
     )
     parser.add_argument(
         "--max-workers",
@@ -127,11 +142,28 @@ def parse_args(argv: list[str]) -> ScanConfig:
         default=DEFAULT_STORE_TIMEOUT_SECONDS,
         help=f"Store lookup HTTP timeout in seconds. Defaults to {DEFAULT_STORE_TIMEOUT_SECONDS}.",
     )
+    parser.add_argument(
+        "--postgres-dsn",
+        default=os.getenv("APPSEC_INVENTORY_POSTGRES_DSN", ""),
+        help=(
+            "PostgreSQL DSN for streaming upserts, for example "
+            "postgresql://user:password@localhost:5432/postgres. "
+            "Prefer APPSEC_INVENTORY_POSTGRES_DSN for sensitive values."
+        ),
+    )
+    parser.add_argument(
+        "--postgres-table",
+        default=os.getenv("APPSEC_INVENTORY_POSTGRES_TABLE", DEFAULT_POSTGRES_TABLE),
+        help=f"PostgreSQL target table for inventory upserts. Defaults to {DEFAULT_POSTGRES_TABLE}.",
+    )
+    parser.add_argument("--owner-user-id", default=os.getenv("APPSEC_INVENTORY_OWNER_USER_ID", "anonymous"), help=argparse.SUPPRESS)
+    parser.add_argument("--owner-user-login", default=os.getenv("APPSEC_INVENTORY_OWNER_USER_LOGIN", "anonymous"), help=argparse.SUPPRESS)
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging.")
     args = parser.parse_args(argv)
 
     configure_logging(args.verbose)
-    validate_args(args)
+    application_types = normalize_application_types(args.application_types)
+    validate_args(args, application_types)
     token = provider_token(args)
     target_project = provider_project(args)
 
@@ -154,10 +186,15 @@ def parse_args(argv: list[str]) -> ScanConfig:
         store_timeout_seconds=args.store_timeout,
         provider=args.provider,
         base_url=args.base_url,
+        application_types=application_types,
+        postgres_dsn=args.postgres_dsn,
+        postgres_table=args.postgres_table,
+        owner_user_id=args.owner_user_id,
+        owner_user_login=args.owner_user_login,
     )
 
 
-def validate_args(args: argparse.Namespace) -> None:
+def validate_args(args: argparse.Namespace, application_types: tuple[str, ...]) -> None:
     if args.project and args.repo and args.project != args.repo:
         raise SystemExit("--project and --repo cannot refer to different repositories.")
     if not provider_token(args):
@@ -181,6 +218,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--store-country must be a two-letter country code.")
     if args.store_timeout < 1:
         raise SystemExit("--store-timeout must be at least 1.")
+    if args.store_lookup and not store_lookup_allowed(application_types):
+        raise SystemExit("--store-lookup only applies when scanning mobile apps or all application types.")
 
 
 def provider_project(args: argparse.Namespace) -> str | None:
