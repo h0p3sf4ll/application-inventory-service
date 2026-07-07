@@ -280,6 +280,17 @@ AI_VECTOR_CONFIG_PATTERNS = (
     r"\bweaviate\b",
 )
 
+AI_ML_CONFIG_PATTERNS = (
+    r"\bmlflow\.",
+    r"\bmlflow\s*:",
+    r"\bonnxruntime\b",
+    r"\btensorflow(?:_serving|[.-]serving)?\b",
+    r"\btorchserve\b",
+    r"\bsagemaker(?:runtime)?\b",
+    r"\bmodel_uri\b",
+    r"\bmodel_path\b",
+)
+
 AI_CONTAINER_RUNTIME_TOKENS = (
     "ghcr.io/huggingface/text-generation-inference",
     "ollama/ollama",
@@ -735,6 +746,8 @@ def detect_application_config_evidence(path: str, content: str) -> list[Detectio
         evidence.extend(ai_capability_evidence(path, "llm_integration", "AI or LLM runtime configuration", 3))
     if any(re.search(pattern, lowered) for pattern in AI_VECTOR_CONFIG_PATTERNS):
         evidence.extend(ai_capability_evidence(path, "vector_search", "Vector search runtime configuration", 2))
+    if any(re.search(pattern, lowered) for pattern in AI_ML_CONFIG_PATTERNS):
+        evidence.extend(ai_capability_evidence(path, "ml_inference", "ML model runtime configuration", 3))
     return evidence
 
 
@@ -788,11 +801,14 @@ def collect_ai_dependency_evidence(
 ) -> list[DetectionEvidence]:
     evidence: list[DetectionEvidence] = []
     matched_dependencies: list[str] = []
+    matched_ml_dependencies: list[str] = []
     for category, detail, dependency_names, weight in AI_DEPENDENCY_RULES:
         matches = matcher(dependency_names)
         if not matches:
             continue
         matched_dependencies.extend(matches)
+        if category == "ml_inference":
+            matched_ml_dependencies.extend(matches)
         evidence.append(DetectionEvidence(category, path, f"{source_label} {detail}: {format_matches(matches)}", weight))
     if evidence:
         evidence.insert(
@@ -804,14 +820,27 @@ def collect_ai_dependency_evidence(
                 3,
             ),
         )
+    if matched_ml_dependencies:
+        evidence.insert(
+            1,
+            DetectionEvidence(
+                "ml_enabled",
+                path,
+                f"{source_label} ML dependency evidence: {format_matches(matched_ml_dependencies)}",
+                3,
+            ),
+        )
     return evidence
 
 
 def ai_capability_evidence(path: str, category: str, detail: str, weight: int) -> list[DetectionEvidence]:
-    return [
+    evidence = [
         DetectionEvidence("ai_enabled", path, detail, 2),
         DetectionEvidence(category, path, detail, weight),
     ]
+    if category == "ml_inference":
+        evidence.insert(1, DetectionEvidence("ml_enabled", path, detail, 2))
+    return evidence
 
 
 def format_matches(matches: Iterable[str]) -> str:

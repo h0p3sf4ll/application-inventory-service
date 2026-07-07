@@ -1,0 +1,3 @@
+include Dockerfile
+include .env.example
+recursive-include docs *.md *.json

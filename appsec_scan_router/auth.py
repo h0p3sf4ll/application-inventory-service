@@ -25,7 +25,7 @@ except ImportError:
     InvalidToken = Exception
 
 
-SESSION_COOKIE_NAME = "appsec_inventory_session"
+SESSION_COOKIE_NAME = "application_inventory_session"
 SESSION_TTL_SECONDS = 43200
 OAUTH_STATE_TTL_SECONDS = 600
 PROVIDER_NAMES = ("azure-devops", "github-enterprise")
@@ -73,13 +73,13 @@ class GitHubOAuthConfig:
     @classmethod
     def from_env(cls) -> "GitHubOAuthConfig":
         return cls(
-            client_id=clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_GITHUB_CLIENT_ID")),
-            client_secret=clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET")),
-            authorize_url=clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_GITHUB_AUTHORIZE_URL"))
+            client_id=env_value("APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_ID", "APPSEC_INVENTORY_SERVICE_GITHUB_CLIENT_ID"),
+            client_secret=env_value("APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET", "APPSEC_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET"),
+            authorize_url=env_value("APPLICATION_INVENTORY_SERVICE_GITHUB_AUTHORIZE_URL", "APPSEC_INVENTORY_SERVICE_GITHUB_AUTHORIZE_URL")
             or cls.authorize_url,
-            token_url=clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_GITHUB_TOKEN_URL")) or cls.token_url,
-            user_url=clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_GITHUB_USER_URL")) or cls.user_url,
-            scope=clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_GITHUB_SCOPE")) or cls.scope,
+            token_url=env_value("APPLICATION_INVENTORY_SERVICE_GITHUB_TOKEN_URL", "APPSEC_INVENTORY_SERVICE_GITHUB_TOKEN_URL") or cls.token_url,
+            user_url=env_value("APPLICATION_INVENTORY_SERVICE_GITHUB_USER_URL", "APPSEC_INVENTORY_SERVICE_GITHUB_USER_URL") or cls.user_url,
+            scope=env_value("APPLICATION_INVENTORY_SERVICE_GITHUB_SCOPE", "APPSEC_INVENTORY_SERVICE_GITHUB_SCOPE") or cls.scope,
         )
 
     @property
@@ -99,13 +99,13 @@ class GoogleOAuthConfig:
     @classmethod
     def from_env(cls) -> "GoogleOAuthConfig":
         return cls(
-            client_id=clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_GOOGLE_CLIENT_ID")),
-            client_secret=clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET")),
-            authorize_url=clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_GOOGLE_AUTHORIZE_URL"))
+            client_id=env_value("APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_ID", "APPSEC_INVENTORY_SERVICE_GOOGLE_CLIENT_ID"),
+            client_secret=env_value("APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET", "APPSEC_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET"),
+            authorize_url=env_value("APPLICATION_INVENTORY_SERVICE_GOOGLE_AUTHORIZE_URL", "APPSEC_INVENTORY_SERVICE_GOOGLE_AUTHORIZE_URL")
             or cls.authorize_url,
-            token_url=clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_GOOGLE_TOKEN_URL")) or cls.token_url,
-            user_url=clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_GOOGLE_USER_URL")) or cls.user_url,
-            scope=clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_GOOGLE_SCOPE")) or cls.scope,
+            token_url=env_value("APPLICATION_INVENTORY_SERVICE_GOOGLE_TOKEN_URL", "APPSEC_INVENTORY_SERVICE_GOOGLE_TOKEN_URL") or cls.token_url,
+            user_url=env_value("APPLICATION_INVENTORY_SERVICE_GOOGLE_USER_URL", "APPSEC_INVENTORY_SERVICE_GOOGLE_USER_URL") or cls.user_url,
+            scope=env_value("APPLICATION_INVENTORY_SERVICE_GOOGLE_SCOPE", "APPSEC_INVENTORY_SERVICE_GOOGLE_SCOPE") or cls.scope,
         )
 
     @property
@@ -123,10 +123,10 @@ class TestLoginConfig:
     @classmethod
     def from_env(cls) -> "TestLoginConfig":
         return cls(
-            enabled=clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_TEST_LOGIN_ENABLED")).lower() in TRUE_VALUES,
-            user_id=clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_TEST_USER_ID")) or cls.user_id,
-            login=clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_TEST_USER_LOGIN")) or cls.login,
-            name=clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_TEST_USER_NAME")) or cls.name,
+            enabled=env_value("APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED", "APPSEC_INVENTORY_SERVICE_TEST_LOGIN_ENABLED").lower() in TRUE_VALUES,
+            user_id=env_value("APPLICATION_INVENTORY_SERVICE_TEST_USER_ID", "APPSEC_INVENTORY_SERVICE_TEST_USER_ID") or cls.user_id,
+            login=env_value("APPLICATION_INVENTORY_SERVICE_TEST_USER_LOGIN", "APPSEC_INVENTORY_SERVICE_TEST_USER_LOGIN") or cls.login,
+            name=env_value("APPLICATION_INVENTORY_SERVICE_TEST_USER_NAME", "APPSEC_INVENTORY_SERVICE_TEST_USER_NAME") or cls.name,
         )
 
     def user(self) -> AuthenticatedUser:
@@ -149,7 +149,7 @@ class CredentialStore:
         self.fernet = Fernet(self.encryption_key())
 
     def encryption_key(self) -> bytes:
-        env_key = clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_SECRET_KEY"))
+        env_key = env_value("APPLICATION_INVENTORY_SERVICE_SECRET_KEY", "APPSEC_INVENTORY_SERVICE_SECRET_KEY")
         if env_key:
             return env_key.encode("utf-8")
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -318,7 +318,7 @@ class GitHubOAuthService:
                     "Accept": "application/vnd.github+json",
                     "Authorization": f"Bearer {access_token}",
                     "X-GitHub-Api-Version": "2022-11-28",
-                    "User-Agent": "appsec-inventory-service/1.5.1",
+                    "User-Agent": "application-inventory-service/1.6.0",
                 },
                 timeout=20,
             )
@@ -421,7 +421,7 @@ class GoogleOAuthService:
                 headers={
                     "Accept": "application/json",
                     "Authorization": f"Bearer {access_token}",
-                    "User-Agent": "appsec-inventory-service/1.5.1",
+                    "User-Agent": "application-inventory-service/1.6.0",
                 },
                 timeout=20,
             )
@@ -535,8 +535,16 @@ class AuthManager:
 
 
 def auth_state_dir(reports_root: Path) -> Path:
-    configured = clean_value(os.getenv("APPSEC_INVENTORY_SERVICE_STATE_DIR"))
-    return Path(configured).expanduser() if configured else reports_root / ".appsec_inventory_service"
+    configured = env_value("APPLICATION_INVENTORY_SERVICE_STATE_DIR", "APPSEC_INVENTORY_SERVICE_STATE_DIR")
+    return Path(configured).expanduser() if configured else reports_root / ".application_inventory_service"
+
+
+def env_value(*names: str) -> str:
+    for name in names:
+        value = clean_value(os.getenv(name))
+        if value:
+            return value
+    return ""
 
 
 def provider_name(value: Any) -> str:

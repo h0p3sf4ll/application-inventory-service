@@ -8,8 +8,9 @@ DEFAULT_BRANCH_AGE_DAYS = 90
 DEFAULT_STORE_COUNTRY = "US"
 DEFAULT_STORE_TIMEOUT_SECONDS = 15
 DEFAULT_ACTIVITY_MODE = "contributors"
-DEFAULT_OUT_PREFIX = "appsec_inventory_service"
-DEFAULT_POSTGRES_TABLE = "appsec_inventory_assets"
+DEFAULT_OUT_PREFIX = "application_inventory_service"
+DEFAULT_POSTGRES_SCHEMA = "application_inventory"
+DEFAULT_POSTGRES_TABLE = "application_inventory_assets"
 DEFAULT_POSTGRES_HOST = "localhost"
 DEFAULT_POSTGRES_PORT = 5432
 DEFAULT_POSTGRES_DATABASE = "postgres"
@@ -65,6 +66,7 @@ KNOWN_CATEGORIES = (
     "containerized_service",
     "infrastructure_as_code",
     "ai_enabled",
+    "ml_enabled",
     "llm_integration",
     "ai_orchestration",
     "ml_inference",
@@ -84,6 +86,7 @@ KNOWN_INVENTORY_TYPES = (
     "library",
     "infrastructure",
     "ai_enabled",
+    "ml_enabled",
 )
 
 TYPE_FIELDNAMES = tuple(f"type_{inventory_type}" for inventory_type in KNOWN_INVENTORY_TYPES)
@@ -98,6 +101,7 @@ APPLICATION_TYPE_LABELS = {
     "library": "Library",
     "infrastructure": "Infrastructure",
     "ai_enabled": "AI-enabled",
+    "ml_enabled": "ML-enabled",
 }
 
 STORE_FIELDNAMES = (
@@ -183,6 +187,7 @@ CONTENT_FILES_TO_FETCH: tuple[str, ...] = (
 CONTENT_FILE_SUFFIXES = tuple(name.lower() for name in CONTENT_FILES_TO_FETCH)
 
 CSV_FIELDNAMES = (
+    "organization",
     "project",
     "repo_name",
     "branch_name",
@@ -203,6 +208,7 @@ CSV_FIELDNAMES = (
     "mobile_identifier",
     "mobile_identifier_source",
     "mobile_identifier_status",
+    "branch_contributing_developers",
     "contributing_developers",
     "last_updated",
     "confidence",
@@ -215,6 +221,7 @@ CSV_FIELDNAMES = (
 )
 
 SCANNER_TARGET_FIELDNAMES = (
+    "organization",
     "project",
     "repo_name",
     "branch_name",
@@ -226,6 +233,7 @@ SCANNER_TARGET_FIELDNAMES = (
     "inventory_types",
     "primary_language",
     "categories",
+    "branch_contributing_developers",
     "confidence",
     "score",
     "semgrep_target",

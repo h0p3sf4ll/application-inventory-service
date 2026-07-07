@@ -1,0 +1,154 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:45da7475-22a6-4f36-8e2b-01234ef4a58c",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-07-07T00:00:00Z",
+    "tools": [
+      {
+        "vendor": "Application Inventory Service",
+        "name": "manual-release-sbom",
+        "version": "1.0"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "name": "application-inventory-service",
+      "version": "1.6.0",
+      "purl": "pkg:pypi/application-inventory-service@1.6.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "cryptography",
+      "version": "49.0.0",
+      "purl": "pkg:pypi/cryptography@49.0.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "openpyxl",
+      "version": "3.1.5",
+      "purl": "pkg:pypi/openpyxl@3.1.5",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "psycopg",
+      "version": "3.3.4",
+      "purl": "pkg:pypi/psycopg@3.3.4",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "psycopg-binary",
+      "version": "3.3.4",
+      "purl": "pkg:pypi/psycopg-binary@3.3.4",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "requests",
+      "version": "2.34.2",
+      "purl": "pkg:pypi/requests@2.34.2",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "certifi",
+      "version": "2026.6.17",
+      "purl": "pkg:pypi/certifi@2026.6.17",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "charset-normalizer",
+      "version": "3.4.7",
+      "purl": "pkg:pypi/charset-normalizer@3.4.7",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "idna",
+      "version": "3.18",
+      "purl": "pkg:pypi/idna@3.18",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "urllib3",
+      "version": "2.7.0",
+      "purl": "pkg:pypi/urllib3@2.7.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "et_xmlfile",
+      "version": "2.0.0",
+      "purl": "pkg:pypi/et_xmlfile@2.0.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "cffi",
+      "version": "2.0.0",
+      "purl": "pkg:pypi/cffi@2.0.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pycparser",
+      "version": "3.0",
+      "purl": "pkg:pypi/pycparser@3.0",
+      "scope": "required"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:pypi/application-inventory-service@1.6.0",
+      "dependsOn": [
+        "pkg:pypi/cryptography@49.0.0",
+        "pkg:pypi/openpyxl@3.1.5",
+        "pkg:pypi/psycopg@3.3.4",
+        "pkg:pypi/psycopg-binary@3.3.4",
+        "pkg:pypi/requests@2.34.2"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/requests@2.34.2",
+      "dependsOn": [
+        "pkg:pypi/certifi@2026.6.17",
+        "pkg:pypi/charset-normalizer@3.4.7",
+        "pkg:pypi/idna@3.18",
+        "pkg:pypi/urllib3@2.7.0"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/openpyxl@3.1.5",
+      "dependsOn": [
+        "pkg:pypi/et_xmlfile@2.0.0"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/cryptography@49.0.0",
+      "dependsOn": [
+        "pkg:pypi/cffi@2.0.0"
+      ]
+    },
+    {
+      "ref": "pkg:pypi/cffi@2.0.0",
+      "dependsOn": [
+        "pkg:pypi/pycparser@3.0"
+      ]
+    }
+  ]
+}

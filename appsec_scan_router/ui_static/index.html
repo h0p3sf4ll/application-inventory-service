@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>AppSec Inventory Service</title>
+    <title>Application Inventory Service</title>
     <link rel="stylesheet" href="/static/styles.css">
   </head>
   <body class="login-mode">
@@ -11,7 +11,7 @@
       <section class="login-brand">
         <div class="login-brand-copy">
           <p class="eyebrow">Application inventory</p>
-          <h1>AppSec Inventory Service</h1>
+          <h1>Application Inventory Service</h1>
           <p>Trace source assets, ownership, and scanner-ready targets from one controlled workspace.</p>
         </div>
       </section>
@@ -57,7 +57,7 @@
       <header class="topbar">
         <div>
           <p class="eyebrow">Application inventory</p>
-          <h1>AppSec Inventory Service</h1>
+          <h1>Application Inventory Service</h1>
         </div>
         <div class="topbar-actions">
           <div class="auth-card" id="authPanel">
@@ -70,31 +70,39 @@
         </div>
       </header>
 
-      <section class="layout">
-        <form class="panel form-panel" id="scanForm">
-          <div class="section-heading">
-            <h2>Source</h2>
-            <span class="status-chip idle" id="formStatus">Ready</span>
-          </div>
+      <nav class="app-nav" aria-label="Application pages" role="tablist">
+        <button class="tab-button active" type="button" data-view="setupView" role="tab" aria-controls="setupView" aria-selected="true">Scan setup</button>
+        <button class="tab-button" type="button" data-view="runsView" role="tab" aria-controls="runsView" aria-selected="false">Runs</button>
+        <button class="tab-button" type="button" data-view="reportsView" role="tab" aria-controls="reportsView" aria-selected="false">Reports</button>
+        <button class="tab-button" type="button" data-view="databaseView" role="tab" aria-controls="databaseView" aria-selected="false">Database</button>
+      </nav>
 
-          <div class="segmented" role="radiogroup" aria-label="Provider">
-            <label>
-              <input type="radio" name="provider" value="azure-devops" checked>
-              <span>Azure DevOps</span>
-            </label>
-            <label>
-              <input type="radio" name="provider" value="github-enterprise">
-              <span>GitHub Enterprise</span>
-            </label>
-          </div>
+      <section class="layout">
+        <form class="page-form" id="scanForm">
+          <section class="panel form-panel tab-view active" id="setupView" role="tabpanel">
+            <div class="section-heading">
+              <h2>Source</h2>
+              <span class="status-chip idle" id="formStatus">Ready</span>
+            </div>
+
+            <div class="segmented" role="radiogroup" aria-label="Provider">
+              <label>
+                <input type="radio" name="provider" value="azure-devops" checked>
+                <span>Azure DevOps</span>
+              </label>
+              <label>
+                <input type="radio" name="provider" value="github-enterprise">
+                <span>GitHub Enterprise</span>
+              </label>
+            </div>
 
           <div class="field-grid">
             <label>
               <span class="label-line">
                 <span>Organization</span>
-                <span class="field-badge required">Required</span>
+                <span class="field-badge required" id="orgRequirementBadge">Required unless using org PATs</span>
               </span>
-              <input name="org" autocomplete="organization" placeholder="FabrikamCloud" required>
+              <input name="org" autocomplete="organization" placeholder="FabrikamCloud">
             </label>
             <label class="provider-azure">
               <span class="label-line">
@@ -117,6 +125,31 @@
               </span>
               <input name="baseUrl" placeholder="https://github.example.com/api/v3">
             </label>
+            <div class="provider-azure full ado-org-builder">
+              <input name="adoOrgPats" type="hidden">
+              <div class="label-line">
+                <span>Azure organizations</span>
+                <span class="field-badge optional">Optional</span>
+              </div>
+              <div class="ado-org-inputs">
+                <label>
+                  <span class="label-line">
+                    <span>Organization</span>
+                    <span class="field-badge optional">Optional</span>
+                  </span>
+                  <input name="adoOrgName" autocomplete="off" placeholder="FabrikamCloud">
+                </label>
+                <label>
+                  <span class="label-line">
+                    <span>PAT</span>
+                    <span class="field-badge optional">Optional</span>
+                  </span>
+                  <input name="adoOrgPat" type="password" autocomplete="off" placeholder="Token for this organization">
+                </label>
+                <button class="ghost" id="addAdoOrgPat" type="button">Add</button>
+              </div>
+              <div class="ado-org-list" id="adoOrgPatList" aria-live="polite"></div>
+            </div>
             <div class="full secret-field">
               <label for="scanToken">
                 <span class="label-line">
@@ -136,6 +169,25 @@
                 </span>
               </label>
               <button class="ghost small hidden" id="forgetToken" type="button">Forget saved token</button>
+            </div>
+            <div class="full target-picker">
+              <input name="targetFilters" type="hidden">
+              <div class="target-picker-header">
+                <div>
+                  <span class="label-line">
+                    <span id="targetFilterTitle">Project filter</span>
+                    <span class="default-badge" id="targetFilterDefault">Default: all projects</span>
+                  </span>
+                  <small id="targetFilterSummary">No targets selected</small>
+                </div>
+                <div class="target-actions">
+                  <button class="ghost small" id="loadTargets" type="button">Load projects</button>
+                  <button class="ghost small" id="selectAllTargets" type="button" disabled>Select visible</button>
+                  <button class="ghost small" id="clearTargetFilters" type="button" disabled>Clear</button>
+                </div>
+              </div>
+              <input class="target-search" id="targetSearch" type="search" autocomplete="off" placeholder="Filter projects" disabled>
+              <div class="target-list" id="targetFilterList" aria-live="polite"></div>
             </div>
           </div>
 
@@ -186,6 +238,10 @@
                 <input name="applicationTypes" type="checkbox" value="ai_enabled">
                 <span>AI-enabled</span>
               </label>
+              <label class="type-option">
+                <input name="applicationTypes" type="checkbox" value="ml_enabled">
+                <span>ML-enabled</span>
+              </label>
             </div>
           </fieldset>
 
@@ -195,7 +251,7 @@
                 <span>Report prefix</span>
                 <span class="default-badge">Fixed default</span>
               </span>
-              <strong>appsec_inventory_service</strong>
+              <strong>application_inventory_service</strong>
             </div>
             <label>
               <span class="label-line">
@@ -211,11 +267,11 @@
             <label>
               <span class="label-line">
                 <span>Activity</span>
-                <span class="default-badge">Default: Latest</span>
+                <span class="default-badge">Default: Contributors</span>
               </span>
               <select name="activityMode">
-                <option value="latest" selected>Latest</option>
-                <option value="contributors">Contributors</option>
+                <option value="contributors" selected>Contributors</option>
+                <option value="latest">Latest</option>
               </select>
             </label>
             <label>
@@ -289,73 +345,88 @@
               </span>
             </label>
           </div>
+          </section>
 
-          <div class="section-heading compact">
-            <h2>Database</h2>
-            <span class="default-badge">Default: PostgreSQL on</span>
-          </div>
+          <section class="panel form-panel tab-view hidden" id="databaseView" role="tabpanel" hidden>
+            <div class="section-heading">
+              <h2>Database</h2>
+              <span class="default-badge">Default: PostgreSQL on</span>
+            </div>
 
-          <label class="toggle-row full">
-            <input name="postgresEnabled" type="checkbox" checked>
-            <span class="toggle-copy">
-              <span>Sync to PostgreSQL</span>
-              <small>Default on; rows are scoped by signed-in user</small>
-            </span>
-          </label>
+            <label class="toggle-row full">
+              <input name="postgresEnabled" type="checkbox" checked>
+              <span class="toggle-copy">
+                <span>Sync to PostgreSQL</span>
+                <small>Default on; rows are scoped by signed-in user</small>
+              </span>
+            </label>
 
-          <div class="field-grid database-fields hidden">
-            <label>
-              <span class="label-line">
-                <span>PostgreSQL host</span>
-                <span class="default-badge">Default: host.docker.internal</span>
-              </span>
-              <input name="postgresHost" value="host.docker.internal">
-            </label>
-            <label>
-              <span class="label-line">
-                <span>PostgreSQL port</span>
-                <span class="default-badge">Default: 5432</span>
-              </span>
-              <input name="postgresPort" type="number" min="1" max="65535" value="5432">
-            </label>
-            <label>
-              <span class="label-line">
-                <span>Database</span>
-                <span class="default-badge">Default: postgres</span>
-              </span>
-              <input name="postgresDatabase" value="postgres">
-            </label>
-            <label>
-              <span class="label-line">
-                <span>User</span>
-                <span class="default-badge">Default: postgres</span>
-              </span>
-              <input name="postgresUser" value="postgres">
-            </label>
-            <label>
-              <span class="label-line">
-                <span>Password</span>
-                <span class="field-badge optional">Optional</span>
-              </span>
-              <input name="postgresPassword" type="password" autocomplete="off" placeholder="Local dev: postgres">
-            </label>
-            <label>
-              <span class="label-line">
-                <span>Table</span>
-                <span class="default-badge">Default: appsec_inventory_assets</span>
-              </span>
-              <input name="postgresTable" value="appsec_inventory_assets">
-            </label>
-          </div>
+            <div class="field-grid database-fields hidden">
+              <label>
+                <span class="label-line">
+                  <span>PostgreSQL host</span>
+                  <span class="default-badge">Default: localhost</span>
+                </span>
+                <input name="postgresHost" value="localhost">
+              </label>
+              <label>
+                <span class="label-line">
+                  <span>PostgreSQL port</span>
+                  <span class="default-badge">Default: 5432</span>
+                </span>
+                <input name="postgresPort" type="number" min="1" max="65535" value="5432">
+              </label>
+              <label>
+                <span class="label-line">
+                  <span>Database</span>
+                  <span class="default-badge">Default: postgres</span>
+                </span>
+                <input name="postgresDatabase" value="postgres">
+              </label>
+              <label>
+                <span class="label-line">
+                  <span>User</span>
+                  <span class="default-badge">Default: postgres</span>
+                </span>
+                <input name="postgresUser" value="postgres">
+              </label>
+              <label>
+                <span class="label-line">
+                  <span>Password</span>
+                  <span class="field-badge optional">Optional</span>
+                </span>
+                <input name="postgresPassword" type="password" autocomplete="off" placeholder="Local dev: postgres">
+              </label>
+              <label>
+                <span class="label-line">
+                  <span>Schema</span>
+                  <span class="default-badge">Default: application_inventory</span>
+                </span>
+                <input name="postgresSchema" value="application_inventory">
+              </label>
+              <label>
+                <span class="label-line">
+                  <span>Flat table</span>
+                  <span class="default-badge">Default: application_inventory_assets</span>
+                </span>
+                <input name="postgresTable" value="application_inventory_assets">
+              </label>
+            </div>
+
+            <div class="database-actions">
+              <button class="ghost" id="checkDatabase" type="button">Check database</button>
+              <button class="ghost" id="exportDatabaseCsv" type="button">Export CSV</button>
+              <button class="ghost" id="exportDatabaseJson" type="button">Export JSON</button>
+            </div>
+            <div class="database-status" id="databaseStatus">
+              <strong>Not checked</strong>
+              <span>Schema: application_inventory</span>
+            </div>
+          </section>
         </form>
 
         <section class="workspace">
-          <nav class="view-tabs" aria-label="Workspace" role="tablist">
-            <button class="tab-button active" type="button" data-view="scanView" role="tab" aria-controls="scanView" aria-selected="true">Scan</button>
-            <button class="tab-button" type="button" data-view="reportsView" role="tab" aria-controls="reportsView" aria-selected="false">Reports</button>
-          </nav>
-
-          <section class="tab-view active" id="scanView" role="tabpanel">
+          <section class="tab-view hidden" id="runsView" role="tabpanel" hidden>
             <div class="panel hero-panel">
               <div class="metric-row">
                 <div>
@@ -395,7 +466,7 @@
                   <button class="danger" id="stopScan" type="button" disabled>Stop</button>
                 </div>
               </div>
-              <pre class="command-line" id="commandLine">appsec-inventory-service</pre>
+              <pre class="command-line" id="commandLine">application-inventory-service</pre>
             </div>
 
             <div class="work-grid scan-grid">

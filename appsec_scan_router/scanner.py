@@ -7,6 +7,7 @@ import time
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
 from contextlib import ExitStack
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -32,6 +33,7 @@ from .models import (
     RepoActivityMetadata,
     RepoScanTarget,
     ScanConfig,
+    SourceTargetFilter,
 )
 from .postgres import PostgresInventoryWriter
 from .reports import StreamingReportWriter
@@ -50,7 +52,7 @@ def scan_to_reports(config: ScanConfig) -> tuple[list[dict[str, Any]], Path, Pat
         LOGGER.info("Streaming JSON report to %s", writer.json_path)
         LOGGER.info("Streaming Excel report to %s", writer.xlsx_path)
         if postgres_writer:
-            LOGGER.info("Streaming PostgreSQL updates to table %s", config.postgres_table)
+            LOGGER.info("Streaming PostgreSQL updates to schema %s and table %s", config.postgres_schema, config.postgres_table)
 
         def write_result(result: dict[str, Any]) -> None:
             writer.write_result(result)
@@ -65,11 +67,32 @@ def scan(
     config: ScanConfig,
     on_result: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[dict[str, Any]]:
+    if config.provider == "azure-devops" and config.ado_org_pats:
+        results: list[dict[str, Any]] = []
+        start = time.monotonic()
+        for org_pat in config.ado_org_pats:
+            org_filters = target_filters_for_source(config.target_filters, org_pat.org)
+            if config.target_filters and not org_filters:
+                LOGGER.info("Skipping Azure DevOps organization without selected targets: %s", org_pat.org)
+                continue
+            LOGGER.info("Scanning Azure DevOps organization: %s", org_pat.org)
+            org_config = replace(config, org=org_pat.org, pat=org_pat.pat, ado_org_pats=(), target_filters=org_filters)
+            results.extend(scan_single_org(org_config, on_result=on_result))
+        results.sort(key=row_sort_key)
+        LOGGER.info("Finished multi-organization scan in %.1fs; found %s inventory branches", time.monotonic() - start, len(results))
+        return results
+    return scan_single_org(config, on_result=on_result)
+
+
+def scan_single_org(
+    config: ScanConfig,
+    on_result: Callable[[dict[str, Any]], None] | None = None,
+) -> list[dict[str, Any]]:
     start = time.monotonic()
     client = create_source_client(config)
     store_client = create_store_client(config)
     try:
-        targets = collect_targets(client, config.project)
+        targets = collect_targets(client, config.project, config.target_filters)
         LOGGER.info("Scanning resolved default or fallback branches for %s repositories", len(targets))
         if config.application_types:
             LOGGER.info("Filtering inventory to application types: %s", ", ".join(config.application_types))
@@ -232,7 +255,7 @@ def scan_branch_target(
 ) -> dict[str, Any] | None:
     return scan_branch(
         client=client,
-        target=RepoScanTarget(project_name=target.project_name, repo=target.repo),
+        target=RepoScanTarget(project_name=target.project_name, repo=target.repo, organization=target.organization),
         branch_name=target.branch_name,
         content_executor=content_executor,
         min_confidence_rank=min_confidence_rank,
@@ -314,6 +337,7 @@ def list_branch_targets(
             project_name=target.project_name,
             repo=repo,
             branch_name=branch_name,
+            organization=target.organization,
         )
     ]
 
@@ -419,7 +443,9 @@ def build_scan_row(
     primary_language = primary_language_for_branch(contents, paths, categories)
     scanner_target = scanner_target_ref(source_url, branch_name)
     sonarqube_project_key = sonar_project_key(target.project_name, repo.get("name", ""), branch_name)
+    branch_contributing_developers = "; ".join(activity.contributing_developers)
     return {
+        "organization": target.organization,
         "project": target.project_name,
         "repo_name": repo.get("name", ""),
         "branch_name": branch_name,
@@ -440,7 +466,8 @@ def build_scan_row(
         "mobile_identifier": metadata.identifier,
         "mobile_identifier_source": metadata.identifier_source,
         "mobile_identifier_status": identifier_status(metadata.identifier),
-        "contributing_developers": "; ".join(activity.contributing_developers),
+        "branch_contributing_developers": branch_contributing_developers,
+        "contributing_developers": branch_contributing_developers,
         "last_updated": activity.last_updated,
         "confidence": confidence,
         "score": score,
@@ -452,8 +479,9 @@ def build_scan_row(
     }
 
 
-def row_sort_key(row: dict[str, Any]) -> tuple[str, str, str]:
+def row_sort_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
     return (
+        str(row.get("organization", "")).lower(),
         str(row.get("project", "")).lower(),
         str(row.get("repo_name", "")).lower(),
         str(row.get("branch_name", "")).lower(),
@@ -462,12 +490,13 @@ def row_sort_key(row: dict[str, Any]) -> tuple[str, str, str]:
 
 def log_detected_result(result: dict[str, Any]) -> None:
     LOGGER.info(
-        "DETECTED asset=%s version=%s id=%s types=%s confidence=%s repo=%s/%s branch=%s age=%s categories=%s",
+        "DETECTED asset=%s version=%s id=%s types=%s confidence=%s repo=%s/%s/%s branch=%s age=%s categories=%s",
         result["inventory_name"] or "(unknown)",
         result["inventory_version"] or "(unknown)",
         result["mobile_identifier"] or "(not_applicable)",
         result["inventory_types"] or "(unknown)",
         result["confidence"],
+        result.get("organization", ""),
         result["project"],
         result["repo_name"],
         result["branch_name"],
@@ -736,6 +765,7 @@ def inventory_types_from_categories(categories: Iterable[str]) -> list[str]:
         types.append("infrastructure")
     if category_set & {
         "ai_enabled",
+        "ml_enabled",
         "llm_integration",
         "ai_orchestration",
         "ml_inference",
@@ -743,6 +773,8 @@ def inventory_types_from_categories(categories: Iterable[str]) -> list[str]:
         "ai_service_integration",
     }:
         types.append("ai_enabled")
+    if category_set & {"ml_enabled", "ml_inference"}:
+        types.append("ml_enabled")
     return [inventory_type for inventory_type in KNOWN_INVENTORY_TYPES if inventory_type in types]
 
 
@@ -805,7 +837,7 @@ def sonar_project_key(project_name: str, repo_name: str, branch_name: str) -> st
     raw = ":".join(part for part in (project_name, repo_name, branch_name) if part)
     cleaned = re.sub(r"[^A-Za-z0-9_.:-]+", "-", raw).strip(".:-_")
     if not cleaned:
-        return "appsec-inventory"
+        return "application-inventory"
     if cleaned.isdigit():
         return f"appsec-{cleaned}"
     return cleaned[:400]
@@ -986,8 +1018,14 @@ def fetch_contents(
     return contents
 
 
-def collect_targets(client: AzureDevOpsClient, project_name: str | None) -> list[RepoScanTarget]:
-    projects = [{"name": project_name}] if project_name else client.list_projects()
+def collect_targets(
+    client: AzureDevOpsClient | GitHubEnterpriseClient,
+    project_name: str | None,
+    target_filters: Iterable[SourceTargetFilter] = (),
+) -> list[RepoScanTarget]:
+    organization = source_organization(client)
+    project_names = selected_project_names(organization, project_name, target_filters)
+    projects = [{"name": name} for name in project_names] if project_names else client.list_projects()
     targets: list[RepoScanTarget] = []
     seen_repo_ids: set[str] = set()
 
@@ -1008,9 +1046,52 @@ def collect_targets(client: AzureDevOpsClient, project_name: str | None) -> list
             if not repo_id or repo_id in seen_repo_ids:
                 continue
             seen_repo_ids.add(repo_id)
-            targets.append(RepoScanTarget(project_name=name, repo=repo))
+            targets.append(RepoScanTarget(project_name=name, repo=repo, organization=organization))
 
     return targets
+
+
+def source_organization(client: AzureDevOpsClient) -> str:
+    return str(getattr(client, "org", "") or getattr(client, "owner", ""))
+
+
+def selected_project_names(
+    organization: str,
+    project_name: str | None,
+    target_filters: Iterable[SourceTargetFilter] = (),
+) -> list[str]:
+    filters = tuple(target_filters or ())
+    if filters:
+        return dedupe_values(
+            target_filter.project
+            for target_filter in filters
+            if target_filter_matches_source(target_filter.org, organization)
+        )
+    return [project_name] if project_name else []
+
+
+def target_filters_for_source(
+    target_filters: Iterable[SourceTargetFilter],
+    organization: str,
+) -> tuple[SourceTargetFilter, ...]:
+    return tuple(
+        target_filter
+        for target_filter in target_filters
+        if target_filter_matches_source(target_filter.org, organization)
+    )
+
+
+def target_filter_matches_source(filter_org: str, organization: str) -> bool:
+    return not filter_org or filter_org.lower() == organization.lower()
+
+
+def dedupe_values(values: Iterable[str]) -> list[str]:
+    deduped: dict[str, str] = {}
+    for value in values:
+        cleaned = clean_value(value)
+        if cleaned:
+            deduped[cleaned.lower()] = cleaned
+    return list(deduped.values())
 
 
 def iter_completed_branch_target_lists(

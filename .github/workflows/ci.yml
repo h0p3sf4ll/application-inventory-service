@@ -45,7 +45,7 @@ jobs:
         run: python -m unittest tests/test_ado_mobile_scanner.py
 
       - name: Compile modules
-        run: python -m compileall appsec_scan_router tests
+        run: python -m compileall appsec_scan_router application_inventory_service tests
 
   package:
     name: Package
@@ -73,7 +73,7 @@ jobs:
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: appsec-scan-router-dist
+          name: application-inventory-service-dist
           path: dist/*
 
   docker:
@@ -85,4 +85,4 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build image
-        run: docker build -t appsec-inventory-service:ci .
+        run: docker build -t application-inventory-service:ci .

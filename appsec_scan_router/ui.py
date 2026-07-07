@@ -20,17 +20,25 @@ from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .auth import AuthManager, GitHubOAuthConfig, GoogleOAuthConfig, SessionRecord, expired_session_cookie, session_cookie
+from .azure import AzureDevOpsClient
 from .constants import (
     APPLICATION_TYPE_LABELS,
     DEFAULT_OUT_PREFIX,
     DEFAULT_POSTGRES_DATABASE,
+    DEFAULT_POSTGRES_HOST,
     DEFAULT_POSTGRES_PASSWORD,
     DEFAULT_POSTGRES_PORT,
+    DEFAULT_POSTGRES_SCHEMA,
     DEFAULT_POSTGRES_TABLE,
     DEFAULT_POSTGRES_USER,
     KNOWN_INVENTORY_TYPES,
 )
+from .github import GitHubEnterpriseClient
+from .models import AzureDevOpsError, AzureDevOpsOrgPat
+from .org_tokens import ado_org_pats_to_json, parse_ado_org_pat_values
+from .postgres import database_status, export_inventory_csv, export_inventory_json
 from .scanner import normalize_application_types, store_lookup_allowed
+from .target_filters import parse_source_target_filter_values, target_filter_value
 
 
 DEFAULT_UI_HOST = "127.0.0.1"
@@ -137,18 +145,19 @@ class ScanRun:
             logs_tail = self.logs[-300:]
             detected = sum(1 for line in self.logs if "DETECTED asset=" in line or "DETECTED app=" in line)
             provider = str(self.config.get("provider", "azure-devops"))
-            target = str(self.config.get("repo") or self.config.get("project") or "all")
+            target = scan_target_summary(self.config)
             return {
                 "id": self.id,
                 "status": self.status,
                 "provider": provider,
-                "org": str(self.config.get("org", "")),
+                "org": str(self.config.get("orgDisplay") or self.config.get("org", "")),
                 "target": target,
                 "outPrefix": str(self.config.get("outPrefix", DEFAULT_OUT_PREFIX)),
                 "applicationTypes": list(self.config.get("applicationTypes", [])),
                 "ownerUserId": str(self.config.get("ownerUserId", "anonymous")),
                 "ownerUserLogin": str(self.config.get("ownerUserLogin", "anonymous")),
                 "postgresEnabled": bool(self.config.get("postgresEnabled")),
+                "postgresSchema": str(self.config.get("postgresSchema", DEFAULT_POSTGRES_SCHEMA)),
                 "postgresTable": str(self.config.get("postgresTable", DEFAULT_POSTGRES_TABLE)),
                 "startedAt": self.started_at,
                 "endedAt": self.ended_at,
@@ -252,7 +261,7 @@ class ScanManager:
         run.close_listeners()
 
 
-class AppSecScanRouterHandler(BaseHTTPRequestHandler):
+class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
     manager: ScanManager
     auth: AuthManager
 
@@ -307,6 +316,15 @@ class AppSecScanRouterHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/credentials/delete":
             self.handle_delete_credential()
+            return
+        if path == "/api/database/status":
+            self.handle_database_status()
+            return
+        if path == "/api/database/export":
+            self.handle_database_export()
+            return
+        if path == "/api/source-targets":
+            self.handle_source_targets()
             return
         if path.startswith("/api/scans/") and path.endswith("/stop"):
             scan_id = path.removeprefix("/api/scans/").removesuffix("/stop").strip("/")
@@ -443,6 +461,63 @@ class AppSecScanRouterHandler(BaseHTTPRequestHandler):
             return
         self.send_json({"session": self.auth.status(record)})
 
+    def handle_database_status(self) -> None:
+        try:
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
+            config = normalize_database_config(self.read_json())
+            status = database_status(
+                config["postgresDsn"],
+                schema=config["postgresSchema"],
+                table=config["postgresTable"],
+                owner_user_id=owner_scope(record),
+            )
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json({"database": status})
+
+    def handle_database_export(self) -> None:
+        try:
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
+            payload = self.read_json()
+            config = normalize_database_config(payload)
+            export_format = clean_choice(payload.get("format"), {"csv", "json"}, "csv")
+            if export_format == "json":
+                content = export_inventory_json(config["postgresDsn"], schema=config["postgresSchema"], owner_user_id=owner_scope(record))
+                filename = "application_inventory_database_export.json"
+                content_type = "application/json"
+            else:
+                content = export_inventory_csv(config["postgresDsn"], schema=config["postgresSchema"], owner_user_id=owner_scope(record))
+                filename = "application_inventory_database_export.csv"
+                content_type = "text/csv"
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        except Exception as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_bytes(
+            content,
+            content_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    def handle_source_targets(self) -> None:
+        try:
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
+            payload = self.auth.apply_credentials(self.read_json(), record)
+            targets = discover_source_targets(payload)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json(targets)
+
     def send_static(self, name: str, content_type: str) -> None:
         try:
             resource = files("appsec_scan_router").joinpath("ui_static").joinpath(name)
@@ -533,6 +608,21 @@ class AppSecScanRouterHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def send_bytes(
+        self,
+        content: bytes,
+        content_type: str,
+        status: HTTPStatus = HTTPStatus.OK,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(content)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(content)
+
     def log_message(self, format: str, *args: Any) -> None:
         return
 
@@ -565,15 +655,23 @@ class AppSecScanRouterHandler(BaseHTTPRequestHandler):
 def normalize_scan_config(config: dict[str, Any]) -> dict[str, Any]:
     provider = clean_choice(config.get("provider"), {"azure-devops", "github-enterprise"}, "azure-devops")
     org = clean_text(config.get("org"))
-    if not org:
+    ado_org_pats = parse_ado_org_pat_values([config.get("adoOrgPats")])
+    target_filters = parse_source_target_filter_values([config.get("targetFilters")])
+    if provider == "azure-devops" and not org and not ado_org_pats:
+        raise ValueError("Organization is required.")
+    if provider == "github-enterprise" and not org:
         raise ValueError("Organization is required.")
     base_url = clean_text(config.get("baseUrl"))
     if provider == "github-enterprise" and not base_url:
         raise ValueError("GitHub Enterprise API URL is required.")
     application_types = list(normalize_ui_application_types(config.get("applicationTypes")))
+    database_config = normalize_database_config(config)
     normalized = {
         "provider": provider,
         "org": org,
+        "orgDisplay": ado_org_summary(ado_org_pats) if ado_org_pats else org,
+        "adoOrgPats": [{"org": item.org, "pat": item.pat} for item in ado_org_pats],
+        "targetFilters": [{"org": item.org, "project": item.project} for item in target_filters],
         "project": clean_text(config.get("project")),
         "repo": clean_text(config.get("repo")),
         "baseUrl": base_url,
@@ -583,14 +681,7 @@ def normalize_scan_config(config: dict[str, Any]) -> dict[str, Any]:
         "ownerUserId": clean_text(config.get("ownerUserId")) or "anonymous",
         "ownerUserLogin": clean_text(config.get("ownerUserLogin")) or "anonymous",
         "saveToken": bool(config.get("saveToken")),
-        "postgresEnabled": bool(config.get("postgresEnabled", True)),
-        "postgresDsn": clean_text(config.get("postgresDsn") or os.getenv("APPSEC_INVENTORY_POSTGRES_DSN")),
-        "postgresHost": clean_text(config.get("postgresHost") or "host.docker.internal"),
-        "postgresPort": positive_int(config.get("postgresPort"), DEFAULT_POSTGRES_PORT),
-        "postgresDatabase": clean_text(config.get("postgresDatabase") or DEFAULT_POSTGRES_DATABASE),
-        "postgresUser": clean_text(config.get("postgresUser") or DEFAULT_POSTGRES_USER),
-        "postgresPassword": clean_text(config.get("postgresPassword") or os.getenv("APPSEC_INVENTORY_POSTGRES_PASSWORD") or DEFAULT_POSTGRES_PASSWORD),
-        "postgresTable": clean_text(config.get("postgresTable") or DEFAULT_POSTGRES_TABLE),
+        **database_config,
         "minConfidence": clean_choice(config.get("minConfidence"), {"low", "medium", "high"}, "low"),
         "activityMode": clean_choice(config.get("activityMode"), {"contributors", "latest"}, "contributors"),
         "maxWorkers": positive_int(config.get("maxWorkers"), 8),
@@ -606,20 +697,151 @@ def normalize_scan_config(config: dict[str, Any]) -> dict[str, Any]:
     }
     if normalized["project"] and normalized["repo"] and normalized["project"] != normalized["repo"]:
         raise ValueError("Project and repository cannot be different values.")
-    if normalized["postgresEnabled"] and not normalized["postgresDsn"]:
+    return normalized
+
+
+def normalize_database_config(config: dict[str, Any]) -> dict[str, Any]:
+    normalized = {
+        "postgresEnabled": bool(config.get("postgresEnabled", True)),
+        "postgresDsn": clean_text(config.get("postgresDsn") or env_value("APPLICATION_INVENTORY_POSTGRES_DSN", "APPSEC_INVENTORY_POSTGRES_DSN")),
+        "postgresHost": clean_text(config.get("postgresHost") or env_value("APPLICATION_INVENTORY_POSTGRES_HOST", "APPSEC_INVENTORY_POSTGRES_HOST") or DEFAULT_POSTGRES_HOST),
+        "postgresPort": positive_int(config.get("postgresPort"), DEFAULT_POSTGRES_PORT),
+        "postgresDatabase": clean_text(config.get("postgresDatabase") or DEFAULT_POSTGRES_DATABASE),
+        "postgresUser": clean_text(config.get("postgresUser") or DEFAULT_POSTGRES_USER),
+        "postgresPassword": clean_text(config.get("postgresPassword") or env_value("APPLICATION_INVENTORY_POSTGRES_PASSWORD", "APPSEC_INVENTORY_POSTGRES_PASSWORD") or DEFAULT_POSTGRES_PASSWORD),
+        "postgresSchema": clean_text(config.get("postgresSchema") or env_value("APPLICATION_INVENTORY_POSTGRES_SCHEMA", "APPSEC_INVENTORY_POSTGRES_SCHEMA") or DEFAULT_POSTGRES_SCHEMA),
+        "postgresTable": clean_text(config.get("postgresTable") or DEFAULT_POSTGRES_TABLE),
+    }
+    if not normalized["postgresDsn"]:
         normalized["postgresDsn"] = postgres_dsn_from_config(normalized)
     return normalized
+
+
+def discover_source_targets(config: dict[str, Any]) -> dict[str, Any]:
+    provider = clean_choice(config.get("provider"), {"azure-devops", "github-enterprise"}, "azure-devops")
+    timeout = positive_int(config.get("timeout"), 30)
+    if provider == "github-enterprise":
+        return discover_github_targets(config, timeout)
+    return discover_azure_targets(config, timeout)
+
+
+def discover_azure_targets(config: dict[str, Any], timeout: int) -> dict[str, Any]:
+    org_pats = parse_ado_org_pat_values([config.get("adoOrgPats")])
+    if not org_pats:
+        org = clean_text(config.get("org"))
+        token = discovery_token(config, "azure-devops")
+        if not org:
+            raise ValueError("Azure DevOps organization is required to load projects.")
+        if not token:
+            raise ValueError("Azure DevOps PAT is required to load projects.")
+        org_pats = (AzureDevOpsOrgPat(org, token),)
+
+    targets: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for org_pat in org_pats:
+        client = AzureDevOpsClient(org_pat.org, org_pat.pat, timeout)
+        try:
+            projects = client.list_projects()
+        except AzureDevOpsError as exc:
+            errors.append({"org": org_pat.org, "message": str(exc)})
+            continue
+        finally:
+            client.close()
+        for project in projects:
+            name = clean_text(project.get("name"))
+            if name:
+                targets.append(source_target("azure-devops", org_pat.org, name, "project"))
+
+    return {
+        "provider": "azure-devops",
+        "targets": sorted_targets(targets),
+        "errors": errors,
+    }
+
+
+def discover_github_targets(config: dict[str, Any], timeout: int) -> dict[str, Any]:
+    owner = clean_text(config.get("org"))
+    base_url = clean_text(config.get("baseUrl"))
+    token = discovery_token(config, "github-enterprise")
+    if not owner:
+        raise ValueError("GitHub owner is required to load repositories.")
+    if not base_url:
+        raise ValueError("GitHub Enterprise API URL is required to load repositories.")
+    if not token:
+        raise ValueError("GitHub token is required to load repositories.")
+
+    client = GitHubEnterpriseClient(base_url, owner, token, timeout)
+    try:
+        repos = client.list_repos("")
+    except AzureDevOpsError as exc:
+        return {
+            "provider": "github-enterprise",
+            "targets": [],
+            "errors": [{"org": owner, "message": str(exc)}],
+        }
+    finally:
+        client.close()
+
+    targets = []
+    for repo in repos:
+        if repo.get("isDisabled"):
+            continue
+        name = clean_text(repo.get("name"))
+        full_name = clean_text(repo.get("fullName"))
+        if name:
+            targets.append(source_target("github-enterprise", owner, name, "repository", full_name or name))
+    return {
+        "provider": "github-enterprise",
+        "targets": sorted_targets(targets),
+        "errors": [],
+    }
+
+
+def discovery_token(config: dict[str, Any], provider: str) -> str:
+    token = clean_text(config.get("token"))
+    if token:
+        return token
+    if provider == "github-enterprise":
+        return clean_text(os.getenv("GITHUB_TOKEN") or os.getenv("GHE_TOKEN"))
+    return clean_text(os.getenv("ADO_PAT"))
+
+
+def source_target(
+    provider: str,
+    org: str,
+    project: str,
+    kind: str,
+    display_name: str = "",
+) -> dict[str, str]:
+    label = display_name or f"{org} / {project}"
+    return {
+        "provider": provider,
+        "org": org,
+        "project": project,
+        "repo": project if provider == "github-enterprise" else "",
+        "kind": kind,
+        "name": project,
+        "label": label,
+    }
+
+
+def sorted_targets(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        targets,
+        key=lambda target: (
+            clean_text(target.get("org")).lower(),
+            clean_text(target.get("project")).lower(),
+        ),
+    )
 
 
 def build_scan_command(config: dict[str, Any], reports_dir: Path) -> list[str]:
     command = [
         sys.executable,
         "-m",
-        "appsec_scan_router",
+        "application_inventory_service",
         "--provider",
         config["provider"],
-        "--org",
-        config["org"],
         "--out-dir",
         str(reports_dir),
         "--out-prefix",
@@ -652,19 +874,42 @@ def build_scan_command(config: dict[str, Any], reports_dir: Path) -> list[str]:
     for application_type in config["applicationTypes"]:
         command.extend(["--application-type", application_type])
     if config["postgresEnabled"]:
+        command.extend(["--postgres-schema", config["postgresSchema"]])
         command.extend(["--postgres-table", config["postgresTable"]])
+    target_filters = config.get("targetFilters") if isinstance(config.get("targetFilters"), list) else []
+    if target_filters:
+        for target_filter in target_filters:
+            value = target_filter_value(target_filter)
+            if value:
+                command.extend(["--target-filter", value])
     if config["provider"] == "github-enterprise":
+        command.extend(["--org", config["org"]])
         command.extend(["--base-url", config["baseUrl"]])
-        target = config["repo"] or config["project"]
+        target = "" if target_filters else config["repo"] or config["project"]
         if target:
             command.extend(["--repo", target])
-    elif config["project"]:
-        command.extend(["--project", config["project"]])
+    else:
+        if not config.get("adoOrgPats"):
+            command.extend(["--org", config["org"]])
+        if config["project"] and not target_filters:
+            command.extend(["--project", config["project"]])
     if config["storeLookup"]:
         command.append("--store-lookup")
     if config["verbose"]:
         command.append("--verbose")
     return command
+
+
+def scan_target_summary(config: dict[str, Any]) -> str:
+    target_filters = config.get("targetFilters") if isinstance(config.get("targetFilters"), list) else []
+    if target_filters:
+        if len(target_filters) == 1:
+            target = target_filters[0]
+            project = clean_text(target.get("project"))
+            org = clean_text(target.get("org"))
+            return f"{org}/{project}" if org else project
+        return f"{len(target_filters)} selected targets"
+    return str(config.get("repo") or config.get("project") or "all")
 
 
 def redact_command(command: tuple[str, ...] | list[str]) -> list[str]:
@@ -676,7 +921,7 @@ def redact_command(command: tuple[str, ...] | list[str]) -> list[str]:
             skip_next = False
             continue
         redacted.append(part)
-        if part in {"--pat", "--postgres-dsn"} and index + 1 < len(command):
+        if part in {"--pat", "--postgres-dsn", "--ado-org-pat"} and index + 1 < len(command):
             skip_next = True
     return redacted
 
@@ -685,16 +930,39 @@ def scan_environment(config: dict[str, Any]) -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     token = clean_text(config.get("token"))
-    if token and config.get("provider") == "github-enterprise":
+    ado_org_pats = config.get("adoOrgPats") if isinstance(config.get("adoOrgPats"), list) else []
+    if config.get("provider") == "azure-devops" and ado_org_pats:
+        org_pats_json = ado_org_pats_to_json(ado_org_pats)
+        env["APPLICATION_INVENTORY_ADO_ORG_PATS"] = org_pats_json
+        env["APPSEC_INVENTORY_ADO_ORG_PATS"] = org_pats_json
+        env.pop("ADO_PAT", None)
+    elif token and config.get("provider") == "github-enterprise":
         env["GITHUB_TOKEN"] = token
     elif token:
         env["ADO_PAT"] = token
     postgres_dsn = clean_text(config.get("postgresDsn"))
-    if postgres_dsn:
+    if config.get("postgresEnabled") and postgres_dsn:
+        postgres_schema = clean_text(config.get("postgresSchema") or DEFAULT_POSTGRES_SCHEMA)
+        postgres_table = clean_text(config.get("postgresTable") or DEFAULT_POSTGRES_TABLE)
+        env["APPLICATION_INVENTORY_POSTGRES_DSN"] = postgres_dsn
+        env["APPLICATION_INVENTORY_POSTGRES_SCHEMA"] = postgres_schema
+        env["APPLICATION_INVENTORY_POSTGRES_TABLE"] = postgres_table
         env["APPSEC_INVENTORY_POSTGRES_DSN"] = postgres_dsn
-        env["APPSEC_INVENTORY_POSTGRES_TABLE"] = clean_text(config.get("postgresTable") or DEFAULT_POSTGRES_TABLE)
-    env["APPSEC_INVENTORY_OWNER_USER_ID"] = clean_text(config.get("ownerUserId") or "anonymous")
-    env["APPSEC_INVENTORY_OWNER_USER_LOGIN"] = clean_text(config.get("ownerUserLogin") or "anonymous")
+        env["APPSEC_INVENTORY_POSTGRES_SCHEMA"] = postgres_schema
+        env["APPSEC_INVENTORY_POSTGRES_TABLE"] = postgres_table
+    else:
+        env.pop("APPLICATION_INVENTORY_POSTGRES_DSN", None)
+        env.pop("APPLICATION_INVENTORY_POSTGRES_SCHEMA", None)
+        env.pop("APPLICATION_INVENTORY_POSTGRES_TABLE", None)
+        env.pop("APPSEC_INVENTORY_POSTGRES_DSN", None)
+        env.pop("APPSEC_INVENTORY_POSTGRES_SCHEMA", None)
+        env.pop("APPSEC_INVENTORY_POSTGRES_TABLE", None)
+    owner_user_id = clean_text(config.get("ownerUserId") or "anonymous")
+    owner_user_login = clean_text(config.get("ownerUserLogin") or "anonymous")
+    env["APPLICATION_INVENTORY_OWNER_USER_ID"] = owner_user_id
+    env["APPLICATION_INVENTORY_OWNER_USER_LOGIN"] = owner_user_login
+    env["APPSEC_INVENTORY_OWNER_USER_ID"] = owner_user_id
+    env["APPSEC_INVENTORY_OWNER_USER_LOGIN"] = owner_user_login
     return env
 
 
@@ -802,7 +1070,7 @@ def parse_iso_datetime(value: str) -> datetime | None:
 def default_ui_config(reports_root: Path) -> dict[str, Any]:
     github_oauth_config = GitHubOAuthConfig.from_env()
     google_oauth_config = GoogleOAuthConfig.from_env()
-    test_login_enabled = clean_text(os.getenv("APPSEC_INVENTORY_SERVICE_TEST_LOGIN_ENABLED")).lower() in {"1", "true", "yes", "on"}
+    test_login_enabled = env_value("APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED", "APPSEC_INVENTORY_SERVICE_TEST_LOGIN_ENABLED").lower() in {"1", "true", "yes", "on"}
     return {
         "defaults": {
             "provider": "azure-devops",
@@ -813,7 +1081,7 @@ def default_ui_config(reports_root: Path) -> dict[str, Any]:
                 for value in KNOWN_INVENTORY_TYPES
             ],
             "minConfidence": "medium",
-            "activityMode": "latest",
+            "activityMode": "contributors",
             "maxWorkers": 8,
             "branchWorkers": 16,
             "contentWorkers": 16,
@@ -823,10 +1091,11 @@ def default_ui_config(reports_root: Path) -> dict[str, Any]:
             "storeCountry": "US",
             "storeTimeout": 15,
             "postgresEnabled": True,
-            "postgresHost": os.getenv("APPSEC_INVENTORY_POSTGRES_HOST", "host.docker.internal"),
+            "postgresHost": env_value("APPLICATION_INVENTORY_POSTGRES_HOST", "APPSEC_INVENTORY_POSTGRES_HOST") or DEFAULT_POSTGRES_HOST,
             "postgresPort": DEFAULT_POSTGRES_PORT,
             "postgresDatabase": DEFAULT_POSTGRES_DATABASE,
             "postgresUser": DEFAULT_POSTGRES_USER,
+            "postgresSchema": env_value("APPLICATION_INVENTORY_POSTGRES_SCHEMA", "APPSEC_INVENTORY_POSTGRES_SCHEMA") or DEFAULT_POSTGRES_SCHEMA,
             "postgresTable": DEFAULT_POSTGRES_TABLE,
         },
         "auth": {
@@ -877,6 +1146,14 @@ def clean_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def env_value(*names: str) -> str:
+    for name in names:
+        value = clean_text(os.getenv(name))
+        if value:
+            return value
+    return ""
+
+
 def first_query_value(params: dict[str, list[str]], name: str) -> str:
     values = params.get(name, [])
     return values[0] if values else ""
@@ -892,6 +1169,14 @@ def owner_login(record: SessionRecord | None) -> str:
 
 def run_owner_id(run: ScanRun) -> str:
     return str(run.config.get("ownerUserId") or "anonymous")
+
+
+def ado_org_summary(org_pats: tuple[Any, ...]) -> str:
+    if not org_pats:
+        return ""
+    if len(org_pats) == 1:
+        return org_pats[0].org
+    return f"{len(org_pats)} Azure DevOps organizations"
 
 
 def clean_choice(value: Any, allowed: set[str], default: str) -> str:
@@ -955,39 +1240,39 @@ def utc_now() -> str:
 
 
 def secure_cookie() -> bool:
-    return clean_text(os.getenv("APPSEC_INVENTORY_SERVICE_COOKIE_SECURE")).lower() in {"1", "true", "yes"}
+    return env_value("APPLICATION_INVENTORY_SERVICE_COOKIE_SECURE", "APPSEC_INVENTORY_SERVICE_COOKIE_SECURE").lower() in {"1", "true", "yes"}
 
 
 def serve(host: str, port: int, reports_dir: Path) -> None:
     manager = ScanManager(reports_dir.resolve())
     auth = AuthManager(manager.reports_root)
-    handler = type("ConfiguredAppSecScanRouterHandler", (AppSecScanRouterHandler,), {"manager": manager, "auth": auth})
+    handler = type("ConfiguredApplicationInventoryServiceHandler", (ApplicationInventoryServiceHandler,), {"manager": manager, "auth": auth})
     server = ThreadingHTTPServer((host, port), handler)
-    print(f"AppSec Inventory Service UI listening on http://{host}:{port}")
+    print(f"Application Inventory Service UI listening on http://{host}:{port}")
     print(f"Reports root: {manager.reports_root}")
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
-        print("AppSec Inventory Service UI stopped.")
+        print("Application Inventory Service UI stopped.")
     finally:
         server.server_close()
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="appsec-inventory-service-ui",
-        description="Run the AppSec Inventory Service web UI.",
+        prog="application-inventory-service-ui",
+        description="Run the Application Inventory Service web UI.",
     )
     parser.add_argument(
         "--host",
-        default=os.getenv("APPSEC_INVENTORY_SERVICE_UI_HOST")
+        default=env_value("APPLICATION_INVENTORY_SERVICE_UI_HOST", "APPSEC_INVENTORY_SERVICE_UI_HOST")
         or os.getenv("APPSEC_SCAN_ROUTER_UI_HOST", DEFAULT_UI_HOST),
     )
     parser.add_argument(
         "--port",
         type=int,
         default=int(
-            os.getenv("APPSEC_INVENTORY_SERVICE_UI_PORT")
+            env_value("APPLICATION_INVENTORY_SERVICE_UI_PORT", "APPSEC_INVENTORY_SERVICE_UI_PORT")
             or os.getenv("APPSEC_SCAN_ROUTER_UI_PORT", str(DEFAULT_UI_PORT))
         ),
     )
@@ -995,11 +1280,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--reports-dir",
         type=Path,
         default=Path(
-            os.getenv("APPSEC_INVENTORY_SERVICE_REPORTS_DIR")
+            env_value("APPLICATION_INVENTORY_SERVICE_REPORTS_DIR", "APPSEC_INVENTORY_SERVICE_REPORTS_DIR")
             or os.getenv("APPSEC_SCAN_ROUTER_REPORTS_DIR", "reports")
         ),
     )
     return parser.parse_args(argv)
+
+
+AppSecScanRouterHandler = ApplicationInventoryServiceHandler
 
 
 def main(argv: list[str] | None = None) -> int:

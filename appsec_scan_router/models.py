@@ -8,6 +8,7 @@ from .constants import (
     DEFAULT_ACTIVITY_MODE,
     DEFAULT_BRANCH_AGE_DAYS,
     DEFAULT_BRANCH_WORKERS,
+    DEFAULT_POSTGRES_SCHEMA,
     DEFAULT_POSTGRES_TABLE,
     DEFAULT_STORE_COUNTRY,
     DEFAULT_STORE_TIMEOUT_SECONDS,
@@ -18,6 +19,18 @@ class AzureDevOpsError(RuntimeError):
     def __init__(self, message: str, status_code: int | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+@dataclass(frozen=True)
+class AzureDevOpsOrgPat:
+    org: str
+    pat: str
+
+
+@dataclass(frozen=True)
+class SourceTargetFilter:
+    org: str
+    project: str
 
 
 @dataclass(frozen=True)
@@ -42,15 +55,19 @@ class ScanConfig:
     base_url: str = ""
     application_types: tuple[str, ...] = ()
     postgres_dsn: str = ""
+    postgres_schema: str = DEFAULT_POSTGRES_SCHEMA
     postgres_table: str = DEFAULT_POSTGRES_TABLE
     owner_user_id: str = "anonymous"
     owner_user_login: str = "anonymous"
+    ado_org_pats: tuple[AzureDevOpsOrgPat, ...] = ()
+    target_filters: tuple[SourceTargetFilter, ...] = ()
 
 
 @dataclass(frozen=True)
 class RepoScanTarget:
     project_name: str
     repo: dict[str, Any]
+    organization: str = ""
 
 
 @dataclass(frozen=True)
@@ -58,6 +75,7 @@ class BranchScanTarget:
     project_name: str
     repo: dict[str, Any]
     branch_name: str
+    organization: str = ""
 
 
 @dataclass(frozen=True)

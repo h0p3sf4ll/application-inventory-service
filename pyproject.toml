@@ -3,14 +3,14 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "appsec-scan-router"
-version = "1.5.1"
+name = "application-inventory-service"
+version = "1.6.0"
 description = "SDK, CLI, UI, and scanner target manifests for application inventory across Azure DevOps and GitHub Enterprise"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{name = "AppSec Inventory Service contributors"}]
+authors = [{name = "Application Inventory Service contributors"}]
 keywords = [
     "appsec",
     "sdk",
@@ -48,11 +48,14 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/h0p3sf4ll/appsec-inventory-service"
-Repository = "https://github.com/h0p3sf4ll/appsec-inventory-service"
-Issues = "https://github.com/h0p3sf4ll/appsec-inventory-service/issues"
+Homepage = "https://github.com/h0p3sf4ll/application-inventory-service"
+Repository = "https://github.com/h0p3sf4ll/application-inventory-service"
+Issues = "https://github.com/h0p3sf4ll/application-inventory-service/issues"
 
 [project.scripts]
+application-inventory-service = "appsec_scan_router.cli:main"
+application-inventory-service-ui = "appsec_scan_router.ui:main"
+application-inventory-service-container = "appsec_scan_router.entrypoint:main"
 appsec-inventory-service = "appsec_scan_router.cli:main"
 appsec-inventory-service-ui = "appsec_scan_router.ui:main"
 appsec-inventory-service-container = "appsec_scan_router.entrypoint:main"
@@ -63,7 +66,7 @@ mobile-app-inventory-tracer = "appsec_scan_router.cli:main"
 ado-mobile-scanner = "appsec_scan_router.cli:main"
 
 [tool.setuptools]
-packages = ["appsec_scan_router", "appsec_scan_router.ui_static", "mobile_scanner"]
+packages = ["appsec_scan_router", "appsec_scan_router.ui_static", "application_inventory_service", "mobile_scanner"]
 py-modules = ["ado_mobile_scanner", "mobile_app_inventory_tracer"]
 
 [tool.setuptools.package-data]

@@ -6,6 +6,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import appsec_scan_router as scanner
+import appsec_scan_router.scanner as scanner_module
+import appsec_scan_router.ui as ui_module
+import application_inventory_service
 import ado_mobile_scanner
 import mobile_scanner
 from appsec_scan_router.auth import AuthManager, CredentialStore, GoogleOAuthConfig, TestLoginConfig
@@ -23,16 +26,35 @@ class PublicApiTests(unittest.TestCase):
     def test_package_api_is_importable(self):
         self.assertIs(scanner.ScanConfig, ado_mobile_scanner.ScanConfig)
         self.assertIs(scanner.ScanConfig, mobile_scanner.ScanConfig)
+        self.assertIs(scanner.ScanConfig, application_inventory_service.ScanConfig)
         self.assertTrue(callable(scanner.scan))
         self.assertTrue(callable(scanner.scan_to_reports))
         self.assertTrue(callable(scanner.detect_mobile_repo))
         self.assertTrue(callable(scanner.detect_inventory_repo))
+        self.assertTrue(callable(scanner.ApplicationInventoryService))
+        self.assertIs(scanner.ApplicationInventoryService, application_inventory_service.ApplicationInventoryService)
         self.assertTrue(callable(scanner.AppSecInventoryService))
         self.assertTrue(callable(scanner.AppSecScanRouter))
         self.assertTrue(callable(scanner.GitHubEnterpriseClient))
         self.assertTrue(callable(scanner.PostgresInventoryWriter))
+        self.assertTrue(callable(scanner.database_status))
+        self.assertTrue(callable(scanner.export_inventory_csv))
+        self.assertTrue(callable(scanner.export_inventory_json))
+        self.assertTrue(callable(scanner.export_inventory_rows))
         self.assertIn("mobile_app", scanner.KNOWN_INVENTORY_TYPES)
         self.assertEqual(scanner.APPLICATION_TYPE_LABELS["ai_enabled"], "AI-enabled")
+        self.assertIn("ml_enabled", scanner.KNOWN_INVENTORY_TYPES)
+        self.assertEqual(scanner.APPLICATION_TYPE_LABELS["ml_enabled"], "ML-enabled")
+        self.assertEqual(scanner.DEFAULT_POSTGRES_SCHEMA, "application_inventory")
+        self.assertTrue(callable(scanner.parse_ado_org_pat_values))
+        self.assertTrue(callable(scanner.ado_org_pats_to_json))
+        self.assertTrue(callable(scanner.parse_source_target_filter_values))
+        self.assertTrue(callable(scanner.source_target_filters_to_json))
+        self.assertIs(scanner.SourceTargetFilter, ado_mobile_scanner.SourceTargetFilter)
+        org_pats = scanner.parse_ado_org_pat_values("FabrikamCloud=pat-a")
+        self.assertEqual([(item.org, item.pat) for item in org_pats], [("FabrikamCloud", "pat-a")])
+        target_filters = scanner.parse_source_target_filter_values("FabrikamCloud=Go_To_Market")
+        self.assertEqual([(item.org, item.project) for item in target_filters], [("FabrikamCloud", "Go_To_Market")])
 
 
 class AuthTests(unittest.TestCase):
@@ -51,8 +73,8 @@ class AuthTests(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "APPSEC_INVENTORY_SERVICE_GOOGLE_CLIENT_ID": "google-client",
-                "APPSEC_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET": "google-secret",
+                "APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_ID": "google-client",
+                "APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET": "google-secret",
             },
             clear=False,
         ):
@@ -66,10 +88,10 @@ class AuthTests(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "APPSEC_INVENTORY_SERVICE_TEST_LOGIN_ENABLED": "true",
-                "APPSEC_INVENTORY_SERVICE_TEST_USER_ID": "local-user",
-                "APPSEC_INVENTORY_SERVICE_TEST_USER_LOGIN": "local.user@example.test",
-                "APPSEC_INVENTORY_SERVICE_TEST_USER_NAME": "Local User",
+                "APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED": "true",
+                "APPLICATION_INVENTORY_SERVICE_TEST_USER_ID": "local-user",
+                "APPLICATION_INVENTORY_SERVICE_TEST_USER_LOGIN": "local.user@example.test",
+                "APPLICATION_INVENTORY_SERVICE_TEST_USER_NAME": "Local User",
             },
             clear=False,
         ):
@@ -88,11 +110,11 @@ class AuthTests(unittest.TestCase):
             with patch.dict(
                 "os.environ",
                 {
-                    "APPSEC_INVENTORY_SERVICE_GITHUB_CLIENT_ID": "github-client",
-                    "APPSEC_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET": "github-secret",
-                    "APPSEC_INVENTORY_SERVICE_GOOGLE_CLIENT_ID": "google-client",
-                    "APPSEC_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET": "google-secret",
-                    "APPSEC_INVENTORY_SERVICE_TEST_LOGIN_ENABLED": "true",
+                    "APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_ID": "github-client",
+                    "APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET": "github-secret",
+                    "APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_ID": "google-client",
+                    "APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET": "google-secret",
+                    "APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED": "true",
                 },
                 clear=False,
             ):
@@ -109,13 +131,76 @@ class AuthTests(unittest.TestCase):
 
     def test_default_ui_config_lists_sso_options(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch.dict("os.environ", {"APPSEC_INVENTORY_SERVICE_TEST_LOGIN_ENABLED": "true"}, clear=False):
+            with patch.dict("os.environ", {"APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED": "true"}, clear=False):
                 config = default_ui_config(Path(tmpdir))
 
         provider_ids = [provider["id"] for provider in config["auth"]["authProviders"]]
+        application_type_ids = [choice["value"] for choice in config["defaults"]["applicationTypeChoices"]]
         self.assertEqual(provider_ids, ["github", "google", "test"])
         self.assertIn("googleLoginEnabled", config["auth"])
         self.assertTrue(config["auth"]["testLoginEnabled"])
+        self.assertIn("ml_enabled", application_type_ids)
+        self.assertEqual(config["defaults"]["activityMode"], "contributors")
+        self.assertEqual(config["defaults"]["postgresHost"], "localhost")
+        self.assertEqual(config["defaults"]["postgresSchema"], "application_inventory")
+
+
+class MultiOrganizationScanTests(unittest.TestCase):
+    def test_scan_dispatches_each_ado_org_pat(self):
+        config = scanner.ScanConfig(
+            org="",
+            pat="",
+            project=None,
+            out_dir=Path("reports"),
+            out_prefix="scan",
+            max_workers=1,
+            content_workers=1,
+            max_commits_per_repo=0,
+            timeout_seconds=30,
+            min_confidence="low",
+            ado_org_pats=(
+                scanner.AzureDevOpsOrgPat("FabrikamCloud", "pat-a"),
+                scanner.AzureDevOpsOrgPat("ContosoApps", "pat-b"),
+            ),
+        )
+
+        def fake_scan(org_config, on_result=None):
+            return [{"organization": org_config.org, "project": "", "repo_name": "", "branch_name": ""}]
+
+        with patch.object(scanner_module, "scan_single_org", side_effect=fake_scan) as scan_single_org:
+            results = scanner.scan(config)
+
+        self.assertEqual([call.args[0].org for call in scan_single_org.call_args_list], ["FabrikamCloud", "ContosoApps"])
+        self.assertEqual([call.args[0].pat for call in scan_single_org.call_args_list], ["pat-a", "pat-b"])
+        self.assertEqual([row["organization"] for row in results], ["ContosoApps", "FabrikamCloud"])
+
+    def test_scan_skips_multi_orgs_without_matching_target_filters(self):
+        config = scanner.ScanConfig(
+            org="",
+            pat="",
+            project=None,
+            out_dir=Path("reports"),
+            out_prefix="scan",
+            max_workers=1,
+            content_workers=1,
+            max_commits_per_repo=0,
+            timeout_seconds=30,
+            min_confidence="low",
+            ado_org_pats=(
+                scanner.AzureDevOpsOrgPat("FabrikamCloud", "pat-a"),
+                scanner.AzureDevOpsOrgPat("ContosoApps", "pat-b"),
+            ),
+            target_filters=(scanner.SourceTargetFilter("ContosoApps", "Payments"),),
+        )
+
+        def fake_scan(org_config, on_result=None):
+            return [{"organization": org_config.org, "project": org_config.target_filters[0].project, "repo_name": "", "branch_name": ""}]
+
+        with patch.object(scanner_module, "scan_single_org", side_effect=fake_scan) as scan_single_org:
+            results = scanner.scan(config)
+
+        self.assertEqual([call.args[0].org for call in scan_single_org.call_args_list], ["ContosoApps"])
+        self.assertEqual(results[0]["project"], "Payments")
 
 
 class ProviderClientTests(unittest.TestCase):
@@ -168,6 +253,8 @@ class ProviderClientTests(unittest.TestCase):
                     "mobile_app",
                     "--application-type",
                     "ai_enabled",
+                    "--application-type",
+                    "ml_enabled",
                     "--out-dir",
                     "reports",
                 ]
@@ -178,7 +265,7 @@ class ProviderClientTests(unittest.TestCase):
         self.assertEqual(config.org, "FabrikamCloud")
         self.assertEqual(config.project, "mobile-app")
         self.assertEqual(config.pat, "token")
-        self.assertEqual(config.application_types, ("mobile_app", "ai_enabled"))
+        self.assertEqual(config.application_types, ("mobile_app", "ai_enabled", "ml_enabled"))
 
     def test_create_source_client_supports_github_enterprise(self):
         config = scanner.ScanConfig(
@@ -203,6 +290,106 @@ class ProviderClientTests(unittest.TestCase):
         finally:
             client.close()
 
+    def test_collect_targets_uses_selected_project_filters(self):
+        class FakeClient:
+            org = "FabrikamCloud"
+
+            def list_projects(self):
+                raise AssertionError("project list should not be loaded when target filters are provided")
+
+            def list_repos(self, project_name):
+                return [{"id": f"{project_name}-repo", "name": f"{project_name}-repo"}]
+
+        targets = scanner.collect_targets(
+            FakeClient(),
+            None,
+            (
+                scanner.SourceTargetFilter("ContosoApps", "Ignored"),
+                scanner.SourceTargetFilter("FabrikamCloud", "Payments"),
+                scanner.SourceTargetFilter("", "Shared"),
+            ),
+        )
+
+        self.assertEqual([(target.project_name, target.repo["name"]) for target in targets], [("Payments", "Payments-repo"), ("Shared", "Shared-repo")])
+
+    def test_parse_args_supports_multiple_ado_org_pats(self):
+        config = scanner.parse_args(
+            [
+                "--ado-org-pat",
+                "FabrikamCloud=pat-a",
+                "--ado-org-pat",
+                "ContosoApps=pat-b",
+                "--out-dir",
+                "reports",
+            ]
+        )
+
+        self.assertEqual(config.provider, "azure-devops")
+        self.assertEqual(config.org, "")
+        self.assertEqual(config.pat, "")
+        self.assertEqual([(item.org, item.pat) for item in config.ado_org_pats], [("FabrikamCloud", "pat-a"), ("ContosoApps", "pat-b")])
+
+    def test_parse_args_supports_repeated_projects_as_target_filters(self):
+        with patch.dict("os.environ", {"ADO_PAT": "token"}, clear=False):
+            config = scanner.parse_args(
+                [
+                    "--org",
+                    "FabrikamCloud",
+                    "--project",
+                    "Payments",
+                    "--project",
+                    "Storefront",
+                    "--out-dir",
+                    "reports",
+                ]
+            )
+
+        self.assertIsNone(config.project)
+        self.assertEqual([(item.org, item.project) for item in config.target_filters], [("", "Payments"), ("", "Storefront")])
+
+    def test_parse_args_supports_explicit_target_filters(self):
+        config = scanner.parse_args(
+            [
+                "--ado-org-pat",
+                "FabrikamCloud=pat-a",
+                "--ado-org-pat",
+                "ContosoApps=pat-b",
+                "--target-filter",
+                "FabrikamCloud=Payments",
+                "--target-filter",
+                "ContosoApps=Storefront",
+                "--out-dir",
+                "reports",
+            ]
+        )
+
+        self.assertEqual(
+            [(item.org, item.project) for item in config.target_filters],
+            [("FabrikamCloud", "Payments"), ("ContosoApps", "Storefront")],
+        )
+
+    def test_parse_args_supports_ado_org_pats_from_json_environment(self):
+        with patch.dict(
+            "os.environ",
+            {"APPSEC_INVENTORY_ADO_ORG_PATS": json.dumps({"FabrikamCloud": "pat-a", "ContosoApps": "pat-b"})},
+            clear=False,
+        ):
+            config = scanner.parse_args(["--out-dir", "reports"])
+
+        self.assertEqual([(item.org, item.pat) for item in config.ado_org_pats], [("FabrikamCloud", "pat-a"), ("ContosoApps", "pat-b")])
+
+    def test_parse_args_supports_ado_org_pats_from_json_list_environment(self):
+        with patch.dict(
+            "os.environ",
+            {"APPSEC_INVENTORY_ADO_ORG_PATS": json.dumps([{"org": "FabrikamCloud", "pat": "pat-a"}, {"org": "ContosoApps", "pat": "pat-b"}])},
+            clear=False,
+        ):
+            config = scanner.parse_args(["--out-dir", "reports"])
+
+        self.assertEqual(config.org, "")
+        self.assertEqual(config.pat, "")
+        self.assertEqual([(item.org, item.pat) for item in config.ado_org_pats], [("FabrikamCloud", "pat-a"), ("ContosoApps", "pat-b")])
+
 
 class UiServiceTests(unittest.TestCase):
     def test_normalize_scan_config_requires_org(self):
@@ -226,7 +413,7 @@ class UiServiceTests(unittest.TestCase):
                 "repo": "mobile-app",
                 "baseUrl": "https://github.fabrikam.example/api/v3",
                 "outPrefix": "inventory scan",
-                "applicationTypes": ["mobile_app", "ai_enabled"],
+                "applicationTypes": ["mobile_app", "ai_enabled", "ml_enabled"],
                 "minConfidence": "medium",
                 "activityMode": "latest",
                 "storeLookup": True,
@@ -242,13 +429,34 @@ class UiServiceTests(unittest.TestCase):
         self.assertIn("--repo", command)
         self.assertIn("mobile-app", command)
         self.assertIn("--store-lookup", command)
-        self.assertIn("appsec_inventory_service", command)
+        self.assertIn("application_inventory_service", command)
         self.assertIn("--owner-user-id", command)
         self.assertIn("--owner-user-login", command)
         self.assertIn("--postgres-table", command)
-        self.assertEqual(command.count("--application-type"), 2)
+        self.assertEqual(command.count("--application-type"), 3)
         self.assertIn("mobile_app", command)
         self.assertIn("ai_enabled", command)
+        self.assertIn("ml_enabled", command)
+
+    def test_build_scan_command_for_selected_github_repositories(self):
+        config = scanner.normalize_scan_config(
+            {
+                "provider": "github-enterprise",
+                "org": "FabrikamCloud",
+                "baseUrl": "https://github.fabrikam.example/api/v3",
+                "targetFilters": [
+                    {"org": "FabrikamCloud", "project": "payments-api"},
+                    {"org": "FabrikamCloud", "project": "storefront"},
+                ],
+            }
+        )
+
+        command = scanner.build_scan_command(config, Path("/reports/scan-1"))
+
+        self.assertNotIn("--repo", command)
+        self.assertEqual(command.count("--target-filter"), 2)
+        self.assertIn("FabrikamCloud=payments-api", command)
+        self.assertIn("FabrikamCloud=storefront", command)
 
     def test_normalize_scan_config_uses_fixed_prefix_and_postgres_default(self):
         config = scanner.normalize_scan_config(
@@ -259,10 +467,62 @@ class UiServiceTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config["outPrefix"], "appsec_inventory_service")
+        self.assertEqual(config["outPrefix"], "application_inventory_service")
         self.assertTrue(config["postgresEnabled"])
         self.assertEqual(config["ownerUserId"], "anonymous")
         self.assertEqual(config["ownerUserLogin"], "anonymous")
+
+    def test_normalize_scan_config_accepts_multiple_ado_org_pats_without_org(self):
+        config = scanner.normalize_scan_config(
+            {
+                "provider": "azure-devops",
+                "adoOrgPats": "FabrikamCloud=pat-a\nContosoApps=pat-b",
+                "postgresEnabled": False,
+            }
+        )
+
+        self.assertEqual(config["org"], "")
+        self.assertEqual(config["orgDisplay"], "2 Azure DevOps organizations")
+        self.assertEqual(
+            [(item["org"], item["pat"]) for item in config["adoOrgPats"]],
+            [("FabrikamCloud", "pat-a"), ("ContosoApps", "pat-b")],
+        )
+
+    def test_normalize_scan_config_accepts_added_ado_org_pat_list(self):
+        config = scanner.normalize_scan_config(
+            {
+                "provider": "azure-devops",
+                "adoOrgPats": [
+                    {"org": "FabrikamCloud", "pat": "pat-a"},
+                    {"org": "ContosoApps", "pat": "pat-b"},
+                ],
+                "postgresEnabled": False,
+            }
+        )
+
+        self.assertEqual(config["orgDisplay"], "2 Azure DevOps organizations")
+        self.assertEqual(
+            [(item["org"], item["pat"]) for item in config["adoOrgPats"]],
+            [("FabrikamCloud", "pat-a"), ("ContosoApps", "pat-b")],
+        )
+
+    def test_normalize_scan_config_accepts_selected_targets(self):
+        config = scanner.normalize_scan_config(
+            {
+                "provider": "azure-devops",
+                "adoOrgPats": [{"org": "FabrikamCloud", "pat": "pat-a"}],
+                "targetFilters": [
+                    {"org": "FabrikamCloud", "project": "Payments"},
+                    {"org": "FabrikamCloud", "project": "Storefront"},
+                ],
+                "postgresEnabled": False,
+            }
+        )
+
+        self.assertEqual(
+            [(item["org"], item["project"]) for item in config["targetFilters"]],
+            [("FabrikamCloud", "Payments"), ("FabrikamCloud", "Storefront")],
+        )
 
     def test_normalize_scan_config_rejects_unknown_application_types(self):
         with self.assertRaises(ValueError):
@@ -298,7 +558,8 @@ class UiServiceTests(unittest.TestCase):
                 "postgresDatabase": "postgres",
                 "postgresUser": "postgres",
                 "postgresPassword": "postgres",
-                "postgresTable": "appsec_inventory_assets",
+                "postgresSchema": "application_inventory",
+                "postgresTable": "application_inventory_assets",
             }
         )
 
@@ -306,11 +567,75 @@ class UiServiceTests(unittest.TestCase):
         env = scanner.scan_environment(config)
 
         self.assertEqual(config["postgresDsn"], "postgresql://postgres:postgres@localhost:5432/postgres")
+        self.assertEqual(config["postgresSchema"], "application_inventory")
+        self.assertIn("--postgres-schema", command)
+        self.assertIn("application_inventory", command)
         self.assertIn("--postgres-table", command)
-        self.assertIn("appsec_inventory_assets", command)
+        self.assertIn("application_inventory_assets", command)
         self.assertNotIn(config["postgresDsn"], command)
+        self.assertEqual(env["APPLICATION_INVENTORY_POSTGRES_DSN"], config["postgresDsn"])
+        self.assertEqual(env["APPLICATION_INVENTORY_POSTGRES_SCHEMA"], "application_inventory")
+        self.assertEqual(env["APPLICATION_INVENTORY_POSTGRES_TABLE"], "application_inventory_assets")
         self.assertEqual(env["APPSEC_INVENTORY_POSTGRES_DSN"], config["postgresDsn"])
-        self.assertEqual(env["APPSEC_INVENTORY_POSTGRES_TABLE"], "appsec_inventory_assets")
+        self.assertEqual(env["APPSEC_INVENTORY_POSTGRES_SCHEMA"], "application_inventory")
+        self.assertEqual(env["APPSEC_INVENTORY_POSTGRES_TABLE"], "application_inventory_assets")
+
+    def test_postgres_disabled_removes_database_environment(self):
+        config = scanner.normalize_scan_config(
+            {
+                "provider": "azure-devops",
+                "org": "FabrikamCloud",
+                "postgresEnabled": False,
+            }
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "APPSEC_INVENTORY_POSTGRES_DSN": "postgresql://postgres:postgres@localhost:5432/postgres",
+                "APPSEC_INVENTORY_POSTGRES_SCHEMA": "application_inventory",
+                "APPSEC_INVENTORY_POSTGRES_TABLE": "application_inventory_assets",
+                "APPLICATION_INVENTORY_POSTGRES_DSN": "postgresql://postgres:postgres@localhost:5432/postgres",
+                "APPLICATION_INVENTORY_POSTGRES_SCHEMA": "application_inventory",
+                "APPLICATION_INVENTORY_POSTGRES_TABLE": "application_inventory_assets",
+            },
+            clear=False,
+        ):
+            env = scanner.scan_environment(config)
+
+        self.assertNotIn("APPSEC_INVENTORY_POSTGRES_DSN", env)
+        self.assertNotIn("APPSEC_INVENTORY_POSTGRES_SCHEMA", env)
+        self.assertNotIn("APPSEC_INVENTORY_POSTGRES_TABLE", env)
+        self.assertNotIn("APPLICATION_INVENTORY_POSTGRES_DSN", env)
+        self.assertNotIn("APPLICATION_INVENTORY_POSTGRES_SCHEMA", env)
+        self.assertNotIn("APPLICATION_INVENTORY_POSTGRES_TABLE", env)
+
+    def test_multi_ado_org_pats_are_passed_through_environment(self):
+        config = scanner.normalize_scan_config(
+            {
+                "provider": "azure-devops",
+                "adoOrgPats": "FabrikamCloud=pat-a\nContosoApps=pat-b",
+                "postgresEnabled": False,
+            }
+        )
+
+        command = scanner.build_scan_command(config, Path("/reports/scan-1"))
+        env = scanner.scan_environment(config)
+
+        self.assertNotIn("--org", command)
+        self.assertNotIn("pat-a", command)
+        self.assertNotIn("pat-b", command)
+        self.assertIn("APPLICATION_INVENTORY_ADO_ORG_PATS", env)
+        self.assertIn("APPSEC_INVENTORY_ADO_ORG_PATS", env)
+        self.assertNotIn("ADO_PAT", env)
+        self.assertEqual(
+            json.loads(env["APPLICATION_INVENTORY_ADO_ORG_PATS"]),
+            [{"org": "FabrikamCloud", "pat": "pat-a"}, {"org": "ContosoApps", "pat": "pat-b"}],
+        )
+        self.assertEqual(
+            json.loads(env["APPSEC_INVENTORY_ADO_ORG_PATS"]),
+            [{"org": "FabrikamCloud", "pat": "pat-a"}, {"org": "ContosoApps", "pat": "pat-b"}],
+        )
 
     def test_postgres_dsn_url_encodes_credentials(self):
         dsn = scanner.postgres_dsn_from_config(
@@ -324,6 +649,12 @@ class UiServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(dsn, "postgresql://app%20user:p%40ss%20word@localhost:5432/inventory%20db")
+
+    def test_database_status_requires_dsn(self):
+        status = scanner.database_status("")
+
+        self.assertFalse(status["connected"])
+        self.assertEqual(status["status"], "missing_dsn")
 
     def test_build_scan_command_for_azure_devops(self):
         config = scanner.normalize_scan_config(
@@ -345,6 +676,22 @@ class UiServiceTests(unittest.TestCase):
         self.assertNotIn("--base-url", command)
         self.assertIn("4", command)
 
+    def test_build_scan_command_for_selected_ado_projects(self):
+        config = scanner.normalize_scan_config(
+            {
+                "provider": "azure-devops",
+                "adoOrgPats": [{"org": "FabrikamCloud", "pat": "pat-a"}],
+                "targetFilters": [{"org": "FabrikamCloud", "project": "Payments"}],
+                "postgresEnabled": False,
+            }
+        )
+
+        command = scanner.build_scan_command(config, Path("/reports/scan-2"))
+
+        self.assertNotIn("--project", command)
+        self.assertEqual(command.count("--target-filter"), 1)
+        self.assertIn("FabrikamCloud=Payments", command)
+
     def test_build_scan_command_scans_all_ado_projects_when_project_empty(self):
         config = scanner.normalize_scan_config(
             {
@@ -357,10 +704,73 @@ class UiServiceTests(unittest.TestCase):
 
         self.assertNotIn("--project", command)
 
+    def test_discover_source_targets_loads_azure_projects(self):
+        created = []
+
+        class FakeAzureClient:
+            def __init__(self, org, pat, timeout):
+                created.append((org, pat, timeout))
+
+            def list_projects(self):
+                return [{"name": "Payments"}, {"name": "Storefront"}]
+
+            def close(self):
+                return None
+
+        with patch.object(ui_module, "AzureDevOpsClient", FakeAzureClient):
+            data = ui_module.discover_source_targets(
+                {
+                    "provider": "azure-devops",
+                    "adoOrgPats": [{"org": "FabrikamCloud", "pat": "pat-a"}],
+                    "timeout": 12,
+                }
+            )
+
+        self.assertEqual(created, [("FabrikamCloud", "pat-a", 12)])
+        self.assertEqual(
+            [(target["org"], target["project"], target["kind"]) for target in data["targets"]],
+            [("FabrikamCloud", "Payments", "project"), ("FabrikamCloud", "Storefront", "project")],
+        )
+
+    def test_discover_source_targets_loads_github_repositories(self):
+        created = []
+
+        class FakeGitHubClient:
+            def __init__(self, base_url, owner, token, timeout):
+                created.append((base_url, owner, token, timeout))
+
+            def list_repos(self, project_name):
+                if project_name != "":
+                    raise AssertionError("repository discovery should list all repositories")
+                return [
+                    {"name": "payments-api", "fullName": "FabrikamCloud/payments-api"},
+                    {"name": "archived-api", "fullName": "FabrikamCloud/archived-api", "isDisabled": True},
+                ]
+
+            def close(self):
+                return None
+
+        with patch.object(ui_module, "GitHubEnterpriseClient", FakeGitHubClient):
+            data = ui_module.discover_source_targets(
+                {
+                    "provider": "github-enterprise",
+                    "org": "FabrikamCloud",
+                    "baseUrl": "https://github.fabrikam.example/api/v3",
+                    "token": "token",
+                    "timeout": 11,
+                }
+            )
+
+        self.assertEqual(created, [("https://github.fabrikam.example/api/v3", "FabrikamCloud", "token", 11)])
+        self.assertEqual(
+            [(target["org"], target["project"], target["kind"], target["label"]) for target in data["targets"]],
+            [("FabrikamCloud", "payments-api", "repository", "FabrikamCloud/payments-api")],
+        )
+
     def test_normalize_application_types_uses_known_order(self):
         self.assertEqual(
-            scanner.normalize_application_types(["ai_enabled", "mobile_app", "mobile_app"]),
-            ("mobile_app", "ai_enabled"),
+            scanner.normalize_application_types(["ml_enabled", "ai_enabled", "mobile_app", "mobile_app"]),
+            ("mobile_app", "ai_enabled", "ml_enabled"),
         )
 
     def test_inventory_type_matches_defaults_to_all_types(self):
@@ -384,7 +794,7 @@ class UiServiceTests(unittest.TestCase):
 
     def test_redact_command_hides_sensitive_values(self):
         command = (
-            "appsec-scan-router",
+            "application-inventory-service",
             "--pat",
             "secret",
             "--postgres-dsn",
@@ -398,7 +808,7 @@ class UiServiceTests(unittest.TestCase):
         self.assertEqual(
             redacted,
             [
-                "appsec-scan-router",
+                "application-inventory-service",
                 "--pat",
                 "[redacted]",
                 "--postgres-dsn",
@@ -590,7 +1000,25 @@ dependencies = ["openai", "langchain-openai", "chromadb", "sentence-transformers
         self.assertIn("llm_integration", categories)
         self.assertIn("ai_orchestration", categories)
         self.assertIn("ml_inference", categories)
+        self.assertIn("ml_enabled", categories)
         self.assertIn("vector_search", categories)
+
+    def test_detects_ml_enabled_inventory_repo(self):
+        confidence, evidence, score = scanner.detect_inventory_repo(
+            ["/requirements.txt"],
+            {"/requirements.txt": "fastapi\nscikit-learn\nmlflow\nonnxruntime\n"},
+        )
+
+        categories = {item.category for item in evidence}
+        inventory_types = scanner.inventory_types_from_categories(categories)
+
+        self.assertEqual(confidence, "high")
+        self.assertGreaterEqual(score, 8)
+        self.assertIn("ai_enabled", categories)
+        self.assertIn("ml_enabled", categories)
+        self.assertIn("ml_inference", categories)
+        self.assertIn("ai_enabled", inventory_types)
+        self.assertIn("ml_enabled", inventory_types)
 
     def test_detects_dotnet_ai_inventory_repo(self):
         confidence, evidence, score = scanner.detect_inventory_repo(
@@ -638,6 +1066,25 @@ spring:
         self.assertGreaterEqual(score, 3)
         self.assertIn("ai_enabled", categories)
         self.assertIn("llm_integration", categories)
+
+    def test_detects_ml_runtime_configuration(self):
+        confidence, evidence, score = scanner.detect_inventory_repo(
+            ["/application.yml"],
+            {
+                "/application.yml": """\
+mlflow:
+  tracking_uri: https://mlflow.example.invalid
+model_uri: models:/churn/latest
+"""
+            },
+        )
+
+        categories = {item.category for item in evidence}
+        self.assertEqual(confidence, "medium")
+        self.assertGreaterEqual(score, 7)
+        self.assertIn("ai_enabled", categories)
+        self.assertIn("ml_enabled", categories)
+        self.assertIn("ml_inference", categories)
 
     def test_generic_config_xml_is_not_mobile(self):
         confidence, evidence, score = scanner.detect_mobile_repo(
@@ -978,6 +1425,7 @@ class OutputTests(unittest.TestCase):
 
     def sample_result(self):
         return {
+            "organization": "FabrikamCloud",
             "project": "Project",
             "repo_name": "Repo",
             "branch_name": "main",
@@ -998,6 +1446,7 @@ class OutputTests(unittest.TestCase):
             "mobile_identifier": "com.fabrikam.agsnap",
             "mobile_identifier_source": "Gradle applicationId/namespace",
             "mobile_identifier_status": "found",
+            "branch_contributing_developers": "Alice Adams <alice@example.com>; Bob Brown <bob@example.com>",
             "contributing_developers": "Alice Adams <alice@example.com>; Bob Brown <bob@example.com>",
             "last_updated": "2024-05-02T08:30:15Z",
             "confidence": "medium",
@@ -1033,12 +1482,18 @@ class OutputTests(unittest.TestCase):
             loaded = json.loads(json_path.read_text(encoding="utf-8"))
             self.assertEqual(loaded, [result])
             self.assertIn("repo_name", csv_path.read_text(encoding="utf-8"))
+            self.assertIn("organization", csv_path.read_text(encoding="utf-8"))
             self.assertIn("https://example.invalid/repo.git#branch=main", (Path(tmpdir) / "scan_semgrep_targets.txt").read_text(encoding="utf-8"))
             targets = json.loads((Path(tmpdir) / "scan_scanner_targets.json").read_text(encoding="utf-8"))
+            self.assertEqual(targets[0]["organization"], "FabrikamCloud")
             self.assertEqual(targets[0]["inventory_name"], "Agsnap")
             workbook = load_workbook(xlsx_path)
             self.assertEqual(workbook.sheetnames, [scanner.ACTIVE_SHEET_NAME, scanner.OLDER_SHEET_NAME])
             self.assertEqual(workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "mobile_name", 2), "Agsnap")
+            self.assertEqual(
+                workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "branch_contributing_developers", 2),
+                "Alice Adams <alice@example.com>; Bob Brown <bob@example.com>",
+            )
 
     def test_streaming_report_writer_flushes_rows_as_they_are_written(self):
         result = self.sample_result()
@@ -1104,27 +1559,34 @@ class OutputTests(unittest.TestCase):
 
         self.assertEqual(values["owner_user_id"], "42")
         self.assertEqual(values["owner_user_login"], "alice")
+        self.assertEqual(values["organization"], "FabrikamCloud")
+        self.assertEqual(
+            values["branch_contributing_developers"],
+            "Alice Adams <alice@example.com>; Bob Brown <bob@example.com>",
+        )
 
     def test_category_columns_are_excel_filter_friendly(self):
-        columns = scanner.category_columns(["android", "react_native", "ai_enabled"])
+        columns = scanner.category_columns(["android", "react_native", "ai_enabled", "ml_enabled"])
 
         self.assertEqual(columns["category_android"], "TRUE")
         self.assertEqual(columns["category_react_native"], "TRUE")
         self.assertEqual(columns["category_ai_enabled"], "TRUE")
+        self.assertEqual(columns["category_ml_enabled"], "TRUE")
         self.assertEqual(columns["category_ios"], "FALSE")
 
     def test_type_columns_are_excel_filter_friendly(self):
-        columns = scanner.type_columns(["web_app", "microservice", "ai_enabled"])
+        columns = scanner.type_columns(["web_app", "microservice", "ai_enabled", "ml_enabled"])
 
         self.assertEqual(columns["type_web_app"], "TRUE")
         self.assertEqual(columns["type_microservice"], "TRUE")
         self.assertEqual(columns["type_ai_enabled"], "TRUE")
+        self.assertEqual(columns["type_ml_enabled"], "TRUE")
         self.assertEqual(columns["type_mobile_app"], "FALSE")
 
     def test_inventory_types_from_categories(self):
         self.assertEqual(
-            scanner.inventory_types_from_categories(["web_backend", "api_service", "middleware", "llm_integration"]),
-            ["web_app", "api_service", "middleware", "ai_enabled"],
+            scanner.inventory_types_from_categories(["web_backend", "api_service", "middleware", "ml_inference"]),
+            ["web_app", "api_service", "middleware", "ai_enabled", "ml_enabled"],
         )
 
     def test_identifier_status(self):

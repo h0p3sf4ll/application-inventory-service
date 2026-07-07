@@ -14,32 +14,65 @@ from .constants import (
     DEFAULT_MAX_WORKERS,
     DEFAULT_OUT_PREFIX,
     DEFAULT_POSTGRES_TABLE,
+    DEFAULT_POSTGRES_SCHEMA,
     DEFAULT_STORE_COUNTRY,
     DEFAULT_STORE_TIMEOUT_SECONDS,
     DEFAULT_TIMEOUT_SECONDS,
     KNOWN_INVENTORY_TYPES,
 )
-from .models import ScanConfig
+from .models import AzureDevOpsOrgPat, ScanConfig, SourceTargetFilter
+from .org_tokens import parse_ado_org_pat_values
 from .scanner import normalize_application_types, scan_to_reports, store_lookup_allowed
+from .target_filters import parse_source_target_filter_values
 
 
 def parse_args(argv: list[str]) -> ScanConfig:
     parser = argparse.ArgumentParser(
-        prog="appsec-inventory-service",
+        prog="application-inventory-service",
         description="Inventory applications, services, middleware, and mobile apps across Azure DevOps or GitHub Enterprise.",
     )
     parser.add_argument(
         "--provider",
         choices=("azure-devops", "github-enterprise"),
-        default=os.getenv("APPSEC_SCAN_PROVIDER", "azure-devops"),
+        default=env_value("APPLICATION_INVENTORY_PROVIDER", "APPSEC_SCAN_PROVIDER") or "azure-devops",
         help="Source provider. Defaults to azure-devops.",
     )
-    parser.add_argument("--org", required=True, help="Azure DevOps organization or GitHub owner.")
-    parser.add_argument("--project", help="Azure DevOps project or GitHub repository name. Omit to scan all.")
-    parser.add_argument("--repo", help="GitHub repository name. Alias for --project. Omit to scan all.")
+    parser.add_argument("--org", help="Azure DevOps organization or GitHub owner.")
+    parser.add_argument(
+        "--ado-org-pat",
+        action="append",
+        default=[],
+        metavar="ORG=PAT",
+        help=(
+            "Azure DevOps organization and PAT pair. May be repeated. "
+            "When provided, each organization is scanned with its own PAT."
+        ),
+    )
+    parser.add_argument(
+        "--project",
+        action="append",
+        default=[],
+        help="Azure DevOps project or GitHub repository name. May be repeated. Omit to scan all.",
+    )
+    parser.add_argument(
+        "--repo",
+        action="append",
+        default=[],
+        help="GitHub repository name. Alias for --project. May be repeated. Omit to scan all.",
+    )
+    parser.add_argument(
+        "--target-filter",
+        action="append",
+        default=[],
+        metavar="[ORG=]PROJECT_OR_REPO",
+        help=(
+            "Provider target filter. May be repeated. Use ORG=PROJECT for Azure DevOps multi-org scans, "
+            "or a repository name for GitHub Enterprise."
+        ),
+    )
     parser.add_argument(
         "--base-url",
-        default=os.getenv("APPSEC_SCAN_BASE_URL") or os.getenv("GITHUB_API_URL") or os.getenv("GHE_API_URL") or "",
+        default=env_value("APPLICATION_INVENTORY_BASE_URL", "APPSEC_SCAN_BASE_URL", "GITHUB_API_URL", "GHE_API_URL"),
         help="GitHub Enterprise API URL, for example https://github.example.com/api/v3.",
     )
     parser.add_argument(
@@ -144,31 +177,40 @@ def parse_args(argv: list[str]) -> ScanConfig:
     )
     parser.add_argument(
         "--postgres-dsn",
-        default=os.getenv("APPSEC_INVENTORY_POSTGRES_DSN", ""),
+        default=env_value("APPLICATION_INVENTORY_POSTGRES_DSN", "APPSEC_INVENTORY_POSTGRES_DSN"),
         help=(
             "PostgreSQL DSN for streaming upserts, for example "
             "postgresql://user:password@localhost:5432/postgres. "
-            "Prefer APPSEC_INVENTORY_POSTGRES_DSN for sensitive values."
+            "Prefer APPLICATION_INVENTORY_POSTGRES_DSN for sensitive values."
         ),
     )
     parser.add_argument(
-        "--postgres-table",
-        default=os.getenv("APPSEC_INVENTORY_POSTGRES_TABLE", DEFAULT_POSTGRES_TABLE),
-        help=f"PostgreSQL target table for inventory upserts. Defaults to {DEFAULT_POSTGRES_TABLE}.",
+        "--postgres-schema",
+        default=env_value("APPLICATION_INVENTORY_POSTGRES_SCHEMA", "APPSEC_INVENTORY_POSTGRES_SCHEMA") or DEFAULT_POSTGRES_SCHEMA,
+        help=f"PostgreSQL schema for normalized inventory tables. Defaults to {DEFAULT_POSTGRES_SCHEMA}.",
     )
-    parser.add_argument("--owner-user-id", default=os.getenv("APPSEC_INVENTORY_OWNER_USER_ID", "anonymous"), help=argparse.SUPPRESS)
-    parser.add_argument("--owner-user-login", default=os.getenv("APPSEC_INVENTORY_OWNER_USER_LOGIN", "anonymous"), help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--postgres-table",
+        default=env_value("APPLICATION_INVENTORY_POSTGRES_TABLE", "APPSEC_INVENTORY_POSTGRES_TABLE") or DEFAULT_POSTGRES_TABLE,
+        help=f"PostgreSQL compatibility table for flat inventory upserts. Defaults to {DEFAULT_POSTGRES_TABLE}.",
+    )
+    parser.add_argument("--owner-user-id", default=env_value("APPLICATION_INVENTORY_OWNER_USER_ID", "APPSEC_INVENTORY_OWNER_USER_ID") or "anonymous", help=argparse.SUPPRESS)
+    parser.add_argument("--owner-user-login", default=env_value("APPLICATION_INVENTORY_OWNER_USER_LOGIN", "APPSEC_INVENTORY_OWNER_USER_LOGIN") or "anonymous", help=argparse.SUPPRESS)
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging.")
     args = parser.parse_args(argv)
 
     configure_logging(args.verbose)
     application_types = normalize_application_types(args.application_types)
-    validate_args(args, application_types)
-    token = provider_token(args)
-    target_project = provider_project(args)
+    ado_org_pats = collect_ado_org_pats(args)
+    target_filters = collect_target_filters(args)
+    validate_args(args, application_types, ado_org_pats)
+    token = "" if ado_org_pats else provider_token(args)
+    target_projects = provider_projects(args)
+    target_project = target_projects[0] if len(target_projects) == 1 and not target_filters else None
+    org = args.org or (ado_org_pats[0].org if len(ado_org_pats) == 1 else "")
 
     return ScanConfig(
-        org=args.org,
+        org=org,
         pat=token,
         project=target_project,
         out_dir=args.out_dir,
@@ -188,19 +230,38 @@ def parse_args(argv: list[str]) -> ScanConfig:
         base_url=args.base_url,
         application_types=application_types,
         postgres_dsn=args.postgres_dsn,
+        postgres_schema=args.postgres_schema,
         postgres_table=args.postgres_table,
         owner_user_id=args.owner_user_id,
         owner_user_login=args.owner_user_login,
+        ado_org_pats=ado_org_pats,
+        target_filters=target_filters or tuple(SourceTargetFilter("", project) for project in target_projects),
     )
 
 
-def validate_args(args: argparse.Namespace, application_types: tuple[str, ...]) -> None:
-    if args.project and args.repo and args.project != args.repo:
+def validate_args(
+    args: argparse.Namespace,
+    application_types: tuple[str, ...],
+    ado_org_pats: tuple[AzureDevOpsOrgPat, ...],
+) -> None:
+    project_values = tuple(args.project or ())
+    repo_values = tuple(args.repo or ())
+    if project_values and repo_values and project_values != repo_values:
         raise SystemExit("--project and --repo cannot refer to different repositories.")
-    if not provider_token(args):
-        raise SystemExit(provider_token_message(args.provider))
-    if args.provider == "github-enterprise" and not args.base_url:
-        raise SystemExit("Missing GitHub Enterprise API URL. Set --base-url or GITHUB_API_URL.")
+    if args.provider == "github-enterprise":
+        if ado_org_pats or args.ado_org_pat:
+            raise SystemExit("--ado-org-pat only applies to Azure DevOps scans.")
+        if not args.org:
+            raise SystemExit("Missing GitHub owner. Set --org.")
+        if not provider_token(args):
+            raise SystemExit(provider_token_message(args.provider))
+        if not args.base_url:
+            raise SystemExit("Missing GitHub Enterprise API URL. Set --base-url or GITHUB_API_URL.")
+    else:
+        if not args.org and not ado_org_pats:
+            raise SystemExit("Missing Azure DevOps organization. Set --org or pass --ado-org-pat ORG=PAT.")
+        if not ado_org_pats and not provider_token(args):
+            raise SystemExit(provider_token_message(args.provider))
     if args.max_workers < 1:
         raise SystemExit("--max-workers must be at least 1.")
     if args.branch_workers < 1:
@@ -222,8 +283,14 @@ def validate_args(args: argparse.Namespace, application_types: tuple[str, ...]) 
         raise SystemExit("--store-lookup only applies when scanning mobile apps or all application types.")
 
 
-def provider_project(args: argparse.Namespace) -> str | None:
-    return args.project or args.repo
+def provider_projects(args: argparse.Namespace) -> tuple[str, ...]:
+    values = list(args.project or args.repo or [])
+    deduped: dict[str, str] = {}
+    for value in values:
+        cleaned = str(value or "").strip()
+        if cleaned:
+            deduped[cleaned.lower()] = cleaned
+    return tuple(deduped.values())
 
 
 def provider_token(args: argparse.Namespace) -> str:
@@ -232,6 +299,39 @@ def provider_token(args: argparse.Namespace) -> str:
     if args.provider == "github-enterprise":
         return os.getenv("GITHUB_TOKEN") or os.getenv("GHE_TOKEN") or ""
     return os.getenv("ADO_PAT") or ""
+
+
+def collect_ado_org_pats(args: argparse.Namespace) -> tuple[AzureDevOpsOrgPat, ...]:
+    if args.provider != "azure-devops":
+        return ()
+    values: list[object] = []
+    org_pat_env_value = env_value("APPLICATION_INVENTORY_ADO_ORG_PATS", "APPSEC_INVENTORY_ADO_ORG_PATS", "ADO_ORG_PATS")
+    if org_pat_env_value:
+        values.append(org_pat_env_value)
+    values.extend(args.ado_org_pat or [])
+    try:
+        org_pats = list(parse_ado_org_pat_values(values))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    token = provider_token(args)
+    if org_pats and args.org and token:
+        org_pats.append(AzureDevOpsOrgPat(args.org, token))
+    deduped: dict[str, AzureDevOpsOrgPat] = {}
+    for org_pat in org_pats:
+        deduped[org_pat.org.lower()] = org_pat
+    return tuple(deduped.values())
+
+
+def collect_target_filters(args: argparse.Namespace) -> tuple[SourceTargetFilter, ...]:
+    values: list[object] = []
+    target_filter_env_value = env_value("APPLICATION_INVENTORY_TARGET_FILTERS", "APPSEC_INVENTORY_TARGET_FILTERS")
+    if target_filter_env_value:
+        values.append(target_filter_env_value)
+    values.extend(args.target_filter or [])
+    try:
+        return parse_source_target_filter_values(values)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def provider_token_message(provider: str) -> str:
@@ -246,6 +346,14 @@ def configure_logging(verbose: bool) -> None:
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
+
+
+def env_value(*names: str) -> str:
+    for name in names:
+        value = str(os.getenv(name) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -14,6 +14,17 @@ const logoutGitHub = document.querySelector("#logoutGitHub");
 const forgetToken = document.querySelector("#forgetToken");
 const authStatus = document.querySelector("#authStatus");
 const loginSummary = document.querySelector("#loginSummary");
+const orgRequirementBadge = document.querySelector("#orgRequirementBadge");
+const addAdoOrgPatButton = document.querySelector("#addAdoOrgPat");
+const adoOrgPatList = document.querySelector("#adoOrgPatList");
+const loadTargetsButton = document.querySelector("#loadTargets");
+const selectAllTargetsButton = document.querySelector("#selectAllTargets");
+const clearTargetFiltersButton = document.querySelector("#clearTargetFilters");
+const targetFilterList = document.querySelector("#targetFilterList");
+const targetFilterTitle = document.querySelector("#targetFilterTitle");
+const targetFilterDefault = document.querySelector("#targetFilterDefault");
+const targetFilterSummary = document.querySelector("#targetFilterSummary");
+const targetSearch = document.querySelector("#targetSearch");
 const githubSsoStatus = document.querySelector("#githubSsoStatus");
 const googleSsoStatus = document.querySelector("#googleSsoStatus");
 const testSsoStatus = document.querySelector("#testSsoStatus");
@@ -37,6 +48,10 @@ const scanCount = document.querySelector("#scanCount");
 const logsElement = document.querySelector("#logs");
 const toast = document.querySelector("#toast");
 const formStatus = document.querySelector("#formStatus");
+const checkDatabaseButton = document.querySelector("#checkDatabase");
+const exportDatabaseCsvButton = document.querySelector("#exportDatabaseCsv");
+const exportDatabaseJsonButton = document.querySelector("#exportDatabaseJson");
+const databaseStatus = document.querySelector("#databaseStatus");
 const tabButtons = document.querySelectorAll("[data-view]");
 
 const state = {
@@ -46,13 +61,18 @@ const state = {
   logs: [],
   timer: null,
   session: null,
+  database: null,
+  adoOrgPats: [],
+  sourceTargets: [],
+  selectedTargets: [],
+  sourceTargetErrors: [],
 };
 
 const defaultValues = {
-  outPrefix: "appsec_inventory_service",
+  outPrefix: "application_inventory_service",
   applicationTypes: [],
   minConfidence: "medium",
-  activityMode: "latest",
+  activityMode: "contributors",
   branchAgeDays: "90",
   maxWorkers: "8",
   branchWorkers: "16",
@@ -64,12 +84,13 @@ const defaultValues = {
   storeLookup: false,
   saveToken: false,
   postgresEnabled: true,
-  postgresHost: "host.docker.internal",
+  postgresHost: "localhost",
   postgresPort: "5432",
   postgresDatabase: "postgres",
   postgresUser: "postgres",
   postgresPassword: "",
-  postgresTable: "appsec_inventory_assets",
+  postgresSchema: "application_inventory",
+  postgresTable: "application_inventory_assets",
   verbose: false,
 };
 
@@ -96,6 +117,7 @@ const persistedFields = [
   "postgresPort",
   "postgresDatabase",
   "postgresUser",
+  "postgresSchema",
   "postgresTable",
   "verbose",
 ];
@@ -105,6 +127,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   syncProviderFields();
   syncDatabaseFields();
   syncMobileOptions();
+  syncAdoOrgPatInput();
+  syncTargetFilterInput();
   bindEvents();
   renderShell();
   await loadSession();
@@ -118,7 +142,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 function bindEvents() {
-  form.addEventListener("change", () => {
+  form.addEventListener("change", (event) => {
+    if (sourceFieldChanged(event.target)) {
+      clearDiscoveredTargets({silent: true});
+    }
     syncProviderFields();
     syncDatabaseFields();
     syncMobileOptions();
@@ -126,11 +153,19 @@ function bindEvents() {
     saveForm();
   });
   form.addEventListener("input", saveForm);
+  form.addEventListener("input", syncCredentialFields);
   startScanButton.addEventListener("click", startScan);
   stopScanButton.addEventListener("click", stopScan);
   refreshButton.addEventListener("click", loadScans);
   resetDefaultsButton.addEventListener("click", resetDefaults);
   toggleTokenButton.addEventListener("click", toggleToken);
+  addAdoOrgPatButton.addEventListener("click", addAdoOrgPat);
+  loadTargetsButton.addEventListener("click", loadSourceTargets);
+  selectAllTargetsButton.addEventListener("click", selectVisibleTargets);
+  clearTargetFiltersButton.addEventListener("click", () => clearSelectedTargets());
+  targetSearch.addEventListener("input", renderTargetFilters);
+  form.elements.adoOrgName.addEventListener("keydown", handleAdoOrgPatKeydown);
+  form.elements.adoOrgPat.addEventListener("keydown", handleAdoOrgPatKeydown);
   logoutGitHub.addEventListener("click", logout);
   forgetToken.addEventListener("click", forgetSavedToken);
   loginGitHubSso.addEventListener("click", handleSsoClick);
@@ -142,12 +177,18 @@ function bindEvents() {
     renderLogs();
   });
   downloadLogsButton.addEventListener("click", downloadLogs);
+  checkDatabaseButton.addEventListener("click", checkDatabase);
+  exportDatabaseCsvButton.addEventListener("click", () => exportDatabase("csv"));
+  exportDatabaseJsonButton.addEventListener("click", () => exportDatabase("json"));
   tabButtons.forEach((button) => {
     button.addEventListener("click", () => setActiveView(button.dataset.view));
   });
 }
 
 async function startScan() {
+  if (!commitPendingAdoOrgPat({silent: true})) {
+    return;
+  }
   if (!form.reportValidity()) {
     return;
   }
@@ -167,6 +208,7 @@ async function startScan() {
     state.logs = data.scan.logsTail || [];
     await loadScans(data.scan.id);
     listenToScan(data.scan.id);
+    setActiveView("runsView");
     await loadSession();
     notify("Scan started.");
   } catch (error) {
@@ -224,6 +266,9 @@ async function logout() {
     state.scans = [];
     state.activeScan = null;
     state.logs = [];
+    state.adoOrgPats = [];
+    clearDiscoveredTargets({silent: true});
+    syncAdoOrgPatInput();
     form.elements.saveToken.checked = false;
     renderAuth();
     renderAll();
@@ -351,6 +396,7 @@ function renderAll() {
   renderActiveScan();
   renderRuns();
   renderReports();
+  renderDatabaseStatus();
   renderLogs();
 }
 
@@ -366,7 +412,7 @@ function renderActiveScan() {
     progressDetail.textContent = "No scan running";
     etaValue.textContent = "Not started";
     runtimeValue.textContent = "0s";
-    commandLine.textContent = "appsec-inventory-service";
+    commandLine.textContent = "application-inventory-service";
     copyCommandButton.disabled = true;
     stopScanButton.disabled = true;
     downloadLogsButton.disabled = true;
@@ -381,7 +427,7 @@ function renderActiveScan() {
   progressDetail.textContent = scanProgressDetail(scan);
   etaValue.textContent = scanEta(scan);
   runtimeValue.textContent = scanRuntime(scan);
-  commandLine.textContent = scan.command || "appsec-inventory-service";
+  commandLine.textContent = scan.command || "application-inventory-service";
   copyCommandButton.disabled = !scan.command;
   stopScanButton.disabled = scan.status !== "running";
   downloadLogsButton.disabled = state.logs.length === 0;
@@ -438,10 +484,81 @@ function renderReports() {
   `).join("");
 }
 
+function renderDatabaseStatus() {
+  const database = state.database;
+  if (!database) {
+    databaseStatus.className = "database-status";
+    databaseStatus.innerHTML = `
+      <strong>Not checked</strong>
+      <span>Schema: ${escapeHtml(form.elements.postgresSchema.value || defaultValues.postgresSchema)}</span>
+    `;
+    return;
+  }
+  const connected = Boolean(database.connected);
+  databaseStatus.className = `database-status ${connected ? "connected" : "failed"}`;
+  databaseStatus.innerHTML = `
+    <strong>${connected ? "Connected" : "Unavailable"}</strong>
+    <span>${escapeHtml(database.message || database.status || "")}</span>
+    <span>Schema: ${escapeHtml(database.schema || form.elements.postgresSchema.value || defaultValues.postgresSchema)}</span>
+    <span>Branch rows: ${escapeHtml(String(database.branchRows ?? 0))}</span>
+    <span>Flat rows: ${escapeHtml(String(database.flatRows ?? 0))}</span>
+  `;
+}
+
 function renderLogs() {
   logsElement.textContent = state.logs.join("\n");
   logsElement.scrollTop = logsElement.scrollHeight;
   downloadLogsButton.disabled = state.logs.length === 0;
+}
+
+async function checkDatabase() {
+  setDatabaseBusy(true);
+  try {
+    const response = await fetch("/api/database/status", {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify(databasePayload()),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Database check failed.");
+    }
+    state.database = data.database;
+    renderDatabaseStatus();
+    notify(data.database && data.database.connected ? "Database connected." : "Database unavailable.");
+  } catch (error) {
+    state.database = {connected: false, message: error.message || "Database check failed."};
+    renderDatabaseStatus();
+    notify(error.message || "Database check failed.");
+  } finally {
+    setDatabaseBusy(false);
+  }
+}
+
+async function exportDatabase(format) {
+  setDatabaseBusy(true);
+  try {
+    const response = await fetch("/api/database/export", {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify({...databasePayload(), format}),
+    });
+    const contentType = response.headers.get("Content-Type") || "";
+    if (!response.ok) {
+      if (contentType.includes("application/json")) {
+        const data = await response.json();
+        throw new Error(data.error || "Database export failed.");
+      }
+      throw new Error("Database export failed.");
+    }
+    const blob = await response.blob();
+    downloadBlob(blob, `application_inventory_database_export.${format}`);
+    notify(`Database ${format.toUpperCase()} export downloaded.`);
+  } catch (error) {
+    notify(error.message || "Database export failed.");
+  } finally {
+    setDatabaseBusy(false);
+  }
 }
 
 function formPayload() {
@@ -450,6 +567,8 @@ function formPayload() {
   return {
     provider,
     org: value(data, "org"),
+    adoOrgPats: provider === "azure-devops" ? value(data, "adoOrgPats") : "",
+    targetFilters: targetFilterPayload(),
     project: provider === "azure-devops" ? value(data, "project") : "",
     repo: provider === "github-enterprise" ? value(data, "repo") : "",
     baseUrl: provider === "github-enterprise" ? value(data, "baseUrl") : "",
@@ -474,8 +593,23 @@ function formPayload() {
     postgresDatabase: value(data, "postgresDatabase") || defaultValues.postgresDatabase,
     postgresUser: value(data, "postgresUser") || defaultValues.postgresUser,
     postgresPassword: value(data, "postgresPassword"),
+    postgresSchema: value(data, "postgresSchema") || defaultValues.postgresSchema,
     postgresTable: value(data, "postgresTable") || defaultValues.postgresTable,
     verbose: data.has("verbose"),
+  };
+}
+
+function databasePayload() {
+  const data = new FormData(form);
+  return {
+    postgresEnabled: data.has("postgresEnabled"),
+    postgresHost: value(data, "postgresHost") || defaultValues.postgresHost,
+    postgresPort: numberValue(data, "postgresPort", Number(defaultValues.postgresPort)),
+    postgresDatabase: value(data, "postgresDatabase") || defaultValues.postgresDatabase,
+    postgresUser: value(data, "postgresUser") || defaultValues.postgresUser,
+    postgresPassword: value(data, "postgresPassword"),
+    postgresSchema: value(data, "postgresSchema") || defaultValues.postgresSchema,
+    postgresTable: value(data, "postgresTable") || defaultValues.postgresTable,
   };
 }
 
@@ -488,8 +622,15 @@ function syncProviderFields() {
     node.classList.toggle("hidden", provider !== "github-enterprise");
   });
   form.querySelector('[name="baseUrl"]').required = provider === "github-enterprise";
+  form.querySelector('[name="org"]').required = provider === "github-enterprise";
+  orgRequirementBadge.textContent = provider === "github-enterprise" ? "Required" : "Required unless using org PATs";
   form.querySelector('[name="project"]').required = false;
   form.querySelector('[name="repo"]').required = false;
+  targetFilterTitle.textContent = provider === "github-enterprise" ? "Repository filter" : "Project filter";
+  targetFilterDefault.textContent = provider === "github-enterprise" ? "Default: all repositories" : "Default: all projects";
+  loadTargetsButton.textContent = provider === "github-enterprise" ? "Load repositories" : "Load projects";
+  targetSearch.placeholder = provider === "github-enterprise" ? "Filter repositories" : "Filter projects";
+  renderTargetFilters();
 }
 
 function syncDatabaseFields() {
@@ -497,7 +638,7 @@ function syncDatabaseFields() {
   document.querySelectorAll(".database-fields").forEach((node) => {
     node.classList.toggle("hidden", !enabled);
   });
-  for (const name of ["postgresHost", "postgresPort", "postgresDatabase", "postgresUser", "postgresTable"]) {
+  for (const name of ["postgresHost", "postgresPort", "postgresDatabase", "postgresUser", "postgresSchema", "postgresTable"]) {
     form.elements[name].required = enabled;
   }
 }
@@ -521,12 +662,15 @@ function syncCredentialFields() {
   const provider = new FormData(form).get("provider") || "azure-devops";
   const loggedIn = Boolean(session.loggedIn);
   const hasSavedToken = Boolean((session.credentials || {})[provider]);
-  form.elements.saveToken.disabled = !loggedIn;
-  if (!loggedIn) {
+  const hasAdoOrgPats = provider === "azure-devops" && state.adoOrgPats.length > 0;
+  form.elements.saveToken.disabled = !loggedIn || hasAdoOrgPats;
+  if (!loggedIn || hasAdoOrgPats) {
     form.elements.saveToken.checked = false;
   }
   form.elements.token.placeholder = hasSavedToken ? "Uses saved token if blank" : "Uses environment token if blank";
-  saveTokenHint.textContent = loggedIn
+  saveTokenHint.textContent = hasAdoOrgPats
+    ? "Org PATs are used for this scan only"
+    : loggedIn
     ? hasSavedToken
       ? "Saved token available for this provider"
       : "Checked tokens are encrypted and saved for your SSO user"
@@ -534,8 +678,310 @@ function syncCredentialFields() {
   forgetToken.classList.toggle("hidden", !loggedIn || !hasSavedToken);
 }
 
+function addAdoOrgPat() {
+  commitPendingAdoOrgPat();
+}
+
+function commitPendingAdoOrgPat({silent = false} = {}) {
+  const org = form.elements.adoOrgName.value.trim();
+  const pat = form.elements.adoOrgPat.value.trim();
+  if (!org && !pat) {
+    return true;
+  }
+  if (!org || !pat) {
+    notify("Add both an Azure organization and PAT.");
+    return false;
+  }
+  const existingIndex = state.adoOrgPats.findIndex((entry) => entry.org.toLowerCase() === org.toLowerCase());
+  const entry = {org, pat};
+  if (existingIndex >= 0) {
+    state.adoOrgPats.splice(existingIndex, 1, entry);
+    if (!silent) {
+      notify(`${org} updated.`);
+    }
+  } else {
+    state.adoOrgPats.push(entry);
+    if (!silent) {
+      notify(`${org} added.`);
+    }
+  }
+  form.elements.adoOrgName.value = "";
+  form.elements.adoOrgPat.value = "";
+  clearDiscoveredTargets({silent: true});
+  syncAdoOrgPatInput();
+  syncCredentialFields();
+  return true;
+}
+
+function removeAdoOrgPat(org) {
+  state.adoOrgPats = state.adoOrgPats.filter((entry) => entry.org !== org);
+  clearDiscoveredTargets({silent: true});
+  syncAdoOrgPatInput();
+  syncCredentialFields();
+  notify(`${org} removed.`);
+}
+
+function handleAdoOrgPatKeydown(event) {
+  if (event.key !== "Enter") {
+    return;
+  }
+  event.preventDefault();
+  addAdoOrgPat();
+}
+
+function syncAdoOrgPatInput() {
+  form.elements.adoOrgPats.value = JSON.stringify(state.adoOrgPats);
+  renderAdoOrgPatList();
+}
+
+function renderAdoOrgPatList() {
+  if (!state.adoOrgPats.length) {
+    adoOrgPatList.innerHTML = '<div class="empty-inline">No Azure organizations added</div>';
+    return;
+  }
+  adoOrgPatList.innerHTML = state.adoOrgPats.map((entry) => `
+    <div class="ado-org-row">
+      <span>
+        <strong>${escapeHtml(entry.org)}</strong>
+        <small>${escapeHtml(maskSecret(entry.pat))}</small>
+      </span>
+      <button class="ghost small" type="button" data-remove-ado-org="${escapeHtml(entry.org)}">Remove</button>
+    </div>
+  `).join("");
+  adoOrgPatList.querySelectorAll("[data-remove-ado-org]").forEach((button) => {
+    button.addEventListener("click", () => removeAdoOrgPat(button.dataset.removeAdoOrg || ""));
+  });
+}
+
+async function loadSourceTargets() {
+  if (!commitPendingAdoOrgPat({silent: true})) {
+    return;
+  }
+  setTargetBusy(true);
+  try {
+    const response = await fetch("/api/source-targets", {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify(sourcePayload()),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Could not load targets.");
+    }
+    state.sourceTargets = Array.isArray(data.targets) ? data.targets : [];
+    state.sourceTargetErrors = Array.isArray(data.errors) ? data.errors : [];
+    state.selectedTargets = state.selectedTargets.filter((selected) =>
+      state.sourceTargets.some((target) => targetKey(target) === targetKey(selected)),
+    );
+    syncTargetFilterInput();
+    if (state.sourceTargetErrors.length) {
+      notify(`${state.sourceTargets.length} targets loaded with ${state.sourceTargetErrors.length} warning(s).`);
+    } else {
+      notify(`${state.sourceTargets.length} targets loaded.`);
+    }
+  } catch (error) {
+    notify(error.message || "Could not load targets.");
+  } finally {
+    setTargetBusy(false);
+  }
+}
+
+function sourcePayload() {
+  const data = new FormData(form);
+  const provider = data.get("provider") || "azure-devops";
+  return {
+    provider,
+    org: value(data, "org"),
+    adoOrgPats: provider === "azure-devops" ? value(data, "adoOrgPats") : "",
+    baseUrl: provider === "github-enterprise" ? value(data, "baseUrl") : "",
+    token: value(data, "token"),
+    timeout: numberValue(data, "timeout", Number(defaultValues.timeout)),
+  };
+}
+
+function setTargetBusy(isBusy) {
+  loadTargetsButton.disabled = isBusy;
+  selectAllTargetsButton.disabled = isBusy || visibleTargets().length === 0;
+  clearTargetFiltersButton.disabled = isBusy || state.selectedTargets.length === 0;
+  targetSearch.disabled = isBusy || state.sourceTargets.length === 0;
+  if (isBusy) {
+    targetFilterSummary.textContent = "Loading targets";
+  } else {
+    renderTargetFilters();
+  }
+}
+
+function syncTargetFilterInput() {
+  form.elements.targetFilters.value = JSON.stringify(targetFilterPayload());
+  renderTargetFilters();
+}
+
+function targetFilterPayload() {
+  return state.selectedTargets.map((target) => ({
+    org: target.org || "",
+    project: target.project || target.repo || target.name || "",
+  }));
+}
+
+function renderTargetFilters() {
+  if (!targetFilterList) {
+    return;
+  }
+  const selectedCount = state.selectedTargets.length;
+  const noun = providerTargetNoun();
+  targetFilterSummary.textContent = selectedCount
+    ? `${selectedCount} ${pluralize(noun, selectedCount)} selected`
+    : `No ${pluralize(noun, 2)} selected`;
+  selectAllTargetsButton.disabled = visibleTargets().length === 0;
+  clearTargetFiltersButton.disabled = selectedCount === 0;
+  targetSearch.disabled = state.sourceTargets.length === 0;
+
+  if (!state.sourceTargets.length) {
+    const warnings = renderTargetWarnings();
+    targetFilterList.innerHTML = `${warnings}<div class="empty-inline">Load ${pluralize(noun, 2)} to choose a smaller scan scope</div>`;
+    return;
+  }
+
+  const targets = visibleTargets();
+  if (!targets.length) {
+    targetFilterList.innerHTML = `${renderTargetWarnings()}<div class="empty-inline">No matches</div>`;
+    return;
+  }
+
+  const selectedKeys = new Set(state.selectedTargets.map(targetKey));
+  targetFilterList.innerHTML = `${renderTargetWarnings()}${targets.map((target) => {
+    const checked = selectedKeys.has(targetKey(target)) ? " checked" : "";
+    return `
+      <label class="target-option">
+        <input type="checkbox" value="${escapeHtml(targetKey(target))}"${checked}>
+        <span>
+          <strong>${escapeHtml(targetLabel(target))}</strong>
+          <small>${escapeHtml(targetMeta(target))}</small>
+        </span>
+      </label>
+    `;
+  }).join("")}`;
+
+  targetFilterList.querySelectorAll('.target-option input[type="checkbox"]').forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      const target = state.sourceTargets.find((candidate) => targetKey(candidate) === checkbox.value);
+      if (!target) {
+        return;
+      }
+      if (checkbox.checked) {
+        addSelectedTarget(target);
+      } else {
+        removeSelectedTarget(target);
+      }
+      syncTargetFilterInput();
+    });
+  });
+}
+
+function renderTargetWarnings() {
+  if (!state.sourceTargetErrors.length) {
+    return "";
+  }
+  return `
+    <div class="target-warning">
+      ${state.sourceTargetErrors.map((error) => `
+        <span>${escapeHtml(error.org || "Provider")}: ${escapeHtml(error.message || "Target load failed")}</span>
+      `).join("")}
+    </div>
+  `;
+}
+
+function visibleTargets() {
+  const query = targetSearch.value.trim().toLowerCase();
+  if (!query) {
+    return state.sourceTargets;
+  }
+  return state.sourceTargets.filter((target) =>
+    `${target.org || ""} ${target.project || ""} ${target.label || ""}`.toLowerCase().includes(query),
+  );
+}
+
+function selectVisibleTargets() {
+  visibleTargets().forEach(addSelectedTarget);
+  syncTargetFilterInput();
+  notify(`${state.selectedTargets.length} ${pluralize(providerTargetNoun(), state.selectedTargets.length)} selected.`);
+}
+
+function clearSelectedTargets() {
+  state.selectedTargets = [];
+  syncTargetFilterInput();
+  notify("Target filters cleared.");
+}
+
+function clearDiscoveredTargets({silent = false} = {}) {
+  state.sourceTargets = [];
+  state.selectedTargets = [];
+  state.sourceTargetErrors = [];
+  targetSearch.value = "";
+  syncTargetFilterInput();
+  if (!silent) {
+    notify("Target filters cleared.");
+  }
+}
+
+function addSelectedTarget(target) {
+  const key = targetKey(target);
+  if (!state.selectedTargets.some((selected) => targetKey(selected) === key)) {
+    state.selectedTargets.push(normalizedTarget(target));
+  }
+}
+
+function removeSelectedTarget(target) {
+  const key = targetKey(target);
+  state.selectedTargets = state.selectedTargets.filter((selected) => targetKey(selected) !== key);
+}
+
+function normalizedTarget(target) {
+  return {
+    org: target.org || "",
+    project: target.project || target.repo || target.name || "",
+    label: target.label || target.name || target.project || "",
+    kind: target.kind || providerTargetNoun(),
+  };
+}
+
+function targetKey(target) {
+  return `${target.org || ""}\u001f${target.project || target.repo || target.name || ""}`;
+}
+
+function targetLabel(target) {
+  return target.label || `${target.org || ""} / ${target.project || target.repo || target.name || ""}`;
+}
+
+function targetMeta(target) {
+  const kind = target.kind === "repository" ? "Repository" : "Project";
+  return `${kind} · ${target.org || "Unknown organization"}`;
+}
+
+function providerTargetNoun() {
+  const provider = new FormData(form).get("provider") || "azure-devops";
+  return provider === "github-enterprise" ? "repository" : "project";
+}
+
+function pluralize(noun, count) {
+  if (count === 1) {
+    return noun;
+  }
+  if (noun.endsWith("y")) {
+    return `${noun.slice(0, -1)}ies`;
+  }
+  return `${noun}s`;
+}
+
+function sourceFieldChanged(target) {
+  if (!target || !target.name) {
+    return false;
+  }
+  return ["provider", "org", "baseUrl", "project", "repo", "token"].includes(target.name);
+}
+
 function loadForm() {
-  const saved = JSON.parse(localStorage.getItem("appsec-inventory-service-ui") || "{}");
+  const saved = JSON.parse(localStorage.getItem("application-inventory-service-ui") || "{}");
   applyDefaultValues();
   for (const name of persistedFields) {
     if (!(name in saved)) {
@@ -571,14 +1017,17 @@ function saveForm() {
       saved[name] = value(data, name);
     }
   }
-  localStorage.setItem("appsec-inventory-service-ui", JSON.stringify(saved));
+  localStorage.setItem("application-inventory-service-ui", JSON.stringify(saved));
 }
 
 function resetDefaults() {
+  state.adoOrgPats = [];
+  clearDiscoveredTargets({silent: true});
   applyDefaultValues();
   syncProviderFields();
   syncDatabaseFields();
   syncMobileOptions();
+  syncAdoOrgPatInput();
   syncCredentialFields();
   saveForm();
   notify("Scan defaults restored.");
@@ -620,9 +1069,13 @@ function downloadLogs() {
     return;
   }
   const blob = new Blob([state.logs.join("\n")], {type: "text/plain"});
+  downloadBlob(blob, `${state.activeScan ? state.activeScan.id : "scan"}-logs.txt`);
+}
+
+function downloadBlob(blob, filename) {
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
-  link.download = `${state.activeScan ? state.activeScan.id : "scan"}-logs.txt`;
+  link.download = filename;
   link.click();
   URL.revokeObjectURL(link.href);
 }
@@ -631,6 +1084,12 @@ function setBusy(isBusy) {
   startScanButton.disabled = isBusy;
   formStatus.textContent = isBusy ? "Starting" : "Ready";
   formStatus.className = `status-chip ${isBusy ? "status-running" : "idle"}`;
+}
+
+function setDatabaseBusy(isBusy) {
+  checkDatabaseButton.disabled = isBusy;
+  exportDatabaseCsvButton.disabled = isBusy;
+  exportDatabaseJsonButton.disabled = isBusy;
 }
 
 function renderAuth() {
@@ -871,6 +1330,7 @@ function applicationTypeLabel(type) {
     library: "Library",
     infrastructure: "Infrastructure",
     ai_enabled: "AI-enabled",
+    ml_enabled: "ML-enabled",
   };
   return labels[type] || String(type || "").replaceAll("_", " ");
 }
@@ -917,6 +1377,14 @@ function formatBytes(value) {
     return `${(size / 1024).toFixed(1)} KB`;
   }
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function maskSecret(value) {
+  const text = String(value || "");
+  if (text.length <= 4) {
+    return "••••";
+  }
+  return `••••${text.slice(-4)}`;
 }
 
 function escapeHtml(value) {

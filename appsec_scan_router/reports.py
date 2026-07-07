@@ -21,6 +21,7 @@ from .constants import (
 )
 
 WORKBOOK_COLUMN_WIDTHS = {
+    "organization": 28,
     "project": 24,
     "repo_name": 28,
     "branch_name": 24,
@@ -41,6 +42,7 @@ WORKBOOK_COLUMN_WIDTHS = {
     "mobile_identifier": 34,
     "mobile_identifier_source": 28,
     "mobile_identifier_status": 24,
+    "branch_contributing_developers": 70,
     "contributing_developers": 70,
     "last_updated": 22,
     "confidence": 12,
