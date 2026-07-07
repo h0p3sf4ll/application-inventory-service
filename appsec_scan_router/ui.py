@@ -5,6 +5,7 @@ import json
 import os
 import queue
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -44,6 +45,7 @@ from .target_filters import parse_source_target_filter_values, target_filter_val
 DEFAULT_UI_HOST = "127.0.0.1"
 DEFAULT_UI_PORT = 48731
 MAX_LOG_LINES = 5000
+DEFAULT_MAX_JSON_BODY_BYTES = 1_048_576
 REPORT_EXTENSIONS = frozenset({".csv", ".json", ".xlsx", ".txt"})
 SCAN_STATUSES_DONE = frozenset({"succeeded", "failed", "stopped"})
 BRANCH_PROGRESS_PATTERN = re.compile(r"Progress: (?P<branches>\d+)/(?P<branch_total>\d+) resolved branches scanned")
@@ -53,6 +55,38 @@ REPO_PROGRESS_PATTERN = re.compile(
 )
 TARGET_COUNT_PATTERN = re.compile(r"Scanning resolved default or fallback branches for (?P<repo_total>\d+) repositories")
 SCAN_PROGRESS_PATTERN = re.compile(r"SCAN_PROGRESS (?P<payload>\{.*\})")
+HOST_HEADER_RE = re.compile(r"^[A-Za-z0-9.:\-\[\]]+$")
+SAFE_CHILD_ENV_KEYS = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "LANG",
+    "LC_ALL",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+)
+SECURITY_HEADER_VALUES = {
+    "Content-Security-Policy": "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Permissions-Policy": "accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "X-Robots-Tag": "noindex, nofollow",
+    "X-XSS-Protection": "0",
+}
 
 
 @dataclass
@@ -262,6 +296,8 @@ class ScanManager:
 
 
 class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
+    server_version = "ApplicationInventoryService"
+    sys_version = ""
     manager: ScanManager
     auth: AuthManager
 
@@ -299,7 +335,10 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             self.handle_test_auth_start()
             return
         if path == "/api/scans":
-            self.send_json({"scans": self.manager.list_scans(owner_scope(self.current_session()))})
+            record = self.require_session()
+            if not record:
+                return
+            self.send_json({"scans": self.manager.list_scans(owner_scope(record))})
             return
         if path.startswith("/api/scans/"):
             self.handle_scan_get(path)
@@ -327,12 +366,15 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             self.handle_source_targets()
             return
         if path.startswith("/api/scans/") and path.endswith("/stop"):
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
             scan_id = path.removeprefix("/api/scans/").removesuffix("/stop").strip("/")
             run = self.manager.get_scan(scan_id)
             if not run:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            if run_owner_id(run) != owner_scope(self.current_session()):
+            if run_owner_id(run) != owner_scope(record):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             run = self.manager.stop_scan(scan_id)
@@ -349,6 +391,9 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         self.send_static(name, content_type)
 
     def handle_scan_get(self, path: str) -> None:
+        record = self.require_session()
+        if not record:
+            return
         parts = [part for part in path.split("/") if part]
         if len(parts) < 3:
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -358,7 +403,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         if not run:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        if run_owner_id(run) != owner_scope(self.current_session()):
+        if run_owner_id(run) != owner_scope(record):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         if len(parts) == 3:
@@ -379,7 +424,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         try:
             payload = self.read_json()
             record = self.current_session()
-            if payload.get("saveToken") and not self.valid_csrf(record):
+            if not self.valid_csrf(record):
                 return
             payload = dict(payload)
             payload["ownerUserId"] = owner_scope(record)
@@ -447,7 +492,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             return
         if record:
             self.auth.logout(record.id)
-        self.send_json({"session": self.auth.status(None)}, headers={"Set-Cookie": expired_session_cookie()})
+        self.send_json({"session": self.auth.status(None)}, headers={"Set-Cookie": expired_session_cookie(secure_cookie())})
 
     def handle_delete_credential(self) -> None:
         try:
@@ -498,12 +543,12 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
         except Exception as exc:
-            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            self.send_json({"error": database_export_error(exc)}, HTTPStatus.BAD_REQUEST)
             return
         self.send_bytes(
             content,
             content_type,
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={"Content-Disposition": attachment_header(filename)},
         )
 
     def handle_source_targets(self) -> None:
@@ -527,6 +572,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             return
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "private, max-age=300")
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)
@@ -545,7 +591,8 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         content = path.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", report_content_type(path))
-        self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+        self.send_header("Content-Disposition", attachment_header(path.name))
+        self.send_header("Cache-Control", "no-store, max-age=0")
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)
@@ -581,12 +628,20 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def read_json(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0") or "0")
+        raw_length = clean_text(self.headers.get("Content-Length", "0") or "0")
+        try:
+            length = int(raw_length)
+        except ValueError as exc:
+            raise ValueError("Content-Length must be a valid integer.") from exc
         if length <= 0:
             return {}
+        if length > max_json_body_bytes():
+            raise ValueError("Request body is too large.")
         body = self.rfile.read(length)
         try:
             data = json.loads(body.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise ValueError("Request body must be UTF-8 encoded JSON.") from exc
         except json.JSONDecodeError as exc:
             raise ValueError("Request body must be valid JSON.") from exc
         if not isinstance(data, dict):
@@ -602,6 +657,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         content = json.dumps(payload, sort_keys=True).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store, max-age=0")
         self.send_header("Content-Length", str(len(content)))
         for name, value in (headers or {}).items():
             self.send_header(name, value)
@@ -617,6 +673,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store, max-age=0")
         self.send_header("Content-Length", str(len(content)))
         for name, value in (headers or {}).items():
             self.send_header(name, value)
@@ -631,25 +688,43 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         self.send_header("Location", location)
         if cookie:
             self.send_header("Set-Cookie", cookie)
+        self.send_header("Cache-Control", "no-store, max-age=0")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def end_headers(self) -> None:
+        for name, value in security_headers().items():
+            self.send_header(name, value)
+        super().end_headers()
+
     def current_session(self) -> SessionRecord | None:
         return self.auth.session(self.headers.get("Cookie", ""))
+
+    def require_session(self) -> SessionRecord | None:
+        record = self.current_session()
+        if not record:
+            self.send_json({"error": "Sign in first."}, HTTPStatus.UNAUTHORIZED)
+            return None
+        return record
 
     def valid_csrf(self, record: SessionRecord | None) -> bool:
         if not record:
             self.send_json({"error": "Sign in first."}, HTTPStatus.UNAUTHORIZED)
             return False
-        if self.headers.get("X-CSRF-Token", "") != record.csrf_token:
+        if not secrets.compare_digest(self.headers.get("X-CSRF-Token", ""), record.csrf_token):
             self.send_json({"error": "Session validation failed. Refresh and try again."}, HTTPStatus.FORBIDDEN)
             return False
         return True
 
     def redirect_uri(self, provider: str) -> str:
-        proto = self.headers.get("X-Forwarded-Proto") or ("https" if secure_cookie() else "http")
-        host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or f"{self.server.server_name}:{self.server.server_port}"
-        return f"{proto}://{host}/api/auth/{provider}/callback"
+        public_url = env_value("APPLICATION_INVENTORY_SERVICE_PUBLIC_URL", "APPSEC_INVENTORY_SERVICE_PUBLIC_URL")
+        if public_url:
+            base_url = safe_public_url(public_url)
+        else:
+            proto = self.headers.get("X-Forwarded-Proto") or ("https" if secure_cookie() else "http")
+            host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or f"{self.server.server_name}:{self.server.server_port}"
+            base_url = safe_request_base_url(proto, host)
+        return f"{base_url}/api/auth/{provider}/callback"
 
 
 def normalize_scan_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -770,7 +845,10 @@ def discover_github_targets(config: dict[str, Any], timeout: int) -> dict[str, A
     if not token:
         raise ValueError("GitHub token is required to load repositories.")
 
-    client = GitHubEnterpriseClient(base_url, owner, token, timeout)
+    try:
+        client = GitHubEnterpriseClient(base_url, owner, token, timeout)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
     try:
         repos = client.list_repos("")
     except AzureDevOpsError as exc:
@@ -927,7 +1005,7 @@ def redact_command(command: tuple[str, ...] | list[str]) -> list[str]:
 
 
 def scan_environment(config: dict[str, Any]) -> dict[str, str]:
-    env = os.environ.copy()
+    env = base_process_environment()
     env["PYTHONUNBUFFERED"] = "1"
     token = clean_text(config.get("token"))
     ado_org_pats = config.get("adoOrgPats") if isinstance(config.get("adoOrgPats"), list) else []
@@ -940,6 +1018,11 @@ def scan_environment(config: dict[str, Any]) -> dict[str, str]:
         env["GITHUB_TOKEN"] = token
     elif token:
         env["ADO_PAT"] = token
+    elif config.get("provider") == "github-enterprise":
+        inherit_secret(env, "GITHUB_TOKEN")
+        inherit_secret(env, "GHE_TOKEN")
+    elif not ado_org_pats:
+        inherit_secret(env, "ADO_PAT")
     postgres_dsn = clean_text(config.get("postgresDsn"))
     if config.get("postgresEnabled") and postgres_dsn:
         postgres_schema = clean_text(config.get("postgresSchema") or DEFAULT_POSTGRES_SCHEMA)
@@ -1154,6 +1237,76 @@ def env_value(*names: str) -> str:
     return ""
 
 
+def env_flag(*names: str) -> bool:
+    return env_value(*names).lower() in {"1", "true", "yes", "on"}
+
+
+def max_json_body_bytes() -> int:
+    return positive_int(
+        env_value("APPLICATION_INVENTORY_SERVICE_MAX_JSON_BODY_BYTES", "APPSEC_INVENTORY_SERVICE_MAX_JSON_BODY_BYTES"),
+        DEFAULT_MAX_JSON_BODY_BYTES,
+    )
+
+
+def base_process_environment() -> dict[str, str]:
+    env: dict[str, str] = {}
+    for key in SAFE_CHILD_ENV_KEYS:
+        value = os.getenv(key)
+        if value is not None:
+            env[key] = value
+    return env
+
+
+def inherit_secret(env: dict[str, str], name: str) -> None:
+    value = clean_text(os.getenv(name))
+    if value:
+        env[name] = value
+
+
+def security_headers() -> dict[str, str]:
+    headers = dict(SECURITY_HEADER_VALUES)
+    if secure_cookie():
+        headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return headers
+
+
+def attachment_header(filename: str) -> str:
+    clean_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(filename).name).strip("._")
+    return f'attachment; filename="{clean_name or "download"}"'
+
+
+def safe_public_url(value: str) -> str:
+    parsed = urlparse(clean_text(value).rstrip("/"))
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Public URL must be an HTTP or HTTPS URL.")
+    if parsed.username or parsed.password:
+        raise ValueError("Public URL must not contain credentials.")
+    if parsed.scheme == "http" and secure_cookie():
+        raise ValueError("Public URL must use HTTPS when secure cookies are enabled.")
+    if not HOST_HEADER_RE.match(parsed.netloc):
+        raise ValueError("Public URL host is invalid.")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def safe_request_base_url(proto: str, host: str) -> str:
+    clean_proto = clean_text(proto).split(",", 1)[0].lower()
+    clean_host = clean_text(host).split(",", 1)[0]
+    if clean_proto not in {"http", "https"}:
+        clean_proto = "https" if secure_cookie() else "http"
+    if not clean_host or any(character in clean_host for character in "\r\n/@") or not HOST_HEADER_RE.match(clean_host):
+        raise ValueError("Request host is invalid.")
+    return f"{clean_proto}://{clean_host}"
+
+
+def database_export_error(error: Exception) -> str:
+    text = clean_text(error)
+    if not text:
+        return "Database export failed."
+    if "password" in text.lower() or "postgresql://" in text.lower():
+        return "Database export failed. Check the configured database credentials."
+    return text
+
+
 def first_query_value(params: dict[str, list[str]], name: str) -> str:
     values = params.get(name, [])
     return values[0] if values else ""
@@ -1240,7 +1393,7 @@ def utc_now() -> str:
 
 
 def secure_cookie() -> bool:
-    return env_value("APPLICATION_INVENTORY_SERVICE_COOKIE_SECURE", "APPSEC_INVENTORY_SERVICE_COOKIE_SECURE").lower() in {"1", "true", "yes"}
+    return env_flag("APPLICATION_INVENTORY_SERVICE_COOKIE_SECURE", "APPSEC_INVENTORY_SERVICE_COOKIE_SECURE")
 
 
 def serve(host: str, port: int, reports_dir: Path) -> None:

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 import threading
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, urlunparse
 
 from .constants import DEFAULT_COMMIT_PAGE_SIZE, MISSING_REQUESTS_MESSAGE
 from .models import AzureDevOpsError
@@ -38,7 +39,7 @@ class GitHubEnterpriseClient:
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "application-inventory-service/1.6.0",
+            "User-Agent": "application-inventory-service/1.6.1",
         }
         self._retry = Retry(
             total=5,
@@ -306,6 +307,36 @@ def normalize_github_api_url(base_url: str) -> str:
     text = clean_value(base_url).rstrip("/")
     if not text:
         return "https://api.github.com"
-    if text.endswith("/api/v3"):
-        return text
-    return f"{text}/api/v3"
+    if "://" not in text:
+        text = f"https://{text}"
+    parsed = urlparse(text)
+    if parsed.scheme not in {"https", "http"} or not parsed.netloc:
+        raise ValueError("GitHub Enterprise API URL must be an HTTP or HTTPS URL.")
+    if parsed.scheme == "http" and not insecure_provider_urls_allowed():
+        raise ValueError("GitHub Enterprise API URL must use HTTPS unless insecure provider URLs are explicitly allowed.")
+    if parsed.username or parsed.password:
+        raise ValueError("GitHub Enterprise API URL must not contain credentials.")
+    hostname = clean_value(parsed.hostname).lower()
+    allowed_hosts = allowed_github_hosts()
+    if allowed_hosts and hostname not in allowed_hosts:
+        raise ValueError("GitHub Enterprise API URL host is not allowed by configuration.")
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/api/v3"):
+        path = f"{path}/api/v3"
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+
+
+def insecure_provider_urls_allowed() -> bool:
+    return env_flag("APPLICATION_INVENTORY_SERVICE_ALLOW_INSECURE_PROVIDER_URLS", "APPSEC_INVENTORY_SERVICE_ALLOW_INSECURE_PROVIDER_URLS")
+
+
+def allowed_github_hosts() -> set[str]:
+    values = os.getenv("APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS") or os.getenv("APPSEC_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS") or ""
+    return {value.strip().lower() for value in values.split(",") if value.strip()}
+
+
+def env_flag(*names: str) -> bool:
+    for name in names:
+        if clean_value(os.getenv(name)).lower() in {"1", "true", "yes", "on"}:
+            return True
+    return False

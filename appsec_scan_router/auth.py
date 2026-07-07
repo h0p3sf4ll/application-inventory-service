@@ -318,7 +318,7 @@ class GitHubOAuthService:
                     "Accept": "application/vnd.github+json",
                     "Authorization": f"Bearer {access_token}",
                     "X-GitHub-Api-Version": "2022-11-28",
-                    "User-Agent": "application-inventory-service/1.6.0",
+                    "User-Agent": "application-inventory-service/1.6.1",
                 },
                 timeout=20,
             )
@@ -421,7 +421,7 @@ class GoogleOAuthService:
                 headers={
                     "Accept": "application/json",
                     "Authorization": f"Bearer {access_token}",
-                    "User-Agent": "application-inventory-service/1.6.0",
+                    "User-Agent": "application-inventory-service/1.6.1",
                 },
                 timeout=20,
             )
@@ -575,8 +575,15 @@ def session_cookie(session_id: str, secure: bool = False) -> str:
     return "; ".join(parts)
 
 
-def expired_session_cookie() -> str:
-    return f"{SESSION_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
+def expired_session_cookie(secure: bool = False) -> str:
+    parts = [
+        f"{SESSION_COOKIE_NAME}=; Path=/; Max-Age=0",
+        "HttpOnly",
+        "SameSite=Lax",
+    ]
+    if secure:
+        parts.append("Secure")
+    return "; ".join(parts)
 
 
 def chmod_private(path: Path, mode: int) -> None:

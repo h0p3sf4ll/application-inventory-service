@@ -20,6 +20,7 @@ from .constants import (
     DEFAULT_TIMEOUT_SECONDS,
     KNOWN_INVENTORY_TYPES,
 )
+from .github import normalize_github_api_url
 from .models import AzureDevOpsOrgPat, ScanConfig, SourceTargetFilter
 from .org_tokens import parse_ado_org_pat_values
 from .scanner import normalize_application_types, scan_to_reports, store_lookup_allowed
@@ -208,6 +209,7 @@ def parse_args(argv: list[str]) -> ScanConfig:
     target_projects = provider_projects(args)
     target_project = target_projects[0] if len(target_projects) == 1 and not target_filters else None
     org = args.org or (ado_org_pats[0].org if len(ado_org_pats) == 1 else "")
+    base_url = normalize_github_api_url(args.base_url) if args.provider == "github-enterprise" else args.base_url
 
     return ScanConfig(
         org=org,
@@ -227,7 +229,7 @@ def parse_args(argv: list[str]) -> ScanConfig:
         store_country=args.store_country.strip().upper(),
         store_timeout_seconds=args.store_timeout,
         provider=args.provider,
-        base_url=args.base_url,
+        base_url=base_url,
         application_types=application_types,
         postgres_dsn=args.postgres_dsn,
         postgres_schema=args.postgres_schema,
@@ -257,6 +259,10 @@ def validate_args(
             raise SystemExit(provider_token_message(args.provider))
         if not args.base_url:
             raise SystemExit("Missing GitHub Enterprise API URL. Set --base-url or GITHUB_API_URL.")
+        try:
+            normalize_github_api_url(args.base_url)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
     else:
         if not args.org and not ado_org_pats:
             raise SystemExit("Missing Azure DevOps organization. Set --org or pass --ado-org-pat ORG=PAT.")

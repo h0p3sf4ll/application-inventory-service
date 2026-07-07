@@ -3,7 +3,8 @@ from __future__ import annotations
 import plistlib
 import re
 from typing import Any
-from xml.etree import ElementTree
+
+from defusedxml import ElementTree
 
 from .models import MobileAppMetadata
 from .utils import (

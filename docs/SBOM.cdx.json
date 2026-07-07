@@ -15,8 +15,8 @@
     "component": {
       "type": "application",
       "name": "application-inventory-service",
-      "version": "1.6.0",
-      "purl": "pkg:pypi/application-inventory-service@1.6.0",
+      "version": "1.6.1",
+      "purl": "pkg:pypi/application-inventory-service@1.6.1",
       "licenses": [
         {
           "license": {
@@ -39,6 +39,13 @@
       "name": "openpyxl",
       "version": "3.1.5",
       "purl": "pkg:pypi/openpyxl@3.1.5",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "defusedxml",
+      "version": "0.7.1",
+      "purl": "pkg:pypi/defusedxml@0.7.1",
       "scope": "required"
     },
     {
@@ -114,9 +121,10 @@
   ],
   "dependencies": [
     {
-      "ref": "pkg:pypi/application-inventory-service@1.6.0",
+      "ref": "pkg:pypi/application-inventory-service@1.6.1",
       "dependsOn": [
         "pkg:pypi/cryptography@49.0.0",
+        "pkg:pypi/defusedxml@0.7.1",
         "pkg:pypi/openpyxl@3.1.5",
         "pkg:pypi/psycopg@3.3.4",
         "pkg:pypi/psycopg-binary@3.3.4",

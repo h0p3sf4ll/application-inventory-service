@@ -11,7 +11,8 @@ import appsec_scan_router.ui as ui_module
 import application_inventory_service
 import ado_mobile_scanner
 import mobile_scanner
-from appsec_scan_router.auth import AuthManager, CredentialStore, GoogleOAuthConfig, TestLoginConfig
+from appsec_scan_router.auth import AuthManager, CredentialStore, GoogleOAuthConfig, TestLoginConfig, expired_session_cookie, session_cookie
+from appsec_scan_router.github import normalize_github_api_url
 from appsec_scan_router.postgres import POSTGRES_COLUMNS
 from appsec_scan_router.ui import default_ui_config
 from openpyxl import load_workbook
@@ -143,6 +144,62 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(config["defaults"]["activityMode"], "contributors")
         self.assertEqual(config["defaults"]["postgresHost"], "localhost")
         self.assertEqual(config["defaults"]["postgresSchema"], "application_inventory")
+
+    def test_session_cookies_include_security_attributes(self):
+        cookie = session_cookie("session-id", secure=True)
+        expired = expired_session_cookie(secure=True)
+
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Lax", cookie)
+        self.assertIn("Secure", cookie)
+        self.assertIn("HttpOnly", expired)
+        self.assertIn("SameSite=Lax", expired)
+        self.assertIn("Secure", expired)
+
+    def test_security_headers_include_browser_defenses(self):
+        with patch.dict("os.environ", {"APPLICATION_INVENTORY_SERVICE_COOKIE_SECURE": "true"}, clear=False):
+            headers = ui_module.security_headers()
+
+        self.assertIn("Content-Security-Policy", headers)
+        self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(headers["X-Frame-Options"], "DENY")
+        self.assertIn("Strict-Transport-Security", headers)
+
+    def test_public_url_rejects_credentials_and_insecure_https_mode(self):
+        with patch.dict("os.environ", {"APPLICATION_INVENTORY_SERVICE_COOKIE_SECURE": "true"}, clear=False):
+            with self.assertRaises(ValueError):
+                ui_module.safe_public_url("http://inventory.example.com")
+            with self.assertRaises(ValueError):
+                ui_module.safe_public_url("https://user:pass@inventory.example.com")
+
+        self.assertEqual(ui_module.safe_public_url("https://inventory.example.com/app"), "https://inventory.example.com")
+
+    def test_request_base_url_rejects_header_injection_hosts(self):
+        self.assertEqual(ui_module.safe_request_base_url("https", "inventory.example.com"), "https://inventory.example.com")
+        with self.assertRaises(ValueError):
+            ui_module.safe_request_base_url("https", "inventory.example.com\r\nX-Test: true")
+        with self.assertRaises(ValueError):
+            ui_module.safe_request_base_url("https", "inventory.example.com/path")
+
+    def test_github_api_url_normalization_rejects_unsafe_urls(self):
+        self.assertEqual(
+            normalize_github_api_url("github.example.com"),
+            "https://github.example.com/api/v3",
+        )
+        with self.assertRaises(ValueError):
+            normalize_github_api_url("https://token@github.example.com/api/v3")
+        with self.assertRaises(ValueError):
+            normalize_github_api_url("http://github.example.com/api/v3")
+
+    def test_github_api_url_respects_allowed_host_list(self):
+        with patch.dict("os.environ", {"APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS": "github.allowed.example"}, clear=False):
+            self.assertEqual(
+                normalize_github_api_url("https://github.allowed.example"),
+                "https://github.allowed.example/api/v3",
+            )
+            with self.assertRaises(ValueError):
+                normalize_github_api_url("https://github.blocked.example")
 
 
 class MultiOrganizationScanTests(unittest.TestCase):
@@ -609,6 +666,31 @@ class UiServiceTests(unittest.TestCase):
         self.assertNotIn("APPLICATION_INVENTORY_POSTGRES_DSN", env)
         self.assertNotIn("APPLICATION_INVENTORY_POSTGRES_SCHEMA", env)
         self.assertNotIn("APPLICATION_INVENTORY_POSTGRES_TABLE", env)
+
+    def test_scan_environment_does_not_inherit_unrelated_secrets(self):
+        config = scanner.normalize_scan_config(
+            {
+                "provider": "azure-devops",
+                "org": "FabrikamCloud",
+                "token": "ado-token",
+                "postgresEnabled": False,
+            }
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "AWS_SECRET_ACCESS_KEY": "aws-secret",
+                "APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET": "oauth-secret",
+                "ADO_PAT": "environment-token",
+            },
+            clear=False,
+        ):
+            env = scanner.scan_environment(config)
+
+        self.assertEqual(env["ADO_PAT"], "ado-token")
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", env)
+        self.assertNotIn("APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET", env)
 
     def test_multi_ado_org_pats_are_passed_through_environment(self):
         config = scanner.normalize_scan_config(

@@ -70,9 +70,9 @@ aws ecr create-repository --repository-name "$REPO" --region "$AWS_REGION" || tr
 aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 
-docker build -t "$REPO:1.6.0" .
-docker tag "$REPO:1.6.0" "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.0"
-docker push "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.0"
+docker build -t "$REPO:1.6.1" .
+docker tag "$REPO:1.6.1" "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.1"
+docker push "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.1"
 ```
 
 ## Required Secrets
@@ -117,6 +117,10 @@ Environment:
 | `APPLICATION_INVENTORY_SERVICE_REPORTS_DIR` | `/reports` |
 | `APPLICATION_INVENTORY_SERVICE_COOKIE_SECURE` | `true` |
 | `APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED` | `false` |
+| `APPLICATION_INVENTORY_SERVICE_PUBLIC_URL` | `https://inventory.example.com` |
+| `APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS` | Approved GitHub Enterprise hostnames |
+| `APPLICATION_INVENTORY_SERVICE_ALLOW_INSECURE_PROVIDER_URLS` | `false` |
+| `APPLICATION_INVENTORY_SERVICE_MAX_JSON_BODY_BYTES` | `1048576` |
 | `APPLICATION_INVENTORY_POSTGRES_SCHEMA` | `application_inventory` |
 | `APPLICATION_INVENTORY_POSTGRES_TABLE` | `application_inventory_assets` |
 
@@ -213,9 +217,11 @@ Ship logs to a central SIEM if inventory results or errors may support audit or 
 - Restrict ALB access by corporate IP, VPN, WAF, or identity-aware access.
 - Use read-only source provider tokens.
 - Store secrets only in Secrets Manager.
+- Rotate any token that has appeared in chat, logs, screenshots, terminal output, or issue trackers.
 - Use customer-managed KMS keys when required by policy.
 - Keep ECS tasks in private subnets.
 - Prefer VPC endpoints for AWS APIs where practical.
+- Configure `APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS` to reduce provider URL abuse risk.
 
 ## Deployment Checklist
 

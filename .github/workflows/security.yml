@@ -1,0 +1,42 @@
+name: Security
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-security:
+    name: Python security checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install application and security tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . bandit pip-audit
+
+      - name: Static security analysis
+        run: bandit -r appsec_scan_router application_inventory_service ado_mobile_scanner.py mobile_app_inventory_tracer.py -x tests -ll
+
+      - name: Dependency vulnerability audit
+        run: pip-audit -r requirements.txt

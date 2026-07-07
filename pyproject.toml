@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=80.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "application-inventory-service"
-version = "1.6.0"
+version = "1.6.1"
 description = "SDK, CLI, UI, and scanner target manifests for application inventory across Azure DevOps and GitHub Enterprise"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,7 +31,7 @@ keywords = [
     "app-store",
     "google-play",
 ]
-dependencies = ["cryptography>=42.0.0", "openpyxl>=3.1.0", "psycopg[binary]>=3.2.0", "requests>=2.31.0"]
+dependencies = ["cryptography>=49.0.0", "defusedxml>=0.7.1", "openpyxl>=3.1.5", "psycopg[binary]>=3.3.4", "requests>=2.34.2"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Environment :: Console",

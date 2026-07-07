@@ -7,7 +7,7 @@ The machine-readable SBOM is provided as [SBOM.cdx.json](SBOM.cdx.json) in Cyclo
 | Field | Value |
 | --- | --- |
 | Name | `application-inventory-service` |
-| Version | `1.6.0` |
+| Version | `1.6.1` |
 | License | MIT |
 | Runtime | Python `>=3.10` |
 
@@ -15,10 +15,11 @@ The machine-readable SBOM is provided as [SBOM.cdx.json](SBOM.cdx.json) in Cyclo
 
 | Package | Constraint | Installed version used for this SBOM |
 | --- | --- | --- |
-| `cryptography` | `>=42.0.0` | `49.0.0` |
-| `openpyxl` | `>=3.1.0` | `3.1.5` |
-| `psycopg[binary]` | `>=3.2.0` | `3.3.4` |
-| `requests` | `>=2.31.0` | `2.34.2` |
+| `cryptography` | `>=49.0.0` | `49.0.0` |
+| `defusedxml` | `>=0.7.1` | `0.7.1` |
+| `openpyxl` | `>=3.1.5` | `3.1.5` |
+| `psycopg[binary]` | `>=3.3.4` | `3.3.4` |
+| `requests` | `>=2.34.2` | `2.34.2` |
 
 ## Notes
 
@@ -29,5 +30,5 @@ The machine-readable SBOM is provided as [SBOM.cdx.json](SBOM.cdx.json) in Cyclo
 Example:
 
 ```bash
-syft application-inventory-service:1.6.0 -o cyclonedx-json > container-sbom.cdx.json
+syft application-inventory-service:1.6.1 -o cyclonedx-json > container-sbom.cdx.json
 ```

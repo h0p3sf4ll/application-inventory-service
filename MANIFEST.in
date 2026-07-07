@@ -1,3 +1,4 @@
 include Dockerfile
 include .env.example
+include SECURITY.md
 recursive-include docs *.md *.json

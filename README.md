@@ -18,6 +18,7 @@ The project is published as `application-inventory-service`. The original `appse
 ## Documentation
 
 - [Application Intent](docs/APP_INTENT.md)
+- [Security Baseline](SECURITY.md)
 - [AWS Deployment Guide](docs/AWS_DEPLOYMENT.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [SBOM Summary](docs/SBOM.md)
@@ -159,6 +160,11 @@ docker run --name application-inventory-postgres \
 | `APPLICATION_INVENTORY_SERVICE_UI_HOST` | UI bind host |
 | `APPLICATION_INVENTORY_SERVICE_UI_PORT` | UI bind port |
 | `APPLICATION_INVENTORY_SERVICE_REPORTS_DIR` | UI report/state directory |
+| `APPLICATION_INVENTORY_SERVICE_PUBLIC_URL` | Public HTTPS base URL used for OAuth callbacks |
+| `APPLICATION_INVENTORY_SERVICE_COOKIE_SECURE` | Adds Secure cookies and HSTS when set to `true` |
+| `APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS` | Comma-separated GitHub Enterprise host allowlist |
+| `APPLICATION_INVENTORY_SERVICE_ALLOW_INSECURE_PROVIDER_URLS` | Local-only escape hatch for HTTP provider URLs |
+| `APPLICATION_INVENTORY_SERVICE_MAX_JSON_BODY_BYTES` | Maximum UI JSON request size |
 | `APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_ID` | GitHub OAuth client ID |
 | `APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET` | GitHub OAuth client secret |
 | `APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_ID` | Google OAuth client ID |
@@ -233,6 +239,8 @@ Publish with the `Publish` GitHub Actions workflow. The workflow uses the `pypi`
 
 - Use read-only source provider tokens.
 - Store shared deployment secrets in AWS Secrets Manager, GitHub Actions secrets, or another approved secret manager.
+- Rotate any token that has appeared in chat, logs, terminal output, screenshots, or issue trackers.
+- Disable test login and set secure cookies in shared environments.
 - Do not commit generated reports if they contain internal repository names, URLs, identifiers, or contributor emails.
 - The service does not clone repositories; it reads repository trees and selected manifest/configuration files through provider APIs.
 
