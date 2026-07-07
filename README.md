@@ -224,7 +224,10 @@ python -m build
 python -m twine check dist/*
 ```
 
-Publish through GitHub Actions Trusted Publishing using the `pypi` environment, or upload the built distribution with a PyPI API token.
+Publish with the `Publish` GitHub Actions workflow. The workflow uses the `pypi` environment and supports two release paths:
+
+- Preferred: configure PyPI Trusted Publishing for repository `h0p3sf4ll/application-inventory-service`, workflow `.github/workflows/publish.yml`, environment `pypi`.
+- Fallback: add a GitHub Actions secret named `PYPI_API_TOKEN` with a PyPI API token.
 
 ## Security Notes
 
