@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "application-inventory-service"
-version = "1.6.2"
+version = "1.6.3"
 description = "SDK, CLI, UI, and scanner target manifests for application inventory across Azure DevOps and GitHub Enterprise"
 readme = "README.md"
 requires-python = ">=3.10"

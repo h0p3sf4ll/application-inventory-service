@@ -45,6 +45,21 @@ flowchart TB
 | WAF | Optional edge protection for the ALB |
 | NAT Gateway / VPN / Transit Gateway | Outbound access to Azure DevOps or GitHub Enterprise |
 
+## Security Defaults
+
+Use the following controls as the default production posture:
+
+- Run ECS tasks in private subnets with `assignPublicIp=DISABLED`.
+- Terminate TLS at the ALB with ACM certificates and redirect HTTP to HTTPS.
+- Restrict ALB ingress to approved CIDR ranges, VPN, identity-aware access, or AWS WAF.
+- Use immutable image tags and deploy by image digest for production changes.
+- Enable ECR scan-on-push and continuously scan final container images.
+- Store all runtime secrets in Secrets Manager; never pass PATs, OAuth secrets, or DSNs as plain task definition environment values.
+- Encrypt ECR, RDS, EFS, Secrets Manager, CloudWatch Logs, and Fargate ephemeral storage with AWS-managed or customer-managed KMS keys.
+- Use a dedicated ECS task role with only the secret, KMS, EFS, and logging permissions required by the service.
+- Keep RDS public access disabled and allow PostgreSQL only from the ECS task security group.
+- Disable local test login in every shared environment.
+
 ## Network Layout
 
 Use at least two Availability Zones.
@@ -65,15 +80,32 @@ AWS_REGION=us-east-1
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 REPO=application-inventory-service
 
-aws ecr create-repository --repository-name "$REPO" --region "$AWS_REGION" || true
+aws ecr create-repository \
+  --repository-name "$REPO" \
+  --region "$AWS_REGION" \
+  --image-tag-mutability IMMUTABLE \
+  --image-scanning-configuration scanOnPush=true \
+  --encryption-configuration encryptionType=AES256 \
+  || true
 
 aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 
-docker build -t "$REPO:1.6.2" .
-docker tag "$REPO:1.6.2" "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.2"
-docker push "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.2"
+docker build -t "$REPO:1.6.3" .
+docker tag "$REPO:1.6.3" "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.3"
+docker push "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.3"
+
+IMAGE_DIGEST=$(aws ecr describe-images \
+  --repository-name "$REPO" \
+  --image-ids imageTag=1.6.3 \
+  --region "$AWS_REGION" \
+  --query 'imageDetails[0].imageDigest' \
+  --output text)
+
+echo "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO@$IMAGE_DIGEST"
 ```
+
+Use the digest form in production task definitions. Keep the version tag for human readability and the digest for deployment integrity.
 
 ## Required Secrets
 
@@ -95,6 +127,8 @@ from cryptography.fernet import Fernet
 print(Fernet.generate_key().decode())
 PY
 ```
+
+Use automatic rotation where supported. For third-party PATs, set an owner, expiration date, and documented rotation cadence.
 
 ## ECS Task Configuration
 
@@ -125,6 +159,17 @@ Environment:
 | `APPLICATION_INVENTORY_POSTGRES_TABLE` | `application_inventory_assets` |
 
 Mount EFS at `/reports`.
+
+Runtime hardening:
+
+- Run as the non-root `scanner` user provided by the container image.
+- Set `readonlyRootFilesystem` to `true`.
+- Write only to the mounted `/reports` volume and task temporary storage.
+- Do not grant privileged mode.
+- Do not add Linux capabilities.
+- Use Fargate platform version `1.4.0` or later.
+- Use task-level CPU and memory limits that leave headroom for large report generation.
+- Keep ECS Exec disabled unless there is an approved break-glass process with audit logging.
 
 Health check path:
 
@@ -158,6 +203,9 @@ Recommended RDS settings:
 - Public access: disabled.
 - IAM authentication: optional.
 - Performance Insights: enabled.
+- Deletion protection: enabled.
+- SSL/TLS connections: required by parameter group or connection policy.
+- Minor version auto-upgrades: enabled where compatible with your release process.
 
 The service creates the `application_inventory` schema automatically when PostgreSQL sync is enabled.
 
@@ -167,12 +215,15 @@ Task execution role:
 
 - Pull from ECR.
 - Write CloudWatch logs.
+- Read only the image and log resources needed by this service.
 
 Task role:
 
 - Read required Secrets Manager secrets.
 - Decrypt with the relevant KMS key.
 - Mount EFS if using IAM authorization.
+- No wildcard secret access.
+- No RDS administrative permissions.
 
 Avoid broad permissions. Scope secrets by ARN and environment.
 
@@ -222,6 +273,10 @@ Ship logs to a central SIEM if inventory results or errors may support audit or 
 - Keep ECS tasks in private subnets.
 - Prefer VPC endpoints for AWS APIs where practical.
 - Configure `APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS` to reduce provider URL abuse risk.
+- Redact provider tokens and DSNs from operational runbooks, tickets, and screenshots.
+- Route CloudWatch Logs to retention policies that match the sensitivity of inventory metadata.
+- Use Security Hub and GuardDuty where available for RDS, ECS, and runtime findings.
+- Require review for worker-count changes because aggressive concurrency can trigger provider throttling or unnecessary data exposure.
 
 ## Deployment Checklist
 
@@ -240,3 +295,11 @@ Ship logs to a central SIEM if inventory results or errors may support audit or 
 ## Rollback
 
 Use immutable image tags. To roll back, update the ECS service to the previous task definition revision and redeploy. Keep database schema changes backward-compatible when possible.
+
+## References
+
+- [Amazon ECS security](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/security.html)
+- [Fargate security best practices](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/security-fargate.html)
+- [Amazon RDS security best practices](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_BestPractices.Security.html)
+- [AWS Secrets Manager rotation](https://docs.aws.amazon.com/secretsmanager/latest/userguide/rotating-secrets.html)
+- [Amazon EFS encryption](https://docs.aws.amazon.com/efs/latest/ug/encryption.html)

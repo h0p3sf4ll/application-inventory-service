@@ -1,5 +1,14 @@
 # Application Inventory Service
 
+![Application Inventory Service](docs/assets/application-inventory-service-banner.svg)
+
+[![CI](https://github.com/h0p3sf4ll/application-inventory-service/actions/workflows/ci.yml/badge.svg)](https://github.com/h0p3sf4ll/application-inventory-service/actions/workflows/ci.yml)
+[![Security](https://github.com/h0p3sf4ll/application-inventory-service/actions/workflows/security.yml/badge.svg)](https://github.com/h0p3sf4ll/application-inventory-service/actions/workflows/security.yml)
+[![Publish](https://github.com/h0p3sf4ll/application-inventory-service/actions/workflows/publish.yml/badge.svg)](https://github.com/h0p3sf4ll/application-inventory-service/actions/workflows/publish.yml)
+[![PyPI](https://img.shields.io/pypi/v/application-inventory-service.svg)](https://pypi.org/project/application-inventory-service/)
+[![Python](https://img.shields.io/pypi/pyversions/application-inventory-service.svg)](https://pypi.org/project/application-inventory-service/)
+[![License](https://img.shields.io/pypi/l/application-inventory-service.svg)](LICENSE)
+
 Application Inventory Service discovers software assets across Azure DevOps and GitHub Enterprise without cloning repositories. It identifies mobile apps, web apps, API services, microservices, middleware, serverless workloads, infrastructure code, AI-enabled apps, and ML-enabled apps, then emits reports and scanner-ready target manifests.
 
 The project is published as `application-inventory-service`. The original `appsec-*`, `ado-mobile-scanner`, and `mobile-app-inventory-tracer` commands remain available as compatibility aliases.
@@ -23,6 +32,8 @@ The project is published as `application-inventory-service`. The original `appse
 - [AWS Deployment Guide](docs/AWS_DEPLOYMENT.md)
 - [Azure Implementation Guide](docs/AZURE_IMPLEMENTATION.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Blog Post](docs/BLOG_POST.md)
+- [PyPI Release Management](docs/PYPI_RELEASE_MANAGEMENT.md)
 - [SBOM Summary](docs/SBOM.md)
 - [CycloneDX SBOM](docs/SBOM.cdx.json)
 

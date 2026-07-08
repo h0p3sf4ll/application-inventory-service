@@ -42,6 +42,22 @@ flowchart TB
 | Optional perimeter | Azure Front Door, Application Gateway, WAF, IP restrictions |
 | Private network access | VNet integration, Private Link, NAT Gateway, Azure Firewall |
 
+## Security Defaults
+
+Use these controls as the default production posture:
+
+- Run Container Apps inside a managed environment connected to a VNet.
+- Prefer internal ingress when access is limited to corporate networks or private security tooling.
+- If external ingress is required, front it with Azure Front Door, Application Gateway, WAF, IP restrictions, or identity-aware access.
+- Use managed identity for Azure resource access.
+- Store secrets in Key Vault and reference them from Container Apps secrets.
+- Keep Azure Container Registry admin access disabled.
+- Deploy immutable image tags and record the image digest for production changes.
+- Enable Defender for Cloud container and database recommendations where available.
+- Use Private Link or restricted firewall rules for PostgreSQL, Key Vault, Storage, and private GitHub Enterprise endpoints where supported.
+- Disable local test login in every shared environment.
+- Rotate any token that has appeared in chat, logs, screenshots, terminal output, or issue trackers.
+
 ## Baseline Settings
 
 Use these environment values for shared environments:
@@ -78,7 +94,7 @@ AZURE_LOCATION=eastus
 RESOURCE_GROUP=rg-application-inventory-prod
 ACR_NAME=appinventoryprodacr
 IMAGE_NAME=application-inventory-service
-IMAGE_TAG=1.6.2
+IMAGE_TAG=1.6.3
 
 az group create \
   --name "$RESOURCE_GROUP" \
@@ -97,7 +113,15 @@ docker tag "$IMAGE_NAME:$IMAGE_TAG" "$ACR_NAME.azurecr.io/$IMAGE_NAME:$IMAGE_TAG
 docker push "$ACR_NAME.azurecr.io/$IMAGE_NAME:$IMAGE_TAG"
 ```
 
-Use immutable tags for production. Avoid deploying `latest`.
+Use immutable tags for production. Avoid deploying `latest`. Record the pushed digest and use it in release evidence:
+
+```bash
+az acr manifest list-metadata \
+  --registry "$ACR_NAME" \
+  --name "$IMAGE_NAME" \
+  --query "[?tags[?@=='$IMAGE_TAG']].digest | [0]" \
+  --output tsv
+```
 
 ## Create Core Azure Resources
 
@@ -152,6 +176,23 @@ az postgres flexible-server create \
   --version 16
 ```
 
+Harden the database after creation:
+
+```bash
+az postgres flexible-server parameter set \
+  --resource-group "$RESOURCE_GROUP" \
+  --server-name "$POSTGRES_NAME" \
+  --name require_secure_transport \
+  --value ON
+
+az postgres flexible-server update \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$POSTGRES_NAME" \
+  --backup-retention 35
+```
+
+For production, use private access or Private Link, disable broad public firewall rules, and use a dedicated database user with only the privileges required by the `application_inventory` schema.
+
 Create Azure Files:
 
 ```bash
@@ -159,7 +200,10 @@ az storage account create \
   --resource-group "$RESOURCE_GROUP" \
   --name "$STORAGE_ACCOUNT" \
   --location "$AZURE_LOCATION" \
-  --sku Standard_ZRS
+  --sku Standard_ZRS \
+  --https-only true \
+  --min-tls-version TLS1_2 \
+  --allow-blob-public-access false
 
 STORAGE_KEY=$(az storage account keys list \
   --resource-group "$RESOURCE_GROUP" \
@@ -191,7 +235,8 @@ az keyvault create \
   --resource-group "$RESOURCE_GROUP" \
   --name "$KEY_VAULT" \
   --location "$AZURE_LOCATION" \
-  --enable-rbac-authorization true
+  --enable-rbac-authorization true \
+  --enable-purge-protection true
 ```
 
 Generate the Fernet key:
@@ -207,10 +252,12 @@ Set required secrets:
 
 ```bash
 az keyvault secret set --vault-name "$KEY_VAULT" --name app-fernet-key --value "<fernet-key>"
-az keyvault secret set --vault-name "$KEY_VAULT" --name postgres-dsn --value "postgresql://user:password@host:5432/postgres"
+az keyvault secret set --vault-name "$KEY_VAULT" --name postgres-dsn --value "postgresql://app_user:<password>@<postgres-host>:5432/postgres?sslmode=require"
 az keyvault secret set --vault-name "$KEY_VAULT" --name github-client-secret --value "<github-oauth-secret>"
 az keyvault secret set --vault-name "$KEY_VAULT" --name google-client-secret --value "<google-oauth-secret>"
 ```
+
+Use secret expiration dates and owner metadata. Rotate OAuth secrets, PATs, database passwords, and storage account keys on a defined cadence.
 
 ## Deploy the Container App
 
@@ -348,6 +395,17 @@ https://inventory.example.com/api/auth/google/callback
 
 Use Container Apps IP restrictions, Azure Front Door, Application Gateway, WAF, private ingress, or identity-aware access when the UI should not be publicly reachable.
 
+Runtime hardening:
+
+- Keep `APPLICATION_INVENTORY_SERVICE_COOKIE_SECURE=true`.
+- Keep `APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED=false`.
+- Set `APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS` to explicit hostnames.
+- Keep `APPLICATION_INVENTORY_SERVICE_ALLOW_INSECURE_PROVIDER_URLS=false`.
+- Grant the managed identity only `AcrPull` and Key Vault secret-read permissions required by this app.
+- Do not store PATs or OAuth secrets in Container App plain environment variables.
+- Keep a single replica until active scan coordination is moved to a durable queue or worker service.
+- Review scan worker increases because high concurrency can trigger provider throttling or expose more metadata than intended.
+
 ## Azure DevOps Scanning Configuration
 
 The scanner calls Azure DevOps REST APIs to list projects, repositories, branches, build definitions, commits, and selected repository files. Use least-privilege credentials.
@@ -424,6 +482,12 @@ Scaling:
 - Scale vertically first for large organizations.
 - Increase scan worker settings cautiously to avoid provider throttling.
 - For horizontal scale, move active scan coordination to a durable queue and worker service.
+
+Audit:
+
+- Send Container Apps logs to Log Analytics with retention aligned to inventory sensitivity.
+- Monitor denied Key Vault reads, PostgreSQL failed logins, provider API errors, and unexpected outbound destinations.
+- Keep release evidence: image digest, SBOM, GitHub release, PyPI version, and deployment manifest.
 
 ## References
 
