@@ -9,7 +9,6 @@ import secrets
 import subprocess
 import sys
 import threading
-import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -130,11 +129,12 @@ class ScanRun:
         stale: list[queue.Queue[dict[str, Any] | None]] = []
         with self.lock:
             listeners = list(self.listeners)
+        payload = {"event": event, "data": data}
         for listener in listeners:
-            try:
-                listener.put_nowait({"event": event, "data": data})
-            except queue.Full:
+            if listener.full():
                 stale.append(listener)
+                continue
+            listener.put_nowait(payload)
         if stale:
             with self.lock:
                 self.listeners = [listener for listener in self.listeners if listener not in stale]
@@ -623,7 +623,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             run.remove_listener(listener)
 
     def write_event(self, event: str, data: dict[str, Any]) -> None:
-        payload = f"event: {event}\ndata: {json.dumps(data)}\n\n".encode("utf-8")
+        payload = f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
         self.wfile.write(payload)
         self.wfile.flush()
 

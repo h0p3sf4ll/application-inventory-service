@@ -31,7 +31,7 @@ class AzureDevOpsClient:
         self._headers = {
             "Authorization": self._auth_header_value(pat),
             "Accept": "application/json",
-            "User-Agent": "application-inventory-service/1.6.1",
+            "User-Agent": "application-inventory-service/1.6.2",
         }
         self._retry = Retry(
             total=5,
@@ -49,7 +49,7 @@ class AzureDevOpsClient:
 
     @staticmethod
     def _auth_header_value(pat: str) -> str:
-        token = base64.b64encode(f":{pat}".encode("utf-8")).decode("ascii")
+        token = base64.b64encode(f":{pat}".encode()).decode("ascii")
         return f"Basic {token}"
 
     def close(self) -> None:

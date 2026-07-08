@@ -108,7 +108,7 @@ class StreamingReportWriter:
         self._row_count = 0
         self._xlsx_save_interval = 25
 
-    def __enter__(self) -> "StreamingReportWriter":
+    def __enter__(self) -> StreamingReportWriter:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self._csv_file = self.csv_path.open("w", newline="", encoding="utf-8")
         self._json_file = self.json_path.open("w", encoding="utf-8")

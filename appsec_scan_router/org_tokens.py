@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from .models import AzureDevOpsOrgPat
 from .utils import clean_value_without_resource_filter
@@ -10,7 +11,7 @@ from .utils import clean_value_without_resource_filter
 def parse_ado_org_pat_values(values: Iterable[Any] | Any) -> tuple[AzureDevOpsOrgPat, ...]:
     if values is None:
         return ()
-    candidates = (values,) if isinstance(values, dict) or isinstance(values, str | bytes) else values
+    candidates = (values,) if isinstance(values, (dict, str, bytes)) else values
     org_tokens: dict[str, AzureDevOpsOrgPat] = {}
     for value in candidates:
         for org_pat in parse_ado_org_pat_value(value):

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from .models import SourceTargetFilter
 from .utils import clean_value_without_resource_filter
@@ -10,7 +11,7 @@ from .utils import clean_value_without_resource_filter
 def parse_source_target_filter_values(values: Iterable[Any] | Any) -> tuple[SourceTargetFilter, ...]:
     if values is None:
         return ()
-    candidates = (values,) if isinstance(values, dict) or isinstance(values, str | bytes) else values
+    candidates = (values,) if isinstance(values, (dict, str, bytes)) else values
     filters: dict[tuple[str, str], SourceTargetFilter] = {}
     for value in candidates:
         for target_filter in parse_source_target_filter_value(value):

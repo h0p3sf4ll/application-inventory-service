@@ -214,6 +214,11 @@ button:not(:disabled):active {
   color: currentColor;
 }
 
+.github-mark {
+  background: rgb(255 255 255);
+  border: 1px solid var(--border);
+}
+
 .google-mark {
   background: rgb(255 255 255);
   border: 1px solid var(--border);
@@ -221,8 +226,8 @@ button:not(:disabled):active {
 }
 
 .test-mark {
-  background: var(--accent-soft);
-  border: 1px solid rgb(172 203 244);
+  background: rgb(245 247 250);
+  border: 1px solid rgb(205 213 224);
 }
 
 .shell {

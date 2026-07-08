@@ -107,20 +107,19 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(user.provider, "test")
 
     def test_auth_status_lists_github_and_google_sso(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch.dict(
-                "os.environ",
-                {
-                    "APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_ID": "github-client",
-                    "APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET": "github-secret",
-                    "APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_ID": "google-client",
-                    "APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET": "google-secret",
-                    "APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED": "true",
-                },
-                clear=False,
-            ):
-                manager = AuthManager(Path(tmpdir))
-                status = manager.status(None)
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            "os.environ",
+            {
+                "APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_ID": "github-client",
+                "APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET": "github-secret",
+                "APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_ID": "google-client",
+                "APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET": "google-secret",
+                "APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED": "true",
+            },
+            clear=False,
+        ):
+            manager = AuthManager(Path(tmpdir))
+            status = manager.status(None)
 
         providers = {provider["id"]: provider for provider in status["authProviders"]}
         self.assertTrue(status["githubLoginEnabled"])
@@ -131,9 +130,12 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(providers["test"]["startUrl"], "/api/auth/test/start")
 
     def test_default_ui_config_lists_sso_options(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch.dict("os.environ", {"APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED": "true"}, clear=False):
-                config = default_ui_config(Path(tmpdir))
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            "os.environ",
+            {"APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED": "true"},
+            clear=False,
+        ):
+            config = default_ui_config(Path(tmpdir))
 
         provider_ids = [provider["id"] for provider in config["auth"]["authProviders"]]
         application_type_ids = [choice["value"] for choice in config["defaults"]["applicationTypeChoices"]]

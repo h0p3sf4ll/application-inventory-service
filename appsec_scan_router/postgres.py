@@ -99,7 +99,7 @@ class PostgresInventoryWriter:
         self.scan_id = uuid.uuid4().hex
         self.connection: Any = None
 
-    def __enter__(self) -> "PostgresInventoryWriter":
+    def __enter__(self) -> PostgresInventoryWriter:
         if psycopg is None or sql is None or Jsonb is None:
             raise SystemExit(MISSING_PSYCOPG_MESSAGE)
         if not self.dsn:

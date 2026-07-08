@@ -71,7 +71,7 @@ class GitHubOAuthConfig:
     scope: str = "read:user"
 
     @classmethod
-    def from_env(cls) -> "GitHubOAuthConfig":
+    def from_env(cls) -> GitHubOAuthConfig:
         return cls(
             client_id=env_value("APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_ID", "APPSEC_INVENTORY_SERVICE_GITHUB_CLIENT_ID"),
             client_secret=env_value("APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET", "APPSEC_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET"),
@@ -97,7 +97,7 @@ class GoogleOAuthConfig:
     scope: str = "openid email profile"
 
     @classmethod
-    def from_env(cls) -> "GoogleOAuthConfig":
+    def from_env(cls) -> GoogleOAuthConfig:
         return cls(
             client_id=env_value("APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_ID", "APPSEC_INVENTORY_SERVICE_GOOGLE_CLIENT_ID"),
             client_secret=env_value("APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET", "APPSEC_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET"),
@@ -121,7 +121,7 @@ class TestLoginConfig:
     name: str = "Test User"
 
     @classmethod
-    def from_env(cls) -> "TestLoginConfig":
+    def from_env(cls) -> TestLoginConfig:
         return cls(
             enabled=env_value("APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED", "APPSEC_INVENTORY_SERVICE_TEST_LOGIN_ENABLED").lower() in TRUE_VALUES,
             user_id=env_value("APPLICATION_INVENTORY_SERVICE_TEST_USER_ID", "APPSEC_INVENTORY_SERVICE_TEST_USER_ID") or cls.user_id,
@@ -196,7 +196,7 @@ class CredentialStore:
         with self.lock:
             credentials = self.read_data().get("users", {}).get(clean_value(user_id), {})
             if not isinstance(credentials, dict):
-                return {provider: False for provider in PROVIDER_NAMES}
+                return dict.fromkeys(PROVIDER_NAMES, False)
             return {
                 provider: bool(isinstance(credentials.get(provider), dict) and credentials[provider].get("token"))
                 for provider in PROVIDER_NAMES
@@ -318,7 +318,7 @@ class GitHubOAuthService:
                     "Accept": "application/vnd.github+json",
                     "Authorization": f"Bearer {access_token}",
                     "X-GitHub-Api-Version": "2022-11-28",
-                    "User-Agent": "application-inventory-service/1.6.1",
+                    "User-Agent": "application-inventory-service/1.6.2",
                 },
                 timeout=20,
             )
@@ -421,7 +421,7 @@ class GoogleOAuthService:
                 headers={
                     "Accept": "application/json",
                     "Authorization": f"Bearer {access_token}",
-                    "User-Agent": "application-inventory-service/1.6.1",
+                    "User-Agent": "application-inventory-service/1.6.2",
                 },
                 timeout=20,
             )
@@ -475,9 +475,7 @@ class AuthManager:
         self.sessions.delete(session_id)
 
     def status(self, record: SessionRecord | None) -> dict[str, Any]:
-        credentials = self.credentials.statuses(record.user.id) if record else {
-            provider: False for provider in PROVIDER_NAMES
-        }
+        credentials = self.credentials.statuses(record.user.id) if record else dict.fromkeys(PROVIDER_NAMES, False)
         return {
             "loggedIn": bool(record),
             "user": record.user.as_dict() if record else None,

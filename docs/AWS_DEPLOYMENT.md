@@ -70,9 +70,9 @@ aws ecr create-repository --repository-name "$REPO" --region "$AWS_REGION" || tr
 aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 
-docker build -t "$REPO:1.6.1" .
-docker tag "$REPO:1.6.1" "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.1"
-docker push "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.1"
+docker build -t "$REPO:1.6.2" .
+docker tag "$REPO:1.6.2" "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.2"
+docker push "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.2"
 ```
 
 ## Required Secrets

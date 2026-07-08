@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from .constants import CONTENT_FILE_SUFFIXES
 

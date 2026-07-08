@@ -19,7 +19,9 @@ The project is published as `application-inventory-service`. The original `appse
 
 - [Application Intent](docs/APP_INTENT.md)
 - [Security Baseline](SECURITY.md)
+- [Code Reference](docs/CODE_REFERENCE.md)
 - [AWS Deployment Guide](docs/AWS_DEPLOYMENT.md)
+- [Azure Implementation Guide](docs/AZURE_IMPLEMENTATION.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [SBOM Summary](docs/SBOM.md)
 - [CycloneDX SBOM](docs/SBOM.cdx.json)

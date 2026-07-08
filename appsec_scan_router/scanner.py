@@ -5,12 +5,13 @@ import logging
 import re
 import time
 from collections import Counter
+from collections.abc import Callable, Iterable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, as_completed, wait
 from contextlib import ExitStack
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from .activity import extract_repo_activity, parse_ado_datetime
 from .azure import AzureDevOpsClient

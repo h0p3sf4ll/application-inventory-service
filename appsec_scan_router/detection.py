@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Callable, Iterable
+from collections.abc import Callable, Iterable
 
 from .metadata import (
     collect_metadata_properties,
