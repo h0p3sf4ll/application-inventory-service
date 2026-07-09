@@ -1,5 +1,6 @@
 API_VERSION = "7.1"
 DEFAULT_TIMEOUT_SECONDS = 30
+DEFAULT_GITHUB_APP_ID = "4255413"
 DEFAULT_MAX_WORKERS = 8
 DEFAULT_BRANCH_WORKERS = 16
 DEFAULT_CONTENT_WORKERS = 16
@@ -187,6 +188,7 @@ CONTENT_FILES_TO_FETCH: tuple[str, ...] = (
 CONTENT_FILE_SUFFIXES = tuple(name.lower() for name in CONTENT_FILES_TO_FETCH)
 
 INVENTORY_FIELDNAMES = (
+    "provider",
     "organization",
     "project",
     "repo_name",
@@ -221,6 +223,7 @@ INVENTORY_FIELDNAMES = (
 )
 
 SONARQUBE_FIELDNAMES = (
+    "provider",
     "sonar.projectKey",
     "sonar.projectName",
     "sonar.sources",

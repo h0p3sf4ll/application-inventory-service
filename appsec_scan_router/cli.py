@@ -20,7 +20,7 @@ from .constants import (
     DEFAULT_TIMEOUT_SECONDS,
     KNOWN_INVENTORY_TYPES,
 )
-from .github import normalize_github_api_url
+from .github import GitHubAppCredentials, normalize_github_api_url
 from .models import AzureDevOpsOrgPat, ScanConfig, SourceTargetFilter
 from .org_tokens import parse_ado_org_pat_values
 from .scanner import normalize_application_types, scan_to_reports, store_lookup_allowed
@@ -34,9 +34,9 @@ def parse_args(argv: list[str]) -> ScanConfig:
     )
     parser.add_argument(
         "--provider",
-        choices=("azure-devops", "github-enterprise"),
+        choices=("azure-devops", "github-enterprise", "mixed"),
         default=env_value("APPLICATION_INVENTORY_PROVIDER", "APPSEC_SCAN_PROVIDER") or "azure-devops",
-        help="Source provider. Defaults to azure-devops.",
+        help="Source provider, or mixed to scan Azure DevOps and GitHub Enterprise in one run.",
     )
     parser.add_argument("--org", help="Azure DevOps organization or GitHub owner.")
     parser.add_argument(
@@ -78,7 +78,32 @@ def parse_args(argv: list[str]) -> ScanConfig:
     )
     parser.add_argument(
         "--pat",
-        help="Provider token. Prefer ADO_PAT for Azure DevOps or GITHUB_TOKEN/GHE_TOKEN for GitHub Enterprise.",
+        help="Provider token. Use ADO_PAT for Azure DevOps. GitHub Enterprise should use GitHub App settings.",
+    )
+    parser.add_argument(
+        "--github-app-id",
+        default=env_value("APPLICATION_INVENTORY_GITHUB_APP_ID", "APPSEC_INVENTORY_GITHUB_APP_ID", "GITHUB_APP_ID", "GHE_APP_ID"),
+        help="GitHub App ID. Prefer the environment variable for automation.",
+    )
+    parser.add_argument(
+        "--github-app-installation-id",
+        default=env_value(
+            "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID",
+            "APPSEC_INVENTORY_GITHUB_APP_INSTALLATION_ID",
+            "GITHUB_APP_INSTALLATION_ID",
+            "GHE_APP_INSTALLATION_ID",
+        ),
+        help="GitHub App installation ID. Prefer the environment variable for automation.",
+    )
+    parser.add_argument(
+        "--github-app-private-key-file",
+        default=env_value(
+            "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
+            "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
+            "GITHUB_APP_PRIVATE_KEY_FILE",
+            "GHE_APP_PRIVATE_KEY_FILE",
+        ),
+        help="Path to the GitHub App PEM private key. Prefer a secret-mounted file.",
     )
     parser.add_argument(
         "--out-dir",
@@ -205,11 +230,13 @@ def parse_args(argv: list[str]) -> ScanConfig:
     ado_org_pats = collect_ado_org_pats(args)
     target_filters = collect_target_filters(args)
     validate_args(args, application_types, ado_org_pats)
-    token = "" if ado_org_pats else provider_token(args)
+    token = provider_token(args)
+    if args.provider == "azure-devops" and ado_org_pats:
+        token = ""
     target_projects = provider_projects(args)
     target_project = target_projects[0] if len(target_projects) == 1 and not target_filters else None
     org = args.org or (ado_org_pats[0].org if len(ado_org_pats) == 1 else "")
-    base_url = normalize_github_api_url(args.base_url) if args.provider == "github-enterprise" else args.base_url
+    base_url = normalize_github_api_url(args.base_url) if args.provider in {"github-enterprise", "mixed"} else args.base_url
 
     return ScanConfig(
         org=org,
@@ -238,6 +265,15 @@ def parse_args(argv: list[str]) -> ScanConfig:
         owner_user_login=args.owner_user_login,
         ado_org_pats=ado_org_pats,
         target_filters=target_filters or tuple(SourceTargetFilter("", project) for project in target_projects),
+        github_app_id=args.github_app_id,
+        github_app_installation_id=args.github_app_installation_id,
+        github_app_private_key=env_value(
+            "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY",
+            "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY",
+            "GITHUB_APP_PRIVATE_KEY",
+            "GHE_APP_PRIVATE_KEY",
+        ),
+        github_app_private_key_file=args.github_app_private_key_file,
     )
 
 
@@ -253,9 +289,24 @@ def validate_args(
     if args.provider == "github-enterprise":
         if ado_org_pats or args.ado_org_pat:
             raise SystemExit("--ado-org-pat only applies to Azure DevOps scans.")
+    if args.provider in {"github-enterprise", "mixed"}:
         if not args.org:
             raise SystemExit("Missing GitHub owner. Set --org.")
-        if not provider_token(args):
+        try:
+            app_credentials = GitHubAppCredentials.from_values(
+                args.github_app_id,
+                args.github_app_installation_id,
+                env_value(
+                    "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY",
+                    "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY",
+                    "GITHUB_APP_PRIVATE_KEY",
+                    "GHE_APP_PRIVATE_KEY",
+                ),
+                args.github_app_private_key_file,
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        if not provider_token(args) and not app_credentials:
             raise SystemExit(provider_token_message(args.provider))
         if not args.base_url:
             raise SystemExit("Missing GitHub Enterprise API URL. Set --base-url or GITHUB_API_URL.")
@@ -263,7 +314,9 @@ def validate_args(
             normalize_github_api_url(args.base_url)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
-    else:
+    if args.provider in {"azure-devops", "mixed"}:
+        if args.provider == "mixed" and not ado_org_pats:
+            raise SystemExit("Mixed scans require at least one --ado-org-pat ORG=PAT or APPLICATION_INVENTORY_ADO_ORG_PATS.")
         if not args.org and not ado_org_pats:
             raise SystemExit("Missing Azure DevOps organization. Set --org or pass --ado-org-pat ORG=PAT.")
         if not ado_org_pats and not provider_token(args):
@@ -302,13 +355,13 @@ def provider_projects(args: argparse.Namespace) -> tuple[str, ...]:
 def provider_token(args: argparse.Namespace) -> str:
     if args.pat:
         return args.pat
-    if args.provider == "github-enterprise":
+    if args.provider in {"github-enterprise", "mixed"}:
         return os.getenv("GITHUB_TOKEN") or os.getenv("GHE_TOKEN") or ""
     return os.getenv("ADO_PAT") or ""
 
 
 def collect_ado_org_pats(args: argparse.Namespace) -> tuple[AzureDevOpsOrgPat, ...]:
-    if args.provider != "azure-devops":
+    if args.provider not in {"azure-devops", "mixed"}:
         return ()
     values: list[object] = []
     org_pat_env_value = env_value("APPLICATION_INVENTORY_ADO_ORG_PATS", "APPSEC_INVENTORY_ADO_ORG_PATS", "ADO_ORG_PATS")
@@ -320,7 +373,7 @@ def collect_ado_org_pats(args: argparse.Namespace) -> tuple[AzureDevOpsOrgPat, .
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     token = provider_token(args)
-    if org_pats and args.org and token:
+    if args.provider == "azure-devops" and org_pats and args.org and token:
         org_pats.append(AzureDevOpsOrgPat(args.org, token))
     deduped: dict[str, AzureDevOpsOrgPat] = {}
     for org_pat in org_pats:
@@ -341,8 +394,12 @@ def collect_target_filters(args: argparse.Namespace) -> tuple[SourceTargetFilter
 
 
 def provider_token_message(provider: str) -> str:
-    if provider == "github-enterprise":
-        return "Missing GitHub token. Set GITHUB_TOKEN, GHE_TOKEN, or pass --pat."
+    if provider in {"github-enterprise", "mixed"}:
+        source = "GitHub Enterprise" if provider == "github-enterprise" else "GitHub Enterprise for the mixed scan"
+        return (
+            f"Missing {source} App configuration. Set GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, "
+            "and GITHUB_APP_PRIVATE_KEY_FILE, or use GITHUB_TOKEN as a compatibility fallback."
+        )
     return "Missing Azure DevOps PAT. Set ADO_PAT or pass --pat."
 
 

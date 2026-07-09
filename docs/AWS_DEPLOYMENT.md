@@ -54,7 +54,7 @@ Use the following controls as the default production posture:
 - Restrict ALB ingress to approved CIDR ranges, VPN, identity-aware access, or AWS WAF.
 - Use immutable image tags and deploy by image digest for production changes.
 - Enable ECR scan-on-push and continuously scan final container images.
-- Store all runtime secrets in Secrets Manager; never pass PATs, OAuth secrets, or DSNs as plain task definition environment values.
+- Store all runtime secrets in Secrets Manager; never pass GitHub App keys, PATs, OAuth secrets, or DSNs as plain task definition environment values.
 - Encrypt ECR, RDS, EFS, Secrets Manager, CloudWatch Logs, and Fargate ephemeral storage with AWS-managed or customer-managed KMS keys.
 - Use a dedicated ECS task role with only the secret, KMS, EFS, and logging permissions required by the service.
 - Keep RDS public access disabled and allow PostgreSQL only from the ECS task security group.
@@ -91,13 +91,13 @@ aws ecr create-repository \
 aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 
-docker build -t "$REPO:1.6.4" .
-docker tag "$REPO:1.6.4" "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.4"
-docker push "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.4"
+docker build -t "$REPO:1.6.5" .
+docker tag "$REPO:1.6.5" "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.5"
+docker push "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.5"
 
 IMAGE_DIGEST=$(aws ecr describe-images \
   --repository-name "$REPO" \
-  --image-ids imageTag=1.6.4 \
+  --image-ids imageTag=1.6.5 \
   --region "$AWS_REGION" \
   --query 'imageDetails[0].imageDigest' \
   --output text)
@@ -117,7 +117,10 @@ Store these in AWS Secrets Manager:
 | `APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET` | GitHub OAuth secret |
 | `APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET` | Google OAuth secret |
 | `APPLICATION_INVENTORY_POSTGRES_DSN` | PostgreSQL DSN |
-| Provider tokens | Optional server-side source provider tokens for automation |
+| `APPLICATION_INVENTORY_GITHUB_APP_ID` | GitHub App ID |
+| `APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID` | GitHub App installation ID |
+| `APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE` | Path to a secret-mounted GitHub App PEM key |
+| Provider tokens | Optional Azure DevOps PAT or legacy GitHub token fallback |
 
 Generate a Fernet key:
 

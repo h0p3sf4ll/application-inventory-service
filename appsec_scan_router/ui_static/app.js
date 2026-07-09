@@ -1,17 +1,17 @@
 const form = document.querySelector("#scanForm");
+const DEFAULT_GITHUB_APP_ID = "4255413";
 const loginPage = document.querySelector("#loginPage");
 const appShell = document.querySelector("#appShell");
 const startScanButton = document.querySelector("#startScan");
+const startScanFormButton = document.querySelector("#startScanForm");
 const stopScanButton = document.querySelector("#stopScan");
 const refreshButton = document.querySelector("#refreshScans");
 const resetDefaultsButton = document.querySelector("#resetDefaults");
-const toggleTokenButton = document.querySelector("#toggleToken");
 const loginGitHub = document.querySelector("#loginGitHub");
 const loginGitHubSso = document.querySelector("#loginGitHubSso");
 const loginGoogleSso = document.querySelector("#loginGoogleSso");
 const loginTestSso = document.querySelector("#loginTestSso");
 const logoutGitHub = document.querySelector("#logoutGitHub");
-const forgetToken = document.querySelector("#forgetToken");
 const authStatus = document.querySelector("#authStatus");
 const loginSummary = document.querySelector("#loginSummary");
 const orgRequirementBadge = document.querySelector("#orgRequirementBadge");
@@ -25,10 +25,11 @@ const targetFilterTitle = document.querySelector("#targetFilterTitle");
 const targetFilterDefault = document.querySelector("#targetFilterDefault");
 const targetFilterSummary = document.querySelector("#targetFilterSummary");
 const targetSearch = document.querySelector("#targetSearch");
+const githubAppPrivateKeyFileInput = document.querySelector("#githubAppPrivateKeyFile");
+const githubAppPrivateKeyFileStatus = document.querySelector("#githubAppPrivateKeyFileStatus");
 const githubSsoStatus = document.querySelector("#githubSsoStatus");
 const googleSsoStatus = document.querySelector("#googleSsoStatus");
 const testSsoStatus = document.querySelector("#testSsoStatus");
-const saveTokenHint = document.querySelector("#saveTokenHint");
 const copyCommandButton = document.querySelector("#copyCommand");
 const clearLogsButton = document.querySelector("#clearLogs");
 const downloadLogsButton = document.querySelector("#downloadLogs");
@@ -66,6 +67,7 @@ const state = {
   sourceTargets: [],
   selectedTargets: [],
   sourceTargetErrors: [],
+  githubAppPrivateKey: "",
 };
 
 const defaultValues = {
@@ -82,7 +84,6 @@ const defaultValues = {
   storeCountry: "US",
   storeTimeout: "15",
   storeLookup: false,
-  saveToken: false,
   postgresEnabled: true,
   postgresHost: "localhost",
   postgresPort: "5432",
@@ -92,14 +93,16 @@ const defaultValues = {
   postgresSchema: "application_inventory",
   postgresTable: "application_inventory_assets",
   verbose: false,
+  githubAppId: DEFAULT_GITHUB_APP_ID,
+  githubAppInstallationId: "",
 };
 
 const persistedFields = [
   "provider",
   "org",
-  "project",
   "repo",
   "baseUrl",
+  "githubAppInstallationId",
   "applicationTypes",
   "minConfidence",
   "activityMode",
@@ -149,16 +152,14 @@ function bindEvents() {
     syncProviderFields();
     syncDatabaseFields();
     syncMobileOptions();
-    syncCredentialFields();
     saveForm();
   });
   form.addEventListener("input", saveForm);
-  form.addEventListener("input", syncCredentialFields);
   startScanButton.addEventListener("click", startScan);
+  startScanFormButton.addEventListener("click", startScan);
   stopScanButton.addEventListener("click", stopScan);
   refreshButton.addEventListener("click", loadScans);
   resetDefaultsButton.addEventListener("click", resetDefaults);
-  toggleTokenButton.addEventListener("click", toggleToken);
   addAdoOrgPatButton.addEventListener("click", addAdoOrgPat);
   loadTargetsButton.addEventListener("click", loadSourceTargets);
   selectAllTargetsButton.addEventListener("click", selectVisibleTargets);
@@ -166,8 +167,8 @@ function bindEvents() {
   targetSearch.addEventListener("input", renderTargetFilters);
   form.elements.adoOrgName.addEventListener("keydown", handleAdoOrgPatKeydown);
   form.elements.adoOrgPat.addEventListener("keydown", handleAdoOrgPatKeydown);
+  githubAppPrivateKeyFileInput.addEventListener("change", handleGithubAppPrivateKeyFileChange);
   logoutGitHub.addEventListener("click", logout);
-  forgetToken.addEventListener("click", forgetSavedToken);
   loginGitHubSso.addEventListener("click", handleSsoClick);
   loginGoogleSso.addEventListener("click", handleSsoClick);
   loginTestSso.addEventListener("click", handleSsoClick);
@@ -187,6 +188,9 @@ function bindEvents() {
 
 async function startScan() {
   if (!commitPendingAdoOrgPat({silent: true})) {
+    return;
+  }
+  if (!ensureAdoOrgPats()) {
     return;
   }
   if (!form.reportValidity()) {
@@ -245,7 +249,6 @@ async function loadSession() {
     const data = await response.json();
     state.session = data.session || null;
     renderAuth();
-    syncCredentialFields();
   } catch (error) {
     state.session = null;
     renderAuth();
@@ -269,34 +272,11 @@ async function logout() {
     state.adoOrgPats = [];
     clearDiscoveredTargets({silent: true});
     syncAdoOrgPatInput();
-    form.elements.saveToken.checked = false;
     renderAuth();
     renderAll();
-    syncCredentialFields();
     notify("Signed out.");
   } catch (error) {
     notify(error.message || "Sign out failed.");
-  }
-}
-
-async function forgetSavedToken() {
-  const provider = new FormData(form).get("provider") || "azure-devops";
-  try {
-    const response = await fetch("/api/credentials/delete", {
-      method: "POST",
-      headers: authHeaders(true),
-      body: JSON.stringify({provider}),
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error || "Could not remove saved token.");
-    }
-    state.session = data.session || state.session;
-    renderAuth();
-    syncCredentialFields();
-    notify("Saved token removed.");
-  } catch (error) {
-    notify(error.message || "Could not remove saved token.");
   }
 }
 
@@ -566,13 +546,15 @@ function formPayload() {
   const provider = data.get("provider") || "azure-devops";
   return {
     provider,
-    org: value(data, "org"),
-    adoOrgPats: provider === "azure-devops" ? value(data, "adoOrgPats") : "",
+    org: isGithubProvider(provider) ? value(data, "org") : "",
+    adoOrgPats: isAzureProvider(provider) ? value(data, "adoOrgPats") : "",
     targetFilters: targetFilterPayload(),
-    project: provider === "azure-devops" ? value(data, "project") : "",
-    repo: provider === "github-enterprise" ? value(data, "repo") : "",
-    baseUrl: provider === "github-enterprise" ? value(data, "baseUrl") : "",
-    token: value(data, "token"),
+    project: "",
+    repo: isGithubProvider(provider) ? value(data, "repo") : "",
+    baseUrl: isGithubProvider(provider) ? value(data, "baseUrl") : "",
+    githubAppId: isGithubProvider(provider) ? DEFAULT_GITHUB_APP_ID : "",
+    githubAppInstallationId: isGithubProvider(provider) ? value(data, "githubAppInstallationId") : "",
+    githubAppPrivateKey: isGithubProvider(provider) ? state.githubAppPrivateKey : "",
     outPrefix: defaultValues.outPrefix,
     applicationTypes: checkedValues("applicationTypes"),
     minConfidence: value(data, "minConfidence") || defaultValues.minConfidence,
@@ -584,7 +566,6 @@ function formPayload() {
     maxCommitsPerRepo: numberValue(data, "maxCommitsPerRepo", Number(defaultValues.maxCommitsPerRepo)),
     timeout: numberValue(data, "timeout", Number(defaultValues.timeout)),
     storeLookup: data.has("storeLookup"),
-    saveToken: data.has("saveToken"),
     storeCountry: value(data, "storeCountry") || defaultValues.storeCountry,
     storeTimeout: numberValue(data, "storeTimeout", Number(defaultValues.storeTimeout)),
     postgresEnabled: data.has("postgresEnabled"),
@@ -616,21 +597,37 @@ function databasePayload() {
 function syncProviderFields() {
   const provider = new FormData(form).get("provider") || "azure-devops";
   document.querySelectorAll(".provider-azure").forEach((node) => {
-    node.classList.toggle("hidden", provider !== "azure-devops");
+    node.classList.toggle("hidden", !isAzureProvider(provider));
   });
   document.querySelectorAll(".provider-github").forEach((node) => {
+    node.classList.toggle("hidden", !isGithubProvider(provider));
+  });
+  document.querySelectorAll(".provider-github-only").forEach((node) => {
     node.classList.toggle("hidden", provider !== "github-enterprise");
   });
-  form.querySelector('[name="baseUrl"]').required = provider === "github-enterprise";
-  form.querySelector('[name="org"]').required = provider === "github-enterprise";
-  orgRequirementBadge.textContent = provider === "github-enterprise" ? "Required" : "Required unless using org PATs";
-  form.querySelector('[name="project"]').required = false;
+  form.querySelector('[name="baseUrl"]').required = isGithubProvider(provider);
+  form.querySelector('[name="org"]').required = isGithubProvider(provider);
+  document.querySelector("#orgFieldLabel").textContent = "GitHub owner";
+  orgRequirementBadge.textContent = provider === "mixed" ? "GitHub owner required" : "Required";
+  document.querySelector("#adoOrgLabel").textContent = "Azure organizations and PATs";
+  document.querySelector("#adoOrgRequirementBadge").textContent = "Required";
   form.querySelector('[name="repo"]').required = false;
-  targetFilterTitle.textContent = provider === "github-enterprise" ? "Repository filter" : "Project filter";
-  targetFilterDefault.textContent = provider === "github-enterprise" ? "Default: all repositories" : "Default: all projects";
-  loadTargetsButton.textContent = provider === "github-enterprise" ? "Load repositories" : "Load projects";
-  targetSearch.placeholder = provider === "github-enterprise" ? "Filter repositories" : "Filter projects";
+  targetFilterTitle.textContent = provider === "github-enterprise" ? "Repository filter" : provider === "mixed" ? "Project and repository filter" : "Project filter";
+  targetFilterDefault.textContent = provider === "github-enterprise" ? "Default: all repositories" : provider === "mixed" ? "Default: all selected sources" : "Default: all projects";
+  loadTargetsButton.textContent = provider === "github-enterprise" ? "Load repositories" : provider === "mixed" ? "Load all targets" : "Load projects";
+  targetSearch.placeholder = provider === "github-enterprise" ? "Filter repositories" : provider === "mixed" ? "Filter projects and repositories" : "Filter projects";
+  syncGithubAppFields();
   renderTargetFilters();
+}
+
+function syncGithubAppFields() {
+  const enabled = isGithubProvider(new FormData(form).get("provider") || "azure-devops");
+  document.querySelectorAll(".github-app-config").forEach((node) => {
+    node.classList.toggle("hidden", !enabled);
+    node.querySelectorAll("input, textarea, select").forEach((control) => {
+      control.disabled = !enabled;
+    });
+  });
 }
 
 function syncDatabaseFields() {
@@ -657,29 +654,18 @@ function syncMobileOptions() {
   }
 }
 
-function syncCredentialFields() {
-  const session = state.session || {};
-  const provider = new FormData(form).get("provider") || "azure-devops";
-  const loggedIn = Boolean(session.loggedIn);
-  const hasSavedToken = Boolean((session.credentials || {})[provider]);
-  const hasAdoOrgPats = provider === "azure-devops" && state.adoOrgPats.length > 0;
-  form.elements.saveToken.disabled = !loggedIn || hasAdoOrgPats;
-  if (!loggedIn || hasAdoOrgPats) {
-    form.elements.saveToken.checked = false;
-  }
-  form.elements.token.placeholder = hasSavedToken ? "Uses saved token if blank" : "Uses environment token if blank";
-  saveTokenHint.textContent = hasAdoOrgPats
-    ? "Org PATs are used for this scan only"
-    : loggedIn
-    ? hasSavedToken
-      ? "Saved token available for this provider"
-      : "Checked tokens are encrypted and saved for your SSO user"
-    : "Sign in to save or reuse provider tokens";
-  forgetToken.classList.toggle("hidden", !loggedIn || !hasSavedToken);
-}
-
 function addAdoOrgPat() {
   commitPendingAdoOrgPat();
+}
+
+function ensureAdoOrgPats() {
+  const provider = new FormData(form).get("provider") || "azure-devops";
+  if (!isAzureProvider(provider) || state.adoOrgPats.length > 0) {
+    return true;
+  }
+  form.elements.adoOrgName.focus();
+  notify("Add at least one Azure organization and PAT.");
+  return false;
 }
 
 function commitPendingAdoOrgPat({silent = false} = {}) {
@@ -709,7 +695,6 @@ function commitPendingAdoOrgPat({silent = false} = {}) {
   form.elements.adoOrgPat.value = "";
   clearDiscoveredTargets({silent: true});
   syncAdoOrgPatInput();
-  syncCredentialFields();
   return true;
 }
 
@@ -717,7 +702,6 @@ function removeAdoOrgPat(org) {
   state.adoOrgPats = state.adoOrgPats.filter((entry) => entry.org !== org);
   clearDiscoveredTargets({silent: true});
   syncAdoOrgPatInput();
-  syncCredentialFields();
   notify(`${org} removed.`);
 }
 
@@ -757,6 +741,9 @@ async function loadSourceTargets() {
   if (!commitPendingAdoOrgPat({silent: true})) {
     return;
   }
+  if (!ensureAdoOrgPats()) {
+    return;
+  }
   setTargetBusy(true);
   try {
     const response = await fetch("/api/source-targets", {
@@ -791,10 +778,12 @@ function sourcePayload() {
   const provider = data.get("provider") || "azure-devops";
   return {
     provider,
-    org: value(data, "org"),
-    adoOrgPats: provider === "azure-devops" ? value(data, "adoOrgPats") : "",
-    baseUrl: provider === "github-enterprise" ? value(data, "baseUrl") : "",
-    token: value(data, "token"),
+    org: isGithubProvider(provider) ? value(data, "org") : "",
+    adoOrgPats: isAzureProvider(provider) ? value(data, "adoOrgPats") : "",
+    baseUrl: isGithubProvider(provider) ? value(data, "baseUrl") : "",
+    githubAppId: isGithubProvider(provider) ? DEFAULT_GITHUB_APP_ID : "",
+    githubAppInstallationId: isGithubProvider(provider) ? value(data, "githubAppInstallationId") : "",
+    githubAppPrivateKey: isGithubProvider(provider) ? state.githubAppPrivateKey : "",
     timeout: numberValue(data, "timeout", Number(defaultValues.timeout)),
   };
 }
@@ -960,7 +949,7 @@ function targetMeta(target) {
 
 function providerTargetNoun() {
   const provider = new FormData(form).get("provider") || "azure-devops";
-  return provider === "github-enterprise" ? "repository" : "project";
+  return provider === "github-enterprise" ? "repository" : provider === "mixed" ? "target" : "project";
 }
 
 function pluralize(noun, count) {
@@ -977,7 +966,39 @@ function sourceFieldChanged(target) {
   if (!target || !target.name) {
     return false;
   }
-  return ["provider", "org", "baseUrl", "project", "repo", "token"].includes(target.name);
+  return ["provider", "org", "baseUrl", "repo", "githubAppInstallationId"].includes(target.name);
+}
+
+async function handleGithubAppPrivateKeyFileChange(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) {
+    return;
+  }
+  if (file.size > 256 * 1024) {
+    event.target.value = "";
+    state.githubAppPrivateKey = "";
+    githubAppPrivateKeyFileStatus.textContent = "Choose a PEM file smaller than 256 KB.";
+    notify("The PEM file is too large.");
+    return;
+  }
+  try {
+    const key = await file.text();
+    if (!key.includes("-----BEGIN") || !key.includes("PRIVATE KEY-----")) {
+      event.target.value = "";
+      state.githubAppPrivateKey = "";
+      githubAppPrivateKeyFileStatus.textContent = "Choose a PEM private key file.";
+      notify("The selected file is not a PEM private key.");
+      return;
+    }
+    state.githubAppPrivateKey = key;
+    githubAppPrivateKeyFileStatus.textContent = `${file.name} loaded for this scan only.`;
+    notify("PEM file loaded for this scan.");
+  } catch (error) {
+    event.target.value = "";
+    state.githubAppPrivateKey = "";
+    githubAppPrivateKeyFileStatus.textContent = "The PEM file could not be read.";
+    notify(error.message || "The PEM file could not be read.");
+  }
 }
 
 function loadForm() {
@@ -1022,13 +1043,15 @@ function saveForm() {
 
 function resetDefaults() {
   state.adoOrgPats = [];
+  state.githubAppPrivateKey = "";
+  githubAppPrivateKeyFileInput.value = "";
+  githubAppPrivateKeyFileStatus.textContent = "The file is read for this scan and is not stored by the service.";
   clearDiscoveredTargets({silent: true});
   applyDefaultValues();
   syncProviderFields();
   syncDatabaseFields();
   syncMobileOptions();
   syncAdoOrgPatInput();
-  syncCredentialFields();
   saveForm();
   notify("Scan defaults restored.");
 }
@@ -1047,13 +1070,6 @@ function applyDefaultValues() {
       element.value = defaultValue;
     }
   }
-}
-
-function toggleToken() {
-  const token = form.querySelector('[name="token"]');
-  const showing = token.type === "text";
-  token.type = showing ? "password" : "text";
-  toggleTokenButton.textContent = showing ? "Show" : "Hide";
 }
 
 async function copyCommand() {
@@ -1082,6 +1098,7 @@ function downloadBlob(blob, filename) {
 
 function setBusy(isBusy) {
   startScanButton.disabled = isBusy;
+  startScanFormButton.disabled = isBusy;
   formStatus.textContent = isBusy ? "Starting" : "Ready";
   formStatus.className = `status-chip ${isBusy ? "status-running" : "idle"}`;
 }
@@ -1308,7 +1325,21 @@ function durationText(totalSeconds) {
 }
 
 function providerLabel(provider) {
-  return provider === "github-enterprise" ? "GitHub Enterprise" : "Azure DevOps";
+  if (provider === "github-enterprise") {
+    return "GitHub Enterprise";
+  }
+  if (provider === "mixed") {
+    return "Azure DevOps + GitHub Enterprise";
+  }
+  return "Azure DevOps";
+}
+
+function isAzureProvider(provider) {
+  return provider === "azure-devops" || provider === "mixed";
+}
+
+function isGithubProvider(provider) {
+  return provider === "github-enterprise" || provider === "mixed";
 }
 
 function applicationTypesLabel(applicationTypes) {

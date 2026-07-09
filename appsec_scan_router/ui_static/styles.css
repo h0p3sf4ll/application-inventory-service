@@ -29,6 +29,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--sans);
+  line-height: 1.4;
 }
 
 body.login-mode {
@@ -237,11 +238,17 @@ button:not(:disabled):active {
 }
 
 .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 18px;
+  padding: 12px 0;
+  background: rgb(244 247 251 / 94%);
+  backdrop-filter: blur(12px);
 }
 
 .topbar h1,
@@ -254,6 +261,16 @@ button:not(:disabled):active {
 .topbar h1 {
   font-size: 28px;
   line-height: 1.15;
+}
+
+.topbar-brand {
+  min-width: 0;
+}
+
+.topbar-subtitle {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .eyebrow {
@@ -298,6 +315,54 @@ button:not(:disabled):active {
   display: grid;
   gap: 18px;
   align-items: start;
+}
+
+.setup-guide {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 12px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.guide-step {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.guide-step > span:last-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.guide-step strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.guide-step small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.guide-number {
+  display: grid;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: rgb(255 255 255);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .page-form {
@@ -442,7 +507,7 @@ button:not(:disabled):active {
 
 .segmented {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   padding: 4px;
   margin-bottom: 18px;
@@ -484,6 +549,50 @@ button:not(:disabled):active {
   gap: 16px;
 }
 
+.nested-grid {
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.github-app-config {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.field-help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pem-file-field {
+  display: grid;
+  gap: 8px;
+}
+
+.fixed-field {
+  background: var(--surface-muted) !important;
+  color: var(--muted);
+  cursor: not-allowed;
+  font-weight: 800;
+}
+
+.pem-file-field input[type="file"] {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
 .type-picker {
   display: grid;
   gap: 10px;
@@ -492,6 +601,67 @@ button:not(:disabled):active {
   background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 8px;
+}
+
+.advanced-settings {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.advanced-settings summary {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 46px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+  list-style: none;
+}
+
+.advanced-settings summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-settings summary::after {
+  content: "+";
+  color: var(--accent);
+  font-size: 20px;
+  font-weight: 400;
+}
+
+.advanced-settings[open] summary::after {
+  content: "−";
+}
+
+.advanced-settings summary small {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.advanced-settings[open] .field-grid {
+  padding-bottom: 4px;
+}
+
+.form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.form-actions > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .type-picker legend {
@@ -1239,9 +1409,11 @@ button:focus-visible {
 
   .field-grid,
   .ado-org-inputs,
+  .segmented,
   .target-picker-header,
   .target-list,
   .type-options,
+  .setup-guide,
   .metric-row {
     grid-template-columns: 1fr;
   }
@@ -1258,5 +1430,27 @@ button:focus-visible {
 
   .metric-row {
     overflow: visible;
+  }
+
+  .advanced-settings summary {
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    padding: 8px 0;
+  }
+
+  .advanced-settings summary small {
+    margin-left: 0;
+  }
+
+  .advanced-settings summary::after {
+    position: absolute;
+    right: 18px;
+  }
+
+  .form-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

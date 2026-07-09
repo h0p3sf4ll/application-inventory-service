@@ -55,9 +55,10 @@
 
     <main class="shell" id="appShell" hidden>
       <header class="topbar">
-        <div>
+        <div class="topbar-brand">
           <p class="eyebrow">Application inventory</p>
           <h1>Application Inventory Service</h1>
+          <p class="topbar-subtitle">Connect a source, choose a scope, and run an inventory scan.</p>
         </div>
         <div class="topbar-actions">
           <div class="auth-card" id="authPanel">
@@ -85,6 +86,21 @@
               <span class="status-chip idle" id="formStatus">Ready</span>
             </div>
 
+            <div class="setup-guide" aria-label="Scan setup steps">
+              <div class="guide-step">
+                <span class="guide-number">1</span>
+                <span><strong>Connect</strong><small>Choose a provider and credentials.</small></span>
+              </div>
+              <div class="guide-step">
+                <span class="guide-number">2</span>
+                <span><strong>Choose scope</strong><small>Leave blank to scan everything.</small></span>
+              </div>
+              <div class="guide-step">
+                <span class="guide-number">3</span>
+                <span><strong>Run</strong><small>Track progress in Runs.</small></span>
+              </div>
+            </div>
+
             <div class="segmented" role="radiogroup" aria-label="Provider">
               <label>
                 <input type="radio" name="provider" value="azure-devops" checked>
@@ -94,24 +110,21 @@
                 <input type="radio" name="provider" value="github-enterprise">
                 <span>GitHub Enterprise</span>
               </label>
+              <label>
+                <input type="radio" name="provider" value="mixed">
+                <span>Both sources</span>
+              </label>
             </div>
 
           <div class="field-grid">
-            <label>
-              <span class="label-line">
-                <span>Organization</span>
-                <span class="field-badge required" id="orgRequirementBadge">Required unless using org PATs</span>
-              </span>
-              <input name="org" autocomplete="organization" placeholder="FabrikamCloud">
-            </label>
-            <label class="provider-azure">
-              <span class="label-line">
-                <span>Project</span>
-                <span class="field-badge optional">Optional</span>
-              </span>
-              <input name="project" placeholder="All projects if blank">
-            </label>
             <label class="provider-github hidden">
+              <span class="label-line">
+                <span id="orgFieldLabel">GitHub owner</span>
+                <span class="field-badge required" id="orgRequirementBadge">Required</span>
+              </span>
+              <input name="org" autocomplete="organization" placeholder="GitHub organization or owner">
+            </label>
+            <label class="provider-github provider-github-only hidden">
               <span class="label-line">
                 <span>Repository</span>
                 <span class="field-badge optional">Optional</span>
@@ -125,50 +138,59 @@
               </span>
               <input name="baseUrl" placeholder="https://github.example.com/api/v3">
             </label>
+            <section class="provider-github github-app-config hidden full" aria-labelledby="githubAppHeading">
+              <div class="label-line">
+                <span id="githubAppHeading">GitHub App access</span>
+                <span class="field-badge required">Required</span>
+              </div>
+              <p class="field-help">Install the App on this owner with read-only Metadata, Contents, and Deployments access. Leave the private key blank when it is configured on the server.</p>
+              <div class="field-grid nested-grid">
+                <label>
+                  <span class="label-line">
+                    <span>App ID</span>
+                    <span class="field-badge fixed">Fixed</span>
+                  </span>
+                  <input class="fixed-field" name="githubAppId" value="4255413" inputmode="numeric" autocomplete="off" readonly aria-readonly="true">
+                </label>
+                <label>
+                  <span class="label-line">
+                    <span>Installation ID</span>
+                    <span class="field-badge optional">Optional if server configured</span>
+                  </span>
+                  <input name="githubAppInstallationId" inputmode="numeric" autocomplete="off" placeholder="98765432">
+                </label>
+                <label class="full pem-file-field">
+                  <span class="label-line">
+                    <span>Upload PEM file</span>
+                    <span class="field-badge optional">Optional if server configured</span>
+                  </span>
+                  <input id="githubAppPrivateKeyFile" type="file" accept=".pem,.key,.txt,application/x-pem-file,text/plain" autocomplete="off">
+                  <small class="field-help" id="githubAppPrivateKeyFileStatus">The file is read for this scan and is not stored by the service.</small>
+                </label>
+              </div>
+            </section>
             <div class="provider-azure full ado-org-builder">
               <input name="adoOrgPats" type="hidden">
               <div class="label-line">
-                <span>Azure organizations</span>
-                <span class="field-badge optional">Optional</span>
+                <span id="adoOrgLabel">Azure organizations and PATs</span>
+                <span class="field-badge required" id="adoOrgRequirementBadge">Required</span>
               </div>
               <div class="ado-org-inputs">
                 <label>
                   <span class="label-line">
                     <span>Organization</span>
-                    <span class="field-badge optional">Optional</span>
                   </span>
-                  <input name="adoOrgName" autocomplete="off" placeholder="FabrikamCloud">
+                  <input name="adoOrgName" autocomplete="off" aria-required="true" placeholder="FabrikamCloud">
                 </label>
                 <label>
                   <span class="label-line">
                     <span>PAT</span>
-                    <span class="field-badge optional">Optional</span>
                   </span>
-                  <input name="adoOrgPat" type="password" autocomplete="off" placeholder="Token for this organization">
+                  <input name="adoOrgPat" type="password" autocomplete="off" aria-required="true" placeholder="Token for this organization">
                 </label>
                 <button class="ghost" id="addAdoOrgPat" type="button">Add</button>
               </div>
               <div class="ado-org-list" id="adoOrgPatList" aria-live="polite"></div>
-            </div>
-            <div class="full secret-field">
-              <label for="scanToken">
-                <span class="label-line">
-                  <span>Token</span>
-                  <span class="field-badge optional">Optional</span>
-                </span>
-              </label>
-              <input id="scanToken" name="token" type="password" autocomplete="off" placeholder="Uses environment token if blank">
-              <button class="icon-button" id="toggleToken" type="button" title="Show token">Show</button>
-            </div>
-            <div class="full credential-row">
-              <label class="toggle-row compact">
-                <input name="saveToken" type="checkbox">
-                <span class="toggle-copy">
-                  <span>Save token securely</span>
-                  <small id="saveTokenHint">Sign in to save or reuse provider tokens</small>
-                </span>
-              </label>
-              <button class="ghost small hidden" id="forgetToken" type="button">Forget saved token</button>
             </div>
             <div class="full target-picker">
               <input name="targetFilters" type="hidden">
@@ -245,6 +267,11 @@
             </div>
           </fieldset>
 
+          <details class="advanced-settings">
+            <summary>
+              <span>Advanced scan settings</span>
+              <small>Defaults are applied automatically</small>
+            </summary>
           <div class="field-grid">
             <div class="static-field">
               <span class="label-line">
@@ -344,6 +371,11 @@
                 <small>Optional, default off</small>
               </span>
             </label>
+          </div>
+          </details>
+          <div class="form-actions">
+            <button class="primary" id="startScanForm" type="button">Run scan</button>
+            <span>Results appear in Runs and Reports.</span>
           </div>
           </section>
 

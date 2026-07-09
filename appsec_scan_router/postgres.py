@@ -199,7 +199,7 @@ class PostgresInventoryWriter:
                 """
             ).format(table=object_identifier(self.schema, "repositories")),
             (
-                self.provider,
+                text_value(result.get("provider") or self.provider),
                 text_value(result.get("organization") or self.organization),
                 text_value(result.get("project")),
                 text_value(result.get("repo_name")),
@@ -400,7 +400,7 @@ class PostgresInventoryWriter:
         cleaned_result = postgres_json_value(result)
         evidence = json_value(result.get("detection_evidence"))
         values = {
-            "provider": self.provider,
+            "provider": text_value(result.get("provider") or self.provider),
             "organization": text_value(result.get("organization") or self.organization),
             "owner_user_id": text_value(self.owner_user_id),
             "owner_user_login": text_value(self.owner_user_login),

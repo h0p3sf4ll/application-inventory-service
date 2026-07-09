@@ -84,7 +84,7 @@ APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET
 APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET
 APPLICATION_INVENTORY_POSTGRES_DSN
 ADO_PAT or APPLICATION_INVENTORY_ADO_ORG_PATS when automation needs server-side tokens
-GITHUB_TOKEN or GHE_TOKEN when automation needs server-side GitHub Enterprise access
+APPLICATION_INVENTORY_GITHUB_APP_ID, APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID, and APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE for GitHub Enterprise App access
 ```
 
 ## Build and Push the Image
@@ -94,7 +94,7 @@ AZURE_LOCATION=eastus
 RESOURCE_GROUP=rg-application-inventory-prod
 ACR_NAME=appinventoryprodacr
 IMAGE_NAME=application-inventory-service
-IMAGE_TAG=1.6.4
+IMAGE_TAG=1.6.5
 
 az group create \
   --name "$RESOURCE_GROUP" \
@@ -402,7 +402,7 @@ Runtime hardening:
 - Set `APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS` to explicit hostnames.
 - Keep `APPLICATION_INVENTORY_SERVICE_ALLOW_INSECURE_PROVIDER_URLS=false`.
 - Grant the managed identity only `AcrPull` and Key Vault secret-read permissions required by this app.
-- Do not store PATs or OAuth secrets in Container App plain environment variables.
+- Do not store GitHub App private keys, PATs, or OAuth secrets in Container App plain environment variables.
 - Keep a single replica until active scan coordination is moved to a durable queue or worker service.
 - Review scan worker increases because high concurrency can trigger provider throttling or expose more metadata than intended.
 

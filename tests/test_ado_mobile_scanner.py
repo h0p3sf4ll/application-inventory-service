@@ -4,7 +4,7 @@ import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import appsec_scan_router as scanner
 import appsec_scan_router.azure as azure_module
@@ -14,7 +14,7 @@ import application_inventory_service
 import ado_mobile_scanner
 import mobile_scanner
 from appsec_scan_router.auth import AuthManager, CredentialStore, GoogleOAuthConfig, TestLoginConfig, expired_session_cookie, session_cookie
-from appsec_scan_router.github import normalize_github_api_url
+from appsec_scan_router.github import GitHubAppCredentials, GitHubAppTokenProvider, normalize_github_api_url
 from appsec_scan_router.postgres import POSTGRES_COLUMNS
 from appsec_scan_router.ui import default_ui_config
 from openpyxl import load_workbook
@@ -132,6 +132,27 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(user.name, "Local User")
         self.assertEqual(user.provider, "test")
 
+    def test_test_login_config_defaults_to_local_user_enabled(self):
+        with patch.dict("os.environ", {}, clear=True):
+            config = TestLoginConfig.from_env()
+
+        user = config.user()
+
+        self.assertTrue(config.enabled)
+        self.assertEqual(user.id, "test-user")
+        self.assertEqual(user.login, "test.user@local")
+        self.assertEqual(user.provider, "test")
+
+    def test_test_login_config_can_be_disabled(self):
+        with patch.dict(
+            "os.environ",
+            {"APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED": "false"},
+            clear=True,
+        ):
+            config = TestLoginConfig.from_env()
+
+        self.assertFalse(config.enabled)
+
     def test_auth_status_lists_github_and_google_sso(self):
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
             "os.environ",
@@ -156,11 +177,7 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(providers["test"]["startUrl"], "/api/auth/test/start")
 
     def test_default_ui_config_lists_sso_options(self):
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
-            "os.environ",
-            {"APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED": "true"},
-            clear=False,
-        ):
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict("os.environ", {}, clear=True):
             config = default_ui_config(Path(tmpdir))
 
         provider_ids = [provider["id"] for provider in config["auth"]["authProviders"]]
@@ -231,6 +248,86 @@ class AuthTests(unittest.TestCase):
 
 
 class MultiOrganizationScanTests(unittest.TestCase):
+    def test_scan_mixed_dispatches_all_configured_sources(self):
+        config = scanner.ScanConfig(
+            org="FabrikamGH",
+            pat="github-token",
+            project=None,
+            out_dir=Path("reports"),
+            out_prefix="scan",
+            max_workers=1,
+            content_workers=1,
+            max_commits_per_repo=0,
+            timeout_seconds=30,
+            min_confidence="low",
+            provider="mixed",
+            base_url="https://github.fabrikam.example/api/v3",
+            ado_org_pats=(scanner.AzureDevOpsOrgPat("FabrikamADO", "ado-token"),),
+        )
+
+        def fake_scan(source_config, on_result=None):
+            return [
+                {
+                    "provider": source_config.provider,
+                    "organization": source_config.org,
+                    "project": "",
+                    "repo_name": "",
+                    "branch_name": "",
+                }
+            ]
+
+        with patch.object(scanner_module, "scan_single_org", side_effect=fake_scan) as scan_single_org:
+            results = scanner.scan(config)
+
+        self.assertEqual(
+            [(call.args[0].provider, call.args[0].org) for call in scan_single_org.call_args_list],
+            [("azure-devops", "FabrikamADO"), ("github-enterprise", "FabrikamGH")],
+        )
+        self.assertEqual({row["provider"] for row in results}, {"azure-devops", "github-enterprise"})
+
+    def test_mixed_scan_streams_both_sources_to_one_report_set(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = scanner.ScanConfig(
+                org="FabrikamGH",
+                pat="github-token",
+                project=None,
+                out_dir=Path(tmpdir),
+                out_prefix="scan",
+                max_workers=1,
+                content_workers=1,
+                max_commits_per_repo=0,
+                timeout_seconds=30,
+                min_confidence="low",
+                provider="mixed",
+                base_url="https://github.fabrikam.example/api/v3",
+                ado_org_pats=(scanner.AzureDevOpsOrgPat("FabrikamADO", "ado-token"),),
+            )
+
+            def fake_scan(source_config, on_result=None):
+                result = {
+                    "provider": source_config.provider,
+                    "organization": source_config.org,
+                    "project": "Project",
+                    "repo_name": "Repo",
+                    "branch_name": "main",
+                    "branch_age_bucket": scanner.ACTIVE_SHEET_NAME,
+                    "semgrep_target": f"{source_config.provider}:target",
+                }
+                if on_result:
+                    on_result(result)
+                return [result]
+
+            with patch.object(scanner_module, "scan_single_org", side_effect=fake_scan):
+                results, xlsx_path, semgrep_path, sonarqube_path = scanner.scan_to_reports(config)
+
+            workbook = load_workbook(xlsx_path)
+            self.assertEqual(len(results), 2)
+            self.assertEqual(workbook[scanner.ACTIVE_SHEET_NAME].max_row, 3)
+            self.assertEqual(workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "provider", 2), "azure-devops")
+            self.assertEqual(workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "provider", 3), "github-enterprise")
+            self.assertEqual(len(semgrep_path.read_text(encoding="utf-8").splitlines()), 2)
+            self.assertEqual(len(sonarqube_path.read_text(encoding="utf-8").splitlines()), 3)
+
     def test_scan_dispatches_each_ado_org_pat(self):
         config = scanner.ScanConfig(
             org="",
@@ -300,6 +397,43 @@ class ProviderClientTests(unittest.TestCase):
             "https://github.fabrikam.example/api/v3",
         )
 
+    def test_github_app_token_provider_signs_jwt_and_caches_installation_token(self):
+        private_key = "-----BEGIN PRIVATE KEY-----\nfake-key\n-----END PRIVATE KEY-----"
+        credentials = GitHubAppCredentials("123", "456", private_key)
+        provider = GitHubAppTokenProvider("https://github.fabrikam.example/api/v3", credentials, 10)
+        response = Mock()
+        response.json.return_value = {
+            "token": "installation-token",
+            "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        }
+        provider._session.post = Mock(return_value=response)
+        provider._app_jwt = Mock(return_value="app-jwt")
+
+        self.assertEqual(provider.token(), "installation-token")
+        self.assertEqual(provider.token(), "installation-token")
+        provider._session.post.assert_called_once()
+        request_url = provider._session.post.call_args.args[0]
+        request_headers = provider._session.post.call_args.kwargs["headers"]
+        self.assertEqual(request_url, "https://github.fabrikam.example/api/v3/app/installations/456/access_tokens")
+        self.assertEqual(request_headers["Authorization"], "Bearer app-jwt")
+        provider.close()
+
+    def test_github_app_credentials_read_environment(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "APPLICATION_INVENTORY_GITHUB_APP_ID": "123",
+                "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID": "456",
+                "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY": "-----BEGIN PRIVATE KEY-----\\nfake\\n-----END PRIVATE KEY-----",
+            },
+            clear=True,
+        ):
+            credentials = GitHubAppCredentials.from_env()
+
+        self.assertEqual(credentials.app_id, "123")
+        self.assertEqual(credentials.installation_id, "456")
+        self.assertIn("\n", credentials.private_key)
+
     def test_normalizes_github_commits_for_activity_extraction(self):
         commit = scanner.github_commit_to_activity_commit(
             {
@@ -351,6 +485,32 @@ class ProviderClientTests(unittest.TestCase):
         self.assertEqual(config.project, "mobile-app")
         self.assertEqual(config.pat, "token")
         self.assertEqual(config.application_types, ("mobile_app", "ai_enabled", "ml_enabled"))
+
+    def test_parse_args_supports_github_app_authentication(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "APPLICATION_INVENTORY_GITHUB_APP_ID": "123",
+                "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID": "456",
+                "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY": "-----BEGIN PRIVATE KEY-----\\nfake\\n-----END PRIVATE KEY-----",
+            },
+            clear=True,
+        ):
+            config = scanner.parse_args(
+                [
+                    "--provider",
+                    "github-enterprise",
+                    "--base-url",
+                    "https://github.fabrikam.example/api/v3",
+                    "--org",
+                    "FabrikamCloud",
+                ]
+            )
+
+        self.assertEqual(config.pat, "")
+        self.assertEqual(config.github_app_id, "123")
+        self.assertEqual(config.github_app_installation_id, "456")
+        self.assertIn("BEGIN PRIVATE KEY", config.github_app_private_key)
 
     def test_create_source_client_supports_github_enterprise(self):
         config = scanner.ScanConfig(
@@ -477,9 +637,29 @@ class ProviderClientTests(unittest.TestCase):
 
 
 class UiServiceTests(unittest.TestCase):
+    def test_ui_offers_pem_file_upload_without_persisting_key_field(self):
+        html = (Path(__file__).parents[1] / "appsec_scan_router" / "ui_static" / "index.html").read_text(encoding="utf-8")
+        javascript = (Path(__file__).parents[1] / "appsec_scan_router" / "ui_static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="githubAppPrivateKeyFile"', html)
+        self.assertIn('accept=".pem,.key,.txt,application/x-pem-file,text/plain"', html)
+        self.assertIn('value="4255413"', html)
+        self.assertIn('readonly', html)
+        self.assertNotIn('name="githubAppPrivateKey"', html)
+        self.assertNotIn('name="project"', html)
+        self.assertNotIn('name="token"', html)
+        self.assertNotIn('name="saveToken"', html)
+        self.assertIn('id="adoOrgRequirementBadge">Required</span>', html)
+        self.assertIn("handleGithubAppPrivateKeyFileChange", javascript)
+        self.assertIn('const DEFAULT_GITHUB_APP_ID = "4255413"', javascript)
+        self.assertNotIn('"githubAppPrivateKey"', javascript.split("const persistedFields", 1)[1].split("];", 1)[0])
+        self.assertNotIn("syncCredentialFields", javascript)
+
     def test_normalize_scan_config_requires_org(self):
         with self.assertRaises(ValueError):
             scanner.normalize_scan_config({"provider": "azure-devops"})
+        with self.assertRaises(ValueError):
+            scanner.normalize_scan_config({"provider": "azure-devops", "org": "FabrikamCloud"})
 
     def test_normalize_scan_config_requires_github_base_url(self):
         with self.assertRaises(ValueError):
@@ -523,6 +703,66 @@ class UiServiceTests(unittest.TestCase):
         self.assertIn("ai_enabled", command)
         self.assertIn("ml_enabled", command)
 
+    def test_normalize_scan_config_accepts_github_app_credentials(self):
+        config = scanner.normalize_scan_config(
+            {
+                "provider": "github-enterprise",
+                "org": "FabrikamCloud",
+                "baseUrl": "https://github.fabrikam.example/api/v3",
+                "githubAppId": "123",
+                "githubAppInstallationId": "456",
+                "githubAppPrivateKey": "-----BEGIN PRIVATE KEY-----\\nfake\\n-----END PRIVATE KEY-----",
+            }
+        )
+
+        self.assertEqual(config["githubAppId"], "4255413")
+        self.assertEqual(config["githubAppInstallationId"], "456")
+        self.assertIn("BEGIN PRIVATE KEY", config["githubAppPrivateKey"])
+
+        environment = ui_module.scan_environment(config)
+        self.assertEqual(environment["APPLICATION_INVENTORY_GITHUB_APP_ID"], "4255413")
+        self.assertEqual(environment["APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID"], "456")
+        self.assertIn("BEGIN PRIVATE KEY", environment["APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY"])
+
+    def test_normalize_scan_config_accepts_mixed_sources(self):
+        config = scanner.normalize_scan_config(
+            {
+                "provider": "mixed",
+                "org": "FabrikamGH",
+                "baseUrl": "https://github.fabrikam.example/api/v3",
+                "adoOrgPats": [{"org": "FabrikamADO", "pat": "ado-token"}],
+                "githubAppId": "123",
+                "githubAppInstallationId": "456",
+                "githubAppPrivateKey": "-----BEGIN PRIVATE KEY-----\\nfake\\n-----END PRIVATE KEY-----",
+                "postgresEnabled": False,
+            }
+        )
+
+        self.assertEqual(config["provider"], "mixed")
+        self.assertEqual(config["orgDisplay"], "FabrikamGH + FabrikamADO")
+        self.assertEqual(config["adoOrgPats"][0]["org"], "FabrikamADO")
+
+    def test_build_scan_command_for_mixed_sources_uses_one_command(self):
+        config = scanner.normalize_scan_config(
+            {
+                "provider": "mixed",
+                "org": "FabrikamGH",
+                "baseUrl": "https://github.fabrikam.example/api/v3",
+                "adoOrgPats": "FabrikamADO=ado-token",
+                "postgresEnabled": False,
+            }
+        )
+
+        command = scanner.build_scan_command(config, Path("/reports/scan-1"))
+        environment = ui_module.scan_environment(config)
+
+        self.assertEqual(command.count("--provider"), 1)
+        self.assertIn("mixed", command)
+        self.assertIn("--org", command)
+        self.assertIn("FabrikamGH", command)
+        self.assertIn("APPLICATION_INVENTORY_ADO_ORG_PATS", environment)
+        self.assertNotIn("ado-token", command)
+
     def test_build_scan_command_for_selected_github_repositories(self):
         config = scanner.normalize_scan_config(
             {
@@ -548,6 +788,7 @@ class UiServiceTests(unittest.TestCase):
             {
                 "provider": "azure-devops",
                 "org": "FabrikamCloud",
+                "adoOrgPats": "FabrikamCloud=pat-a",
                 "outPrefix": "custom-prefix",
             }
         )
@@ -615,6 +856,7 @@ class UiServiceTests(unittest.TestCase):
                 {
                     "provider": "azure-devops",
                     "org": "FabrikamCloud",
+                    "adoOrgPats": "FabrikamCloud=pat-a",
                     "applicationTypes": ["mobile_app", "unknown"],
                 }
             )
@@ -637,6 +879,7 @@ class UiServiceTests(unittest.TestCase):
             {
                 "provider": "azure-devops",
                 "org": "FabrikamCloud",
+                "adoOrgPats": "FabrikamCloud=pat-a",
                 "postgresEnabled": True,
                 "postgresHost": "localhost",
                 "postgresPort": 5432,
@@ -670,6 +913,7 @@ class UiServiceTests(unittest.TestCase):
             {
                 "provider": "azure-devops",
                 "org": "FabrikamCloud",
+                "adoOrgPats": "FabrikamCloud=pat-a",
                 "postgresEnabled": False,
             }
         )
@@ -700,6 +944,7 @@ class UiServiceTests(unittest.TestCase):
             {
                 "provider": "azure-devops",
                 "org": "FabrikamCloud",
+                "adoOrgPats": "FabrikamCloud=pat-a",
                 "token": "ado-token",
                 "postgresEnabled": False,
             }
@@ -716,7 +961,8 @@ class UiServiceTests(unittest.TestCase):
         ):
             env = scanner.scan_environment(config)
 
-        self.assertEqual(env["ADO_PAT"], "ado-token")
+        self.assertNotIn("ADO_PAT", env)
+        self.assertIn("FabrikamCloud", env["APPLICATION_INVENTORY_ADO_ORG_PATS"])
         self.assertNotIn("AWS_SECRET_ACCESS_KEY", env)
         self.assertNotIn("APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET", env)
 
@@ -771,6 +1017,7 @@ class UiServiceTests(unittest.TestCase):
             {
                 "provider": "azure-devops",
                 "org": "FabrikamCloud",
+                "adoOrgPats": "FabrikamCloud=pat-a",
                 "project": "Go_To_Market",
                 "activityMode": "contributors",
                 "maxWorkers": 4,
@@ -807,6 +1054,7 @@ class UiServiceTests(unittest.TestCase):
             {
                 "provider": "azure-devops",
                 "org": "FabrikamCloud",
+                "adoOrgPats": "FabrikamCloud=pat-a",
             }
         )
 
@@ -846,7 +1094,7 @@ class UiServiceTests(unittest.TestCase):
         created = []
 
         class FakeGitHubClient:
-            def __init__(self, base_url, owner, token, timeout):
+            def __init__(self, base_url, owner, token, timeout, **kwargs):
                 created.append((base_url, owner, token, timeout))
 
             def list_repos(self, project_name):
@@ -896,6 +1144,7 @@ class UiServiceTests(unittest.TestCase):
             {
                 "provider": "azure-devops",
                 "org": "FabrikamCloud",
+                "adoOrgPats": "FabrikamCloud=pat-a",
                 "applicationTypes": ["web_app"],
                 "storeLookup": True,
             }
@@ -1535,6 +1784,7 @@ class OutputTests(unittest.TestCase):
 
     def sample_result(self):
         return {
+            "provider": "azure-devops",
             "organization": "FabrikamCloud",
             "project": "Project",
             "repo_name": "Repo",
@@ -1604,6 +1854,7 @@ class OutputTests(unittest.TestCase):
             workbook = load_workbook(xlsx_path)
             self.assertEqual(workbook.sheetnames, [scanner.ACTIVE_SHEET_NAME, scanner.OLDER_SHEET_NAME])
             self.assertEqual(workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "mobile_name", 2), "Agsnap")
+            self.assertEqual(workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "provider", 2), "azure-devops")
             self.assertEqual(
                 workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "branch_contributing_developers", 2),
                 "Alice Adams <alice@example.com>; Bob Brown <bob@example.com>",
@@ -1672,6 +1923,29 @@ class OutputTests(unittest.TestCase):
             values["branch_contributing_developers"],
             "Alice Adams <alice@example.com>; Bob Brown <bob@example.com>",
         )
+
+    def test_postgres_rows_keep_result_provider_for_mixed_scans(self):
+        config = scanner.ScanConfig(
+            org="FabrikamGH",
+            pat="token",
+            project=None,
+            out_dir=Path("reports"),
+            out_prefix="scan",
+            max_workers=1,
+            branch_workers=1,
+            content_workers=1,
+            max_commits_per_repo=0,
+            timeout_seconds=30,
+            min_confidence="low",
+            provider="mixed",
+        )
+        writer = scanner.PostgresInventoryWriter(config)
+        result = self.sample_result()
+        result["provider"] = "github-enterprise"
+
+        values = dict(zip(POSTGRES_COLUMNS, writer.row_values(result)))
+
+        self.assertEqual(values["provider"], "github-enterprise")
 
     def test_category_columns_are_excel_filter_friendly(self):
         columns = scanner.category_columns(["android", "react_native", "ai_enabled", "ml_enabled"])

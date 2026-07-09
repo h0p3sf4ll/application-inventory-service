@@ -17,6 +17,7 @@ The project is published as `application-inventory-service`. The original `appse
 
 - Scans one or more Azure DevOps organizations, each with its own PAT.
 - Scans GitHub Enterprise owners and repositories.
+- Scans Azure DevOps and GitHub Enterprise together in one run when both source types are configured.
 - Pulls Azure DevOps projects and GitHub repositories into the UI for targeted scans.
 - Scans default branches, with production-like fallback branch resolution when no default branch exists.
 - Captures inventory name, version, type, language, mobile identifiers, contributors, last activity, and evidence.
@@ -62,7 +63,6 @@ python -m pip install -e .
 ## Quick Start: UI
 
 ```bash
-APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED=true \
 application-inventory-service-ui \
   --host 127.0.0.1 \
   --port 48731 \
@@ -71,7 +71,11 @@ application-inventory-service-ui \
 
 Open `http://127.0.0.1:48731`.
 
-Use the test login only for local development. For shared environments, configure GitHub SSO or Google SSO and disable the test login.
+The local test user is enabled by default for local runs. For shared environments, configure GitHub SSO or Google SSO and set `APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED=false`.
+
+For Azure DevOps scans, add one or more organization/PAT pairs in the Azure organizations section. The UI does not use a shared organization, project, or standalone PAT field; each organization is always paired with its own PAT, and credentials are used only for the current scan.
+
+For GitHub Enterprise scans, the UI accepts the GitHub App PEM private key through file upload. The App ID is fixed to `4255413`; the uploaded file is read in the browser for the current scan and is not saved in UI preferences.
 
 ## Quick Start: Docker
 
@@ -82,7 +86,7 @@ docker run --rm \
   -p 48731:48731 \
   --env-file .env \
   -v "$PWD/reports:/reports" \
-  h0p3sf4ll/application-inventory-service:1.6.4 \
+  h0p3sf4ll/application-inventory-service:1.6.5 \
   ui \
   --host 0.0.0.0 \
   --port 48731 \
@@ -133,7 +137,9 @@ application-inventory-service \
 ## GitHub Enterprise
 
 ```bash
-export GITHUB_TOKEN="your-token"
+export GITHUB_APP_ID="123456"
+export GITHUB_APP_INSTALLATION_ID="98765432"
+export GITHUB_APP_PRIVATE_KEY_FILE="/run/secrets/github-app.pem"
 
 application-inventory-service \
   --provider github-enterprise \
@@ -144,6 +150,27 @@ application-inventory-service \
 ```
 
 Omit `--repo` to scan all accessible repositories for the owner. Repeat `--repo` for a selected repository set.
+
+The GitHub App must be installed on the owner with read-only Metadata, Contents, and Deployments permissions. The service signs a short-lived App JWT, exchanges it for an installation access token, caches that token, and refreshes it before expiry. A `GITHUB_TOKEN` or `GHE_TOKEN` remains supported as a compatibility fallback, but is not required when the App settings are present.
+
+### Combined Azure DevOps and GitHub Enterprise scan
+
+Use `mixed` when the inventory must include both providers. The `--org` value is the GitHub Enterprise owner; Azure DevOps organizations and PATs are supplied separately. The command produces one XLSX file, one Semgrep target file, one SonarQube target file, and one PostgreSQL sync for the complete run.
+
+```bash
+export APPLICATION_INVENTORY_ADO_ORG_PATS='[{"org":"FabrikamADO","pat":"ado-read-token"}]'
+export GITHUB_APP_ID="123456"
+export GITHUB_APP_INSTALLATION_ID="98765432"
+export GITHUB_APP_PRIVATE_KEY_FILE="/run/secrets/github-app.pem"
+
+application-inventory-service \
+  --provider mixed \
+  --org FabrikamGH \
+  --base-url https://github.fabrikam.example/api/v3 \
+  --out-dir reports
+```
+
+Use `--target-filter ORG=PROJECT_OR_REPO` to limit either source. The organization prefix identifies the source owner, for example `FabrikamADO=Payments` or `FabrikamGH=payments-api`. Leave filters out to scan all accessible projects and repositories from both configured sources.
 
 ## PostgreSQL
 
@@ -187,6 +214,10 @@ docker run --name application-inventory-postgres \
 | `APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET` | GitHub OAuth client secret |
 | `APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_ID` | Google OAuth client ID |
 | `APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `APPLICATION_INVENTORY_GITHUB_APP_ID` | GitHub App ID |
+| `APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID` | GitHub App installation ID |
+| `APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE` | Secret-mounted GitHub App PEM private key path |
+| `APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY` | GitHub App PEM private key; use a secret manager or mounted file in shared environments |
 | `APPLICATION_INVENTORY_SERVICE_SECRET_KEY` | Fernet key for encrypted token storage |
 | `APPLICATION_INVENTORY_SERVICE_STATE_DIR` | Secure state directory |
 | `APPLICATION_INVENTORY_ADO_ORG_PATS` | JSON or `ORG=PAT` list for Azure DevOps multi-org scans |
@@ -218,15 +249,21 @@ The target files are intended for downstream orchestration with Semgrep, SonarQu
 ```python
 from pathlib import Path
 
-from application_inventory_service import ScanConfig, SourceTargetFilter, scan_to_reports
+from application_inventory_service import AzureDevOpsOrgPat, ScanConfig, scan_to_reports
 
 config = ScanConfig(
-    provider="github-enterprise",
+    provider="mixed",
     base_url="https://github.fabrikam.example/api/v3",
-    org="FabrikamCloud",
-    pat="your-token",
+    org="FabrikamGH",
+    pat="",
+    github_app_id="123456",
+    github_app_installation_id="98765432",
+    github_app_private_key_file="/run/secrets/github-app.pem",
     project=None,
-    target_filters=(SourceTargetFilter("", "payments-api"),),
+    ado_org_pats=(
+        AzureDevOpsOrgPat("FabrikamADO", "ado-read-token"),
+    ),
+    target_filters=(),
     out_dir=Path("reports"),
     out_prefix="application_inventory_service",
     max_workers=8,

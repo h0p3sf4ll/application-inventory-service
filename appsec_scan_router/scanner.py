@@ -24,7 +24,7 @@ from .constants import (
     older_sheet_name,
 )
 from .detection import detect_inventory_repo
-from .github import GitHubEnterpriseClient
+from .github import GitHubAppCredentials, GitHubEnterpriseClient
 from .metadata import extract_mobile_metadata
 from .models import (
     AzureDevOpsError,
@@ -75,21 +75,61 @@ def scan(
     config: ScanConfig,
     on_result: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[dict[str, Any]]:
+    if config.provider == "mixed":
+        return scan_mixed(config, on_result=on_result)
     if config.provider == "azure-devops" and config.ado_org_pats:
-        results: list[dict[str, Any]] = []
-        start = time.monotonic()
-        for org_pat in config.ado_org_pats:
-            org_filters = target_filters_for_source(config.target_filters, org_pat.org)
-            if config.target_filters and not org_filters:
-                LOGGER.info("Skipping Azure DevOps organization without selected targets: %s", org_pat.org)
-                continue
-            LOGGER.info("Scanning Azure DevOps organization: %s", org_pat.org)
-            org_config = replace(config, org=org_pat.org, pat=org_pat.pat, ado_org_pats=(), target_filters=org_filters)
-            results.extend(scan_single_org(org_config, on_result=on_result))
-        results.sort(key=row_sort_key)
-        LOGGER.info("Finished multi-organization scan in %.1fs; found %s inventory branches", time.monotonic() - start, len(results))
-        return results
+        return scan_ado_organizations(config, on_result=on_result)
     return scan_single_org(config, on_result=on_result)
+
+
+def scan_ado_organizations(
+    config: ScanConfig,
+    on_result: Callable[[dict[str, Any]], None] | None = None,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    start = time.monotonic()
+    for org_pat in config.ado_org_pats:
+        org_filters = target_filters_for_source(config.target_filters, org_pat.org)
+        if config.target_filters and not org_filters:
+            LOGGER.info("Skipping Azure DevOps organization without selected targets: %s", org_pat.org)
+            continue
+        LOGGER.info("Scanning Azure DevOps organization: %s", org_pat.org)
+        org_config = replace(config, org=org_pat.org, pat=org_pat.pat, ado_org_pats=(), target_filters=org_filters)
+        results.extend(scan_single_org(org_config, on_result=on_result))
+    results.sort(key=row_sort_key)
+    LOGGER.info(
+        "Finished multi-organization Azure DevOps scan in %.1fs; found %s inventory branches",
+        time.monotonic() - start,
+        len(results),
+    )
+    return results
+
+
+def scan_mixed(
+    config: ScanConfig,
+    on_result: Callable[[dict[str, Any]], None] | None = None,
+) -> list[dict[str, Any]]:
+    start = time.monotonic()
+    results: list[dict[str, Any]] = []
+    ado_config = replace(
+        config,
+        provider="azure-devops",
+        org="",
+        pat="",
+        project=None,
+        base_url="",
+    )
+    results.extend(scan_ado_organizations(ado_config, on_result=on_result))
+    github_config = replace(
+        config,
+        provider="github-enterprise",
+        ado_org_pats=(),
+        target_filters=target_filters_for_source(config.target_filters, config.org),
+    )
+    results.extend(scan_single_org(github_config, on_result=on_result))
+    results.sort(key=row_sort_key)
+    LOGGER.info("Finished mixed-source scan in %.1fs; found %s inventory branches", time.monotonic() - start, len(results))
+    return results
 
 
 def scan_single_org(
@@ -199,11 +239,18 @@ def scan_single_org(
 
 def create_source_client(config: ScanConfig) -> AzureDevOpsClient | GitHubEnterpriseClient:
     if config.provider == "github-enterprise":
+        app_credentials = GitHubAppCredentials.from_values(
+            config.github_app_id,
+            config.github_app_installation_id,
+            config.github_app_private_key,
+            config.github_app_private_key_file,
+        )
         return GitHubEnterpriseClient(
             base_url=config.base_url,
             owner=config.org,
             token=config.pat,
             timeout_seconds=config.timeout_seconds,
+            app_credentials=app_credentials,
         )
     return AzureDevOpsClient(config.org, config.pat, config.timeout_seconds)
 
@@ -263,7 +310,12 @@ def scan_branch_target(
 ) -> dict[str, Any] | None:
     return scan_branch(
         client=client,
-        target=RepoScanTarget(project_name=target.project_name, repo=target.repo, organization=target.organization),
+        target=RepoScanTarget(
+            project_name=target.project_name,
+            repo=target.repo,
+            organization=target.organization,
+            provider=target.provider,
+        ),
         branch_name=target.branch_name,
         content_executor=content_executor,
         min_confidence_rank=min_confidence_rank,
@@ -346,6 +398,7 @@ def list_branch_targets(
             repo=repo,
             branch_name=branch_name,
             organization=target.organization,
+            provider=target.provider,
         )
     ]
 
@@ -453,6 +506,7 @@ def build_scan_row(
     sonarqube_project_key = sonar_project_key(target.project_name, repo.get("name", ""), branch_name)
     branch_contributing_developers = "; ".join(activity.contributing_developers)
     return {
+        "provider": target.provider,
         "organization": target.organization,
         "project": target.project_name,
         "repo_name": repo.get("name", ""),
@@ -1032,6 +1086,7 @@ def collect_targets(
     target_filters: Iterable[SourceTargetFilter] = (),
 ) -> list[RepoScanTarget]:
     organization = source_organization(client)
+    provider = source_provider(client)
     project_names = selected_project_names(organization, project_name, target_filters)
     projects = [{"name": name} for name in project_names] if project_names else client.list_projects()
     targets: list[RepoScanTarget] = []
@@ -1054,13 +1109,17 @@ def collect_targets(
             if not repo_id or repo_id in seen_repo_ids:
                 continue
             seen_repo_ids.add(repo_id)
-            targets.append(RepoScanTarget(project_name=name, repo=repo, organization=organization))
+            targets.append(RepoScanTarget(project_name=name, repo=repo, organization=organization, provider=provider))
 
     return targets
 
 
-def source_organization(client: AzureDevOpsClient) -> str:
+def source_organization(client: AzureDevOpsClient | GitHubEnterpriseClient) -> str:
     return str(getattr(client, "org", "") or getattr(client, "owner", ""))
+
+
+def source_provider(client: AzureDevOpsClient | GitHubEnterpriseClient) -> str:
+    return "github-enterprise" if isinstance(client, GitHubEnterpriseClient) else "azure-devops"
 
 
 def selected_project_names(

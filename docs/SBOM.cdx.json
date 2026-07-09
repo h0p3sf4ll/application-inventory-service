@@ -15,8 +15,8 @@
     "component": {
       "type": "application",
       "name": "application-inventory-service",
-      "version": "1.6.4",
-      "purl": "pkg:pypi/application-inventory-service@1.6.4",
+      "version": "1.6.5",
+      "purl": "pkg:pypi/application-inventory-service@1.6.5",
       "licenses": [
         {
           "license": {
@@ -71,6 +71,13 @@
     },
     {
       "type": "library",
+      "name": "PyJWT",
+      "version": "2.13.0",
+      "purl": "pkg:pypi/pyjwt@2.13.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
       "name": "certifi",
       "version": "2026.6.17",
       "purl": "pkg:pypi/certifi@2026.6.17",
@@ -121,13 +128,14 @@
   ],
   "dependencies": [
     {
-      "ref": "pkg:pypi/application-inventory-service@1.6.4",
+        "ref": "pkg:pypi/application-inventory-service@1.6.5",
       "dependsOn": [
         "pkg:pypi/cryptography@49.0.0",
         "pkg:pypi/defusedxml@0.7.1",
         "pkg:pypi/openpyxl@3.1.5",
         "pkg:pypi/psycopg@3.3.4",
         "pkg:pypi/psycopg-binary@3.3.4",
+        "pkg:pypi/pyjwt@2.13.0",
         "pkg:pypi/requests@2.34.2"
       ]
     },

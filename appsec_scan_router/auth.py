@@ -30,6 +30,7 @@ SESSION_TTL_SECONDS = 43200
 OAUTH_STATE_TTL_SECONDS = 600
 PROVIDER_NAMES = ("azure-devops", "github-enterprise")
 TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 
 
 @dataclass(frozen=True)
@@ -123,7 +124,7 @@ class TestLoginConfig:
     @classmethod
     def from_env(cls) -> TestLoginConfig:
         return cls(
-            enabled=env_value("APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED", "APPSEC_INVENTORY_SERVICE_TEST_LOGIN_ENABLED").lower() in TRUE_VALUES,
+            enabled=test_login_enabled_from_env(),
             user_id=env_value("APPLICATION_INVENTORY_SERVICE_TEST_USER_ID", "APPSEC_INVENTORY_SERVICE_TEST_USER_ID") or cls.user_id,
             login=env_value("APPLICATION_INVENTORY_SERVICE_TEST_USER_LOGIN", "APPSEC_INVENTORY_SERVICE_TEST_USER_LOGIN") or cls.login,
             name=env_value("APPLICATION_INVENTORY_SERVICE_TEST_USER_NAME", "APPSEC_INVENTORY_SERVICE_TEST_USER_NAME") or cls.name,
@@ -318,7 +319,7 @@ class GitHubOAuthService:
                     "Accept": "application/vnd.github+json",
                     "Authorization": f"Bearer {access_token}",
                     "X-GitHub-Api-Version": "2022-11-28",
-                    "User-Agent": "application-inventory-service/1.6.4",
+                    "User-Agent": "application-inventory-service/1.6.5",
                 },
                 timeout=20,
             )
@@ -421,7 +422,7 @@ class GoogleOAuthService:
                 headers={
                     "Accept": "application/json",
                     "Authorization": f"Bearer {access_token}",
-                    "User-Agent": "application-inventory-service/1.6.4",
+                    "User-Agent": "application-inventory-service/1.6.5",
                 },
                 timeout=20,
             )
@@ -535,6 +536,17 @@ class AuthManager:
 def auth_state_dir(reports_root: Path) -> Path:
     configured = env_value("APPLICATION_INVENTORY_SERVICE_STATE_DIR", "APPSEC_INVENTORY_SERVICE_STATE_DIR")
     return Path(configured).expanduser() if configured else reports_root / ".application_inventory_service"
+
+
+def test_login_enabled_from_env(default: bool = True) -> bool:
+    value = env_value("APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED", "APPSEC_INVENTORY_SERVICE_TEST_LOGIN_ENABLED").strip().lower()
+    if not value:
+        return default
+    if value in TRUE_VALUES:
+        return True
+    if value in FALSE_VALUES:
+        return False
+    return default
 
 
 def env_value(*names: str) -> str:

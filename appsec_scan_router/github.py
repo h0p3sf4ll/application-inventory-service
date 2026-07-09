@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
 import os
 import threading
+import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse, urlunparse
 
@@ -11,6 +15,11 @@ from .constants import DEFAULT_COMMIT_PAGE_SIZE, MISSING_REQUESTS_MESSAGE
 from .models import AzureDevOpsError
 from .azure import provider_connection_message
 from .utils import clean_value
+
+try:
+    import jwt
+except ImportError:
+    jwt = None
 
 try:
     import requests
@@ -27,19 +36,163 @@ GITHUB_DEPLOYMENT_ENVIRONMENTS = ("production", "prod", "preprod", "pre-prod")
 GITHUB_SUCCESSFUL_DEPLOYMENT_STATES = frozenset({"success"})
 
 
+@dataclass(frozen=True)
+class GitHubAppCredentials:
+    app_id: str
+    installation_id: str
+    private_key: str
+
+    @classmethod
+    def from_values(
+        cls,
+        app_id: str = "",
+        installation_id: str = "",
+        private_key: str = "",
+        private_key_file: str = "",
+    ) -> GitHubAppCredentials | None:
+        resolved_app_id = clean_value(app_id) or github_env_value(
+            "APPLICATION_INVENTORY_GITHUB_APP_ID", "APPSEC_INVENTORY_GITHUB_APP_ID", "GITHUB_APP_ID", "GHE_APP_ID"
+        )
+        resolved_installation_id = clean_value(installation_id) or github_env_value(
+            "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID",
+            "APPSEC_INVENTORY_GITHUB_APP_INSTALLATION_ID",
+            "GITHUB_APP_INSTALLATION_ID",
+            "GHE_APP_INSTALLATION_ID",
+        )
+        resolved_private_key = clean_value(private_key) or github_env_value(
+            "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY",
+            "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY",
+            "GITHUB_APP_PRIVATE_KEY",
+            "GHE_APP_PRIVATE_KEY",
+        )
+        resolved_private_key_file = clean_value(private_key_file) or github_env_value(
+            "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
+            "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
+            "GITHUB_APP_PRIVATE_KEY_FILE",
+            "GHE_APP_PRIVATE_KEY_FILE",
+        )
+        if not any((resolved_app_id, resolved_installation_id, resolved_private_key, resolved_private_key_file)):
+            return None
+        if not resolved_app_id or not resolved_app_id.isdigit():
+            raise ValueError("GitHub App ID must be numeric.")
+        if not resolved_installation_id or not resolved_installation_id.isdigit():
+            raise ValueError("GitHub App installation ID must be numeric.")
+        if not resolved_private_key and resolved_private_key_file:
+            try:
+                resolved_private_key = Path(resolved_private_key_file).expanduser().read_text(encoding="utf-8")
+            except OSError as exc:
+                raise ValueError("GitHub App private key file could not be read.") from exc
+        resolved_private_key = resolved_private_key.replace("\\n", "\n").strip()
+        if "BEGIN" not in resolved_private_key or "PRIVATE KEY" not in resolved_private_key:
+            raise ValueError("GitHub App private key must be a PEM private key.")
+        return cls(resolved_app_id, resolved_installation_id, resolved_private_key)
+
+    @classmethod
+    def from_env(cls) -> GitHubAppCredentials | None:
+        return cls.from_values()
+
+
+class GitHubAppTokenProvider:
+    def __init__(self, base_url: str, credentials: GitHubAppCredentials, timeout_seconds: int) -> None:
+        if requests is None or HTTPAdapter is None or Retry is None:
+            raise SystemExit(MISSING_REQUESTS_MESSAGE)
+        if jwt is None:
+            raise SystemExit("GitHub App authentication requires PyJWT.")
+        self.base_url = base_url
+        self.credentials = credentials
+        self.timeout_seconds = timeout_seconds
+        self._token = ""
+        self._expires_at = 0.0
+        self._lock = threading.Lock()
+        self._session = requests.Session()
+        retry = Retry(
+            total=3,
+            connect=2,
+            read=2,
+            other=0,
+            backoff_factor=0.6,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset({"POST"}),
+            respect_retry_after_header=True,
+        )
+        self._session.mount("https://", HTTPAdapter(max_retries=retry))
+        self._session.mount("http://", HTTPAdapter(max_retries=retry))
+
+    def close(self) -> None:
+        self._session.close()
+
+    def token(self) -> str:
+        with self._lock:
+            if self._token and self._expires_at > time.time() + 60:
+                return self._token
+            return self._refresh()
+
+    def _refresh(self) -> str:
+        assertion = self._app_jwt()
+        url = f"{self.base_url}/app/installations/{self.credentials.installation_id}/access_tokens"
+        headers = {
+            "Authorization": f"Bearer {assertion}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "application-inventory-service/1.6.5",
+        }
+        try:
+            response = self._session.post(url, headers=headers, timeout=self.timeout_seconds)
+            response.raise_for_status()
+            data = response.json()
+        except requests.RequestException as exc:
+            raise AzureDevOpsError(provider_connection_message("GitHub Enterprise App", url, exc)) from exc
+        except ValueError as exc:
+            raise AzureDevOpsError(f"GitHub Enterprise App returned invalid JSON from {url}") from exc
+        token = clean_value(data.get("token")) if isinstance(data, dict) else ""
+        if not token:
+            raise AzureDevOpsError("GitHub Enterprise App did not return an installation access token.")
+        expires_at = parse_github_expiry(data.get("expires_at")) if isinstance(data, dict) else 0.0
+        self._token = token
+        self._expires_at = expires_at or time.time() + 3600
+        return token
+
+    def _app_jwt(self) -> str:
+        now = int(time.time())
+        try:
+            encoded = jwt.encode(
+                {"iat": now - 60, "exp": now + 540, "iss": int(self.credentials.app_id)},
+                self.credentials.private_key,
+                algorithm="RS256",
+            )
+        except Exception as exc:
+            raise AzureDevOpsError("GitHub App private key could not sign the application JWT.") from exc
+        return encoded.decode("ascii") if isinstance(encoded, bytes) else encoded
+
+
 class GitHubEnterpriseClient:
-    def __init__(self, base_url: str, owner: str, token: str, timeout_seconds: int) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        owner: str,
+        token: str,
+        timeout_seconds: int,
+        app_credentials: GitHubAppCredentials | None = None,
+    ) -> None:
         if requests is None or HTTPAdapter is None or Retry is None:
             raise SystemExit(MISSING_REQUESTS_MESSAGE)
 
         self.base_url = normalize_github_api_url(base_url)
         self.owner = owner
         self.timeout_seconds = timeout_seconds
+        self.app_credentials = app_credentials or GitHubAppCredentials.from_env()
+        self._app_token_provider = (
+            GitHubAppTokenProvider(self.base_url, self.app_credentials, timeout_seconds)
+            if self.app_credentials
+            else None
+        )
+        self._token = clean_value(token)
+        if not self._token and not self._app_token_provider:
+            raise ValueError("GitHub Enterprise requires a GitHub App configuration or access token.")
         self._headers = {
-            "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "application-inventory-service/1.6.4",
+            "User-Agent": "application-inventory-service/1.6.5",
         }
         self._retry = Retry(
             total=5,
@@ -56,6 +209,8 @@ class GitHubEnterpriseClient:
         self._sessions_lock = threading.Lock()
 
     def close(self) -> None:
+        if self._app_token_provider:
+            self._app_token_provider.close()
         with self._sessions_lock:
             for session in self._sessions:
                 session.close()
@@ -79,9 +234,19 @@ class GitHubEnterpriseClient:
 
     def get(self, url: str, params: dict[str, Any] | None = None) -> Any:
         try:
-            return self.session.get(url, params=params, timeout=self.timeout_seconds)
+            return self.session.get(
+                url,
+                params=params,
+                headers=self._authorization_headers(),
+                timeout=self.timeout_seconds,
+            )
         except requests.RequestException as exc:
             raise AzureDevOpsError(provider_connection_message("GitHub Enterprise", url, exc)) from exc
+
+    def _authorization_headers(self) -> dict[str, str]:
+        if self._app_token_provider:
+            return {"Authorization": f"Bearer {self._app_token_provider.token()}"}
+        return {"Authorization": f"Bearer {self._token}"}
 
     def get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
         response = self.get(self._url(path), params)
@@ -333,6 +498,23 @@ def insecure_provider_urls_allowed() -> bool:
 def allowed_github_hosts() -> set[str]:
     values = os.getenv("APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS") or os.getenv("APPSEC_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS") or ""
     return {value.strip().lower() for value in values.split(",") if value.strip()}
+
+
+def github_env_value(*names: str) -> str:
+    for name in names:
+        value = clean_value(os.getenv(name))
+        if value:
+            return value
+    return ""
+
+
+def parse_github_expiry(value: Any) -> float:
+    if not isinstance(value, str) or not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def env_flag(*names: str) -> bool:

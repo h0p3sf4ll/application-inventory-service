@@ -61,6 +61,10 @@ class ScanConfig:
     owner_user_login: str = "anonymous"
     ado_org_pats: tuple[AzureDevOpsOrgPat, ...] = ()
     target_filters: tuple[SourceTargetFilter, ...] = ()
+    github_app_id: str = ""
+    github_app_installation_id: str = ""
+    github_app_private_key: str = ""
+    github_app_private_key_file: str = ""
 
 
 @dataclass(frozen=True)
@@ -68,6 +72,7 @@ class RepoScanTarget:
     project_name: str
     repo: dict[str, Any]
     organization: str = ""
+    provider: str = "azure-devops"
 
 
 @dataclass(frozen=True)
@@ -76,6 +81,7 @@ class BranchScanTarget:
     repo: dict[str, Any]
     branch_name: str
     organization: str = ""
+    provider: str = "azure-devops"
 
 
 @dataclass(frozen=True)

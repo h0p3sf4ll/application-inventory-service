@@ -227,6 +227,12 @@ GitHub Enterprise API client and URL normalization utilities.
 Constants: `LOGGER`, `GITHUB_DEPLOYMENT_ENVIRONMENTS`, `GITHUB_SUCCESSFUL_DEPLOYMENT_STATES`
 
 Classes:
+- `GitHubAppCredentials`: Validated GitHub App ID, installation ID, and PEM key configuration.
+  - `GitHubAppCredentials.from_values(app_id, installation_id, private_key, private_key_file)`: Resolves explicit or environment-backed App settings.
+  - `GitHubAppCredentials.from_env()`: Loads App settings from environment variables.
+- `GitHubAppTokenProvider`: Signs App JWTs and caches installation access tokens until shortly before expiry.
+  - `GitHubAppTokenProvider.token(self)`: Returns a current installation token, refreshing it when needed.
+  - `GitHubAppTokenProvider.close(self)`: Releases the token request session.
 - `GitHubEnterpriseClient`: Provider or external-service client that wraps network access and retries.
   - `GitHubEnterpriseClient.close(self)`: Releases open sessions, files, or listeners.
   - `GitHubEnterpriseClient.session(self)`: Creates, reads, or serializes session state.
@@ -248,6 +254,8 @@ Functions:
 - `normalize_github_api_url(base_url)`: Normalizes input into the canonical representation used by the scanner.
 - `insecure_provider_urls_allowed()`: Helper for insecure provider urls allowed.
 - `allowed_github_hosts()`: Helper for allowed github hosts.
+- `github_env_value(*names)`: Reads the first configured GitHub App environment value.
+- `parse_github_expiry(value)`: Parses an installation token expiration timestamp.
 - `env_flag(*names)`: Reads environment variables or feature flags.
 
 ### `appsec_scan_router.metadata`
@@ -386,6 +394,8 @@ Constants: `LOGGER`
 Functions:
 - `scan_to_reports(config)`: Runs or coordinates repository and branch scanning.
 - `scan(config, on_result=...)`: Runs or coordinates repository and branch scanning.
+- `scan_ado_organizations(config, on_result=...)`: Runs the Azure DevOps portion of a multi-organization or mixed scan.
+- `scan_mixed(config, on_result=...)`: Runs Azure DevOps and GitHub Enterprise through one result callback.
 - `scan_single_org(config, on_result=...)`: Runs or coordinates repository and branch scanning.
 - `create_source_client(config)`: Creates schemas, clients, sessions, rows, or report structures.
 - `drain_branch_scans(pending_branch_scans, results, on_result, block)`: Consumes completed asynchronous branch scan work.

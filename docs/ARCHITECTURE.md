@@ -31,12 +31,13 @@ flowchart LR
 ## Data Flow
 
 1. A user or automation submits source provider credentials and scan options.
-2. The service lists accessible projects or repositories.
-3. The engine resolves one branch per repository.
-4. The engine reads repository trees and selected manifest/configuration files.
-5. Detection evidence is converted into inventory types, categories, metadata, contributors, and timestamps.
-6. Results stream to local reports and, when enabled, PostgreSQL.
-7. Scanner manifests are consumed by downstream security tooling.
+2. For a mixed scan, the engine resolves Azure DevOps organizations and the GitHub Enterprise owner as separate source contexts.
+3. The service lists accessible projects or repositories for every configured source.
+4. The engine resolves one branch per repository.
+5. The engine reads repository trees and selected manifest/configuration files.
+6. Detection evidence is converted into inventory types, categories, metadata, contributors, timestamps, and a provider value.
+7. Results from every source stream through the same report writer and PostgreSQL writer.
+8. Scanner manifests are consumed by downstream security tooling.
 
 ## Storage Model
 
@@ -44,7 +45,8 @@ The UI writes local reports and encrypted token state under the configured repor
 
 ## Security Model
 
-- Provider tokens are read-only and scoped as narrowly as practical.
+- Provider credentials are read-only and scoped as narrowly as practical; GitHub Enterprise uses an installed GitHub App by default.
+- GitHub App private keys remain in secret storage or a secret-mounted file and are never placed in generated scan commands.
 - Saved UI tokens are encrypted with Fernet.
 - PostgreSQL rows are scoped by signed-in user.
 - OAuth should be configured with a dedicated callback domain.

@@ -19,10 +19,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from .auth import AuthManager, GitHubOAuthConfig, GoogleOAuthConfig, SessionRecord, expired_session_cookie, session_cookie
+from .auth import AuthManager, GitHubOAuthConfig, GoogleOAuthConfig, SessionRecord, TestLoginConfig, expired_session_cookie, session_cookie
 from .azure import AzureDevOpsClient
 from .constants import (
     APPLICATION_TYPE_LABELS,
+    DEFAULT_GITHUB_APP_ID,
     DEFAULT_OUT_PREFIX,
     DEFAULT_POSTGRES_DATABASE,
     DEFAULT_POSTGRES_HOST,
@@ -33,8 +34,8 @@ from .constants import (
     DEFAULT_POSTGRES_USER,
     KNOWN_INVENTORY_TYPES,
 )
-from .github import GitHubEnterpriseClient
-from .models import AzureDevOpsError, AzureDevOpsOrgPat
+from .github import GitHubAppCredentials, GitHubEnterpriseClient
+from .models import AzureDevOpsError
 from .org_tokens import ado_org_pats_to_json, parse_ado_org_pat_values
 from .postgres import database_status, export_inventory_csv, export_inventory_json
 from .scanner import normalize_application_types, store_lookup_allowed
@@ -728,29 +729,54 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
 
 
 def normalize_scan_config(config: dict[str, Any]) -> dict[str, Any]:
-    provider = clean_choice(config.get("provider"), {"azure-devops", "github-enterprise"}, "azure-devops")
+    provider = clean_choice(config.get("provider"), {"azure-devops", "github-enterprise", "mixed"}, "azure-devops")
     org = clean_text(config.get("org"))
     ado_org_pats = parse_ado_org_pat_values([config.get("adoOrgPats")])
     target_filters = parse_source_target_filter_values([config.get("targetFilters")])
-    if provider == "azure-devops" and not org and not ado_org_pats:
-        raise ValueError("Organization is required.")
+    if provider == "azure-devops" and not ado_org_pats:
+        raise ValueError("Add at least one Azure organization and PAT.")
     if provider == "github-enterprise" and not org:
         raise ValueError("Organization is required.")
+    if provider == "mixed" and not org:
+        raise ValueError("GitHub owner is required for a mixed scan.")
+    if provider == "mixed" and not ado_org_pats:
+        raise ValueError("Add at least one Azure organization and PAT for a mixed scan.")
     base_url = clean_text(config.get("baseUrl"))
-    if provider == "github-enterprise" and not base_url:
+    if provider in {"github-enterprise", "mixed"} and not base_url:
         raise ValueError("GitHub Enterprise API URL is required.")
+    github_app_id = DEFAULT_GITHUB_APP_ID if provider in {"github-enterprise", "mixed"} else ""
+    github_app_installation_id = clean_text(config.get("githubAppInstallationId"))
+    github_app_private_key = clean_text(config.get("githubAppPrivateKey"))
+    github_app_private_key_file = clean_text(config.get("githubAppPrivateKeyFile"))
+    app_configuration_supplied = any(
+        (github_app_installation_id, github_app_private_key, github_app_private_key_file)
+    )
+    if provider in {"github-enterprise", "mixed"} and app_configuration_supplied:
+        try:
+            GitHubAppCredentials.from_values(
+                github_app_id,
+                github_app_installation_id,
+                github_app_private_key,
+                github_app_private_key_file,
+            )
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
     application_types = list(normalize_ui_application_types(config.get("applicationTypes")))
     database_config = normalize_database_config(config)
     normalized = {
         "provider": provider,
         "org": org,
-        "orgDisplay": ado_org_summary(ado_org_pats) if ado_org_pats else org,
+        "orgDisplay": mixed_org_summary(org, ado_org_pats) if provider == "mixed" else ado_org_summary(ado_org_pats) if ado_org_pats else org,
         "adoOrgPats": [{"org": item.org, "pat": item.pat} for item in ado_org_pats],
         "targetFilters": [{"org": item.org, "project": item.project} for item in target_filters],
         "project": clean_text(config.get("project")),
         "repo": clean_text(config.get("repo")),
         "baseUrl": base_url,
         "token": clean_text(config.get("token")),
+        "githubAppId": github_app_id,
+        "githubAppInstallationId": github_app_installation_id,
+        "githubAppPrivateKey": github_app_private_key,
+        "githubAppPrivateKeyFile": github_app_private_key_file,
         "outPrefix": DEFAULT_OUT_PREFIX,
         "applicationTypes": application_types,
         "ownerUserId": clean_text(config.get("ownerUserId")) or "anonymous",
@@ -793,23 +819,29 @@ def normalize_database_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def discover_source_targets(config: dict[str, Any]) -> dict[str, Any]:
-    provider = clean_choice(config.get("provider"), {"azure-devops", "github-enterprise"}, "azure-devops")
+    provider = clean_choice(config.get("provider"), {"azure-devops", "github-enterprise", "mixed"}, "azure-devops")
     timeout = positive_int(config.get("timeout"), 30)
     if provider == "github-enterprise":
         return discover_github_targets(config, timeout)
+    if provider == "mixed":
+        targets: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+        for discover in (discover_azure_targets, discover_github_targets):
+            try:
+                response = discover(config, timeout)
+            except ValueError as exc:
+                errors.append({"org": clean_text(config.get("org")), "message": str(exc)})
+                continue
+            targets.extend(response.get("targets", []))
+            errors.extend(response.get("errors", []))
+        return {"provider": "mixed", "targets": sorted_targets(targets), "errors": errors}
     return discover_azure_targets(config, timeout)
 
 
 def discover_azure_targets(config: dict[str, Any], timeout: int) -> dict[str, Any]:
     org_pats = parse_ado_org_pat_values([config.get("adoOrgPats")])
     if not org_pats:
-        org = clean_text(config.get("org"))
-        token = discovery_token(config, "azure-devops")
-        if not org:
-            raise ValueError("Azure DevOps organization is required to load projects.")
-        if not token:
-            raise ValueError("Azure DevOps PAT is required to load projects.")
-        org_pats = (AzureDevOpsOrgPat(org, token),)
+        raise ValueError("Add at least one Azure organization and PAT.")
 
     targets: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
@@ -838,15 +870,25 @@ def discover_github_targets(config: dict[str, Any], timeout: int) -> dict[str, A
     owner = clean_text(config.get("org"))
     base_url = clean_text(config.get("baseUrl"))
     token = discovery_token(config, "github-enterprise")
+    try:
+        app_credentials = GitHubAppCredentials.from_values(
+            config.get("githubAppId", ""),
+            config.get("githubAppInstallationId", ""),
+            config.get("githubAppPrivateKey", ""),
+            config.get("githubAppPrivateKeyFile", ""),
+        )
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
     if not owner:
         raise ValueError("GitHub owner is required to load repositories.")
     if not base_url:
         raise ValueError("GitHub Enterprise API URL is required to load repositories.")
-    if not token:
-        raise ValueError("GitHub token is required to load repositories.")
+    if not token and not app_credentials:
+        raise ValueError("GitHub App credentials are required to load repositories.")
 
     try:
-        client = GitHubEnterpriseClient(base_url, owner, token, timeout)
+        client_kwargs = {"app_credentials": app_credentials} if app_credentials else {}
+        client = GitHubEnterpriseClient(base_url, owner, token, timeout, **client_kwargs)
     except ValueError as exc:
         raise ValueError(str(exc)) from exc
     try:
@@ -960,16 +1002,16 @@ def build_scan_command(config: dict[str, Any], reports_dir: Path) -> list[str]:
             value = target_filter_value(target_filter)
             if value:
                 command.extend(["--target-filter", value])
-    if config["provider"] == "github-enterprise":
+    if config["provider"] in {"github-enterprise", "mixed"}:
         command.extend(["--org", config["org"]])
         command.extend(["--base-url", config["baseUrl"]])
         target = "" if target_filters else config["repo"] or config["project"]
         if target:
             command.extend(["--repo", target])
-    else:
-        if not config.get("adoOrgPats"):
+    if config["provider"] in {"azure-devops", "mixed"}:
+        if config["provider"] == "azure-devops" and not config.get("adoOrgPats"):
             command.extend(["--org", config["org"]])
-        if config["project"] and not target_filters:
+        if config["provider"] == "azure-devops" and config["project"] and not target_filters:
             command.extend(["--project", config["project"]])
     if config["storeLookup"]:
         command.append("--store-lookup")
@@ -1009,20 +1051,24 @@ def scan_environment(config: dict[str, Any]) -> dict[str, str]:
     env["PYTHONUNBUFFERED"] = "1"
     token = clean_text(config.get("token"))
     ado_org_pats = config.get("adoOrgPats") if isinstance(config.get("adoOrgPats"), list) else []
-    if config.get("provider") == "azure-devops" and ado_org_pats:
+    provider = config.get("provider")
+    if provider in {"azure-devops", "mixed"} and ado_org_pats:
         org_pats_json = ado_org_pats_to_json(ado_org_pats)
         env["APPLICATION_INVENTORY_ADO_ORG_PATS"] = org_pats_json
         env["APPSEC_INVENTORY_ADO_ORG_PATS"] = org_pats_json
         env.pop("ADO_PAT", None)
-    elif token and config.get("provider") == "github-enterprise":
-        env["GITHUB_TOKEN"] = token
-    elif token:
-        env["ADO_PAT"] = token
-    elif config.get("provider") == "github-enterprise":
-        inherit_secret(env, "GITHUB_TOKEN")
-        inherit_secret(env, "GHE_TOKEN")
-    elif not ado_org_pats:
-        inherit_secret(env, "ADO_PAT")
+    elif provider == "azure-devops":
+        if token:
+            env["ADO_PAT"] = token
+        else:
+            inherit_secret(env, "ADO_PAT")
+    if provider in {"github-enterprise", "mixed"}:
+        if token:
+            env["GITHUB_TOKEN"] = token
+        else:
+            inherit_secret(env, "GITHUB_TOKEN")
+            inherit_secret(env, "GHE_TOKEN")
+        set_github_app_environment(env, config)
     postgres_dsn = clean_text(config.get("postgresDsn"))
     if config.get("postgresEnabled") and postgres_dsn:
         postgres_schema = clean_text(config.get("postgresSchema") or DEFAULT_POSTGRES_SCHEMA)
@@ -1047,6 +1093,68 @@ def scan_environment(config: dict[str, Any]) -> dict[str, str]:
     env["APPSEC_INVENTORY_OWNER_USER_ID"] = owner_user_id
     env["APPSEC_INVENTORY_OWNER_USER_LOGIN"] = owner_user_login
     return env
+
+
+def set_github_app_environment(env: dict[str, str], config: dict[str, Any]) -> None:
+    environment_names = (
+        "APPLICATION_INVENTORY_GITHUB_APP_ID",
+        "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID",
+        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY",
+        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
+        "APPSEC_INVENTORY_GITHUB_APP_ID",
+        "APPSEC_INVENTORY_GITHUB_APP_INSTALLATION_ID",
+        "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY",
+        "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
+        "GITHUB_APP_ID",
+        "GITHUB_APP_INSTALLATION_ID",
+        "GITHUB_APP_PRIVATE_KEY",
+        "GITHUB_APP_PRIVATE_KEY_FILE",
+        "GHE_APP_ID",
+        "GHE_APP_INSTALLATION_ID",
+        "GHE_APP_PRIVATE_KEY",
+        "GHE_APP_PRIVATE_KEY_FILE",
+    )
+    app_configuration_supplied = any(
+        (
+            clean_text(config.get("githubAppInstallationId")),
+            clean_text(config.get("githubAppPrivateKey")),
+            clean_text(config.get("githubAppPrivateKeyFile")),
+            *(clean_text(os.getenv(name)) for name in environment_names),
+        )
+    )
+    if not app_configuration_supplied:
+        return
+    values = {
+        "APPLICATION_INVENTORY_GITHUB_APP_ID": clean_text(config.get("githubAppId")),
+        "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID": clean_text(config.get("githubAppInstallationId")),
+        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY": clean_text(config.get("githubAppPrivateKey")),
+        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE": clean_text(config.get("githubAppPrivateKeyFile")),
+    }
+    aliases = {
+        "APPLICATION_INVENTORY_GITHUB_APP_ID": ("APPSEC_INVENTORY_GITHUB_APP_ID", "GITHUB_APP_ID", "GHE_APP_ID"),
+        "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID": (
+            "APPSEC_INVENTORY_GITHUB_APP_INSTALLATION_ID",
+            "GITHUB_APP_INSTALLATION_ID",
+            "GHE_APP_INSTALLATION_ID",
+        ),
+        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY": (
+            "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY",
+            "GITHUB_APP_PRIVATE_KEY",
+            "GHE_APP_PRIVATE_KEY",
+        ),
+        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE": (
+            "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
+            "GITHUB_APP_PRIVATE_KEY_FILE",
+            "GHE_APP_PRIVATE_KEY_FILE",
+        ),
+    }
+    for name, value in values.items():
+        if value:
+            env[name] = value
+            continue
+        inherited = next((clean_text(os.getenv(alias)) for alias in aliases[name] if clean_text(os.getenv(alias))), "")
+        if inherited:
+            env[name] = inherited
 
 
 def scan_progress(
@@ -1153,7 +1261,7 @@ def parse_iso_datetime(value: str) -> datetime | None:
 def default_ui_config(reports_root: Path) -> dict[str, Any]:
     github_oauth_config = GitHubOAuthConfig.from_env()
     google_oauth_config = GoogleOAuthConfig.from_env()
-    test_login_enabled = env_value("APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED", "APPSEC_INVENTORY_SERVICE_TEST_LOGIN_ENABLED").lower() in {"1", "true", "yes", "on"}
+    test_login_config = TestLoginConfig.from_env()
     return {
         "defaults": {
             "provider": "azure-devops",
@@ -1184,7 +1292,7 @@ def default_ui_config(reports_root: Path) -> dict[str, Any]:
         "auth": {
             "githubLoginEnabled": github_oauth_config.enabled,
             "googleLoginEnabled": google_oauth_config.enabled,
-            "testLoginEnabled": test_login_enabled,
+            "testLoginEnabled": test_login_config.enabled,
             "authProviders": [
                 {
                     "id": "github",
@@ -1201,7 +1309,7 @@ def default_ui_config(reports_root: Path) -> dict[str, Any]:
                 {
                     "id": "test",
                     "label": "Test User",
-                    "enabled": test_login_enabled,
+                    "enabled": test_login_config.enabled,
                     "startUrl": "/api/auth/test/start",
                 },
             ],
@@ -1330,6 +1438,11 @@ def ado_org_summary(org_pats: tuple[Any, ...]) -> str:
     if len(org_pats) == 1:
         return org_pats[0].org
     return f"{len(org_pats)} Azure DevOps organizations"
+
+
+def mixed_org_summary(github_owner: str, org_pats: tuple[Any, ...]) -> str:
+    ado_summary = ado_org_summary(org_pats)
+    return f"{github_owner} + {ado_summary}" if ado_summary else github_owner
 
 
 def clean_choice(value: Any, allowed: set[str], default: str) -> str:

@@ -20,6 +20,7 @@ from .constants import (
 )
 
 WORKBOOK_COLUMN_WIDTHS = {
+    "provider": 22,
     "organization": 28,
     "project": 24,
     "repo_name": 28,
@@ -193,6 +194,7 @@ class StreamingReportWriter:
 
 def sonarqube_project_row(result: dict[str, object]) -> dict[str, object]:
     return {
+        "provider": result.get("provider", ""),
         "sonar.projectKey": result.get("sonarqube_project_key", ""),
         "sonar.projectName": result.get("sonarqube_project_name", ""),
         "sonar.sources": ".",
