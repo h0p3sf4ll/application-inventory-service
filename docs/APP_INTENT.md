@@ -33,8 +33,7 @@ The service reads provider metadata, repository trees, selected manifests, depen
 
 ## Primary Outputs
 
-- Human-readable CSV, JSON, and Excel reports.
-- Scanner target manifests for orchestration.
+- Human-readable Excel reports.
 - Semgrep target lists.
 - SonarQube project metadata suggestions.
 - Normalized PostgreSQL tables for analytics and reporting.

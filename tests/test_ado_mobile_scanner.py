@@ -1,11 +1,13 @@
 import json
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 import appsec_scan_router as scanner
+import appsec_scan_router.azure as azure_module
 import appsec_scan_router.scanner as scanner_module
 import appsec_scan_router.ui as ui_module
 import application_inventory_service
@@ -56,6 +58,30 @@ class PublicApiTests(unittest.TestCase):
         self.assertEqual([(item.org, item.pat) for item in org_pats], [("FabrikamCloud", "pat-a")])
         target_filters = scanner.parse_source_target_filter_values("FabrikamCloud=Go_To_Market")
         self.assertEqual([(item.org, item.project) for item in target_filters], [("FabrikamCloud", "Go_To_Market")])
+
+    def test_report_file_stem_labels_selected_application_types(self):
+        self.assertEqual(scanner.report_file_stem("Inventory Scan", ("mobile_app", "api_service")), "inventory_scan_mobile_app_api_service")
+        self.assertEqual(scanner.report_file_stem("Inventory Scan", ()), "inventory_scan_all_types")
+
+    def test_azure_throttle_honors_retry_after(self):
+        class Response:
+            headers = {"Retry-After": "1"}
+            status_code = 200
+
+        throttle = azure_module.AzureDevOpsThrottle(requests_per_second=0, low_remaining_backoff_seconds=2)
+        before = time.monotonic()
+        throttle.observe(Response())
+        self.assertGreaterEqual(throttle.block_until, before + 0.9)
+
+    def test_azure_throttle_backs_off_when_rate_limit_remaining_is_empty(self):
+        class Response:
+            headers = {"X-RateLimit-Remaining": "0"}
+            status_code = 200
+
+        throttle = azure_module.AzureDevOpsThrottle(requests_per_second=0, low_remaining_backoff_seconds=2)
+        before = time.monotonic()
+        throttle.observe(Response())
+        self.assertGreaterEqual(throttle.block_until, before + 1.9)
 
 
 class AuthTests(unittest.TestCase):
@@ -1550,27 +1576,31 @@ class OutputTests(unittest.TestCase):
             ),
         }
 
-    def test_write_outputs_creates_csv_and_json(self):
+    def test_write_outputs_creates_labeled_scanner_outputs(self):
         result = self.sample_result()
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            csv_path, json_path, xlsx_path = scanner.write_outputs([result], Path(tmpdir), "scan")
+            xlsx_path, semgrep_path, sonarqube_path = scanner.write_outputs(
+                [result],
+                Path(tmpdir),
+                "scan",
+                application_types=("mobile_app",),
+            )
 
-            self.assertTrue(csv_path.exists())
-            self.assertTrue(json_path.exists())
             self.assertTrue(xlsx_path.exists())
-            self.assertTrue((Path(tmpdir) / "scan_scanner_targets.csv").exists())
-            self.assertTrue((Path(tmpdir) / "scan_scanner_targets.json").exists())
-            self.assertTrue((Path(tmpdir) / "scan_semgrep_targets.txt").exists())
-            self.assertTrue((Path(tmpdir) / "scan_sonarqube_projects.csv").exists())
-            loaded = json.loads(json_path.read_text(encoding="utf-8"))
-            self.assertEqual(loaded, [result])
-            self.assertIn("repo_name", csv_path.read_text(encoding="utf-8"))
-            self.assertIn("organization", csv_path.read_text(encoding="utf-8"))
-            self.assertIn("https://example.invalid/repo.git#branch=main", (Path(tmpdir) / "scan_semgrep_targets.txt").read_text(encoding="utf-8"))
-            targets = json.loads((Path(tmpdir) / "scan_scanner_targets.json").read_text(encoding="utf-8"))
-            self.assertEqual(targets[0]["organization"], "FabrikamCloud")
-            self.assertEqual(targets[0]["inventory_name"], "Agsnap")
+            self.assertTrue(semgrep_path.exists())
+            self.assertTrue(sonarqube_path.exists())
+            self.assertEqual(xlsx_path.name, "scan_mobile_app.xlsx")
+            self.assertEqual(semgrep_path.name, "scan_mobile_app_semgrep_targets.txt")
+            self.assertEqual(sonarqube_path.name, "scan_mobile_app_sonarqube_projects.csv")
+            self.assertFalse((Path(tmpdir) / "scan_mobile_app.csv").exists())
+            self.assertFalse((Path(tmpdir) / "scan_mobile_app.json").exists())
+            self.assertFalse((Path(tmpdir) / "scan_mobile_app_scanner_targets.csv").exists())
+            self.assertFalse((Path(tmpdir) / "scan_mobile_app_scanner_targets.json").exists())
+            self.assertIn("https://example.invalid/repo.git#branch=main", semgrep_path.read_text(encoding="utf-8"))
+            sonar_text = sonarqube_path.read_text(encoding="utf-8")
+            self.assertIn("sonar.projectKey", sonar_text)
+            self.assertIn("Agsnap", sonar_text)
             workbook = load_workbook(xlsx_path)
             self.assertEqual(workbook.sheetnames, [scanner.ACTIVE_SHEET_NAME, scanner.OLDER_SHEET_NAME])
             self.assertEqual(workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "mobile_name", 2), "Agsnap")
@@ -1584,23 +1614,17 @@ class OutputTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with scanner.StreamingReportWriter(Path(tmpdir), "scan") as writer:
-                self.assertTrue(writer.csv_path.exists())
-                self.assertTrue(writer.json_path.exists())
                 self.assertTrue(writer.xlsx_path.exists())
-                self.assertTrue(writer.scanner_targets_csv_path.exists())
-                self.assertTrue(writer.scanner_targets_json_path.exists())
                 self.assertTrue(writer.semgrep_targets_path.exists())
                 self.assertTrue(writer.sonarqube_projects_path.exists())
 
                 writer.write_result(result)
 
-                csv_text = writer.csv_path.read_text(encoding="utf-8")
-                json_text = writer.json_path.read_text(encoding="utf-8")
-                self.assertIn("Agsnap", csv_text)
-                self.assertIn("Agsnap", json_text)
+                semgrep_text = writer.semgrep_targets_path.read_text(encoding="utf-8")
+                sonarqube_text = writer.sonarqube_projects_path.read_text(encoding="utf-8")
+                self.assertIn("https://example.invalid/repo.git#branch=main", semgrep_text)
+                self.assertIn("Agsnap", sonarqube_text)
 
-            loaded = json.loads(writer.json_path.read_text(encoding="utf-8"))
-            self.assertEqual(loaded, [result])
             workbook = load_workbook(writer.xlsx_path)
             self.assertEqual(workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "mobile_name", 2), "Agsnap")
 

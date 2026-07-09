@@ -10,7 +10,7 @@ flowchart LR
   Core --> ADO["Azure DevOps API"]
   Core --> GHE["GitHub Enterprise API"]
   Core --> Stores["Apple / Google Store Lookup"]
-  Core --> Reports["CSV / JSON / XLSX / Scanner Targets"]
+  Core --> Reports["XLSX / Semgrep Targets / SonarQube Targets"]
   Core --> DB["PostgreSQL Inventory Schema"]
   Reports --> Scanners["Semgrep / SonarQube / SCA / Custom Scanners"]
   DB --> BI["Dashboards / Data Exports"]
@@ -24,7 +24,7 @@ flowchart LR
 | CLI | Non-interactive scans for automation and scheduled inventory jobs |
 | SDK | Importable API for other applications and orchestration processes |
 | Inventory engine | Provider traversal, branch selection, detection, metadata extraction, activity extraction |
-| Report writer | Streaming CSV, JSON, XLSX, Semgrep, SonarQube, and scanner target outputs |
+| Report writer | Streaming XLSX inventory, Semgrep target, and SonarQube target outputs |
 | PostgreSQL writer | Normalized upserts scoped by owner/user |
 | Store lookup client | Optional mobile app store validation |
 

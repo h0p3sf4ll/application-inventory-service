@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import base64
+from email.utils import parsedate_to_datetime
 import logging
+import os
 import threading
+import time
 from typing import Any
 
 from .constants import API_VERSION, DEFAULT_COMMIT_PAGE_SIZE, MISSING_REQUESTS_MESSAGE
@@ -19,6 +22,10 @@ except ImportError:
 
 
 LOGGER = logging.getLogger("appsec_scan_router")
+DEFAULT_ADO_REQUESTS_PER_SECOND = 6.0
+DEFAULT_ADO_POOL_SIZE = 4
+DEFAULT_ADO_MAX_RETRIES = 8
+DEFAULT_ADO_LOW_REMAINING_BACKOFF_SECONDS = 2.0
 
 
 class AzureDevOpsClient:
@@ -28,17 +35,28 @@ class AzureDevOpsClient:
 
         self.org = org
         self.timeout_seconds = timeout_seconds
+        self._pool_size = positive_int_env("APPLICATION_INVENTORY_ADO_POOL_SIZE", DEFAULT_ADO_POOL_SIZE)
+        self._throttle = AzureDevOpsThrottle(
+            requests_per_second=positive_float_env(
+                "APPLICATION_INVENTORY_ADO_REQUESTS_PER_SECOND",
+                DEFAULT_ADO_REQUESTS_PER_SECOND,
+            ),
+            low_remaining_backoff_seconds=positive_float_env(
+                "APPLICATION_INVENTORY_ADO_LOW_REMAINING_BACKOFF_SECONDS",
+                DEFAULT_ADO_LOW_REMAINING_BACKOFF_SECONDS,
+            ),
+        )
         self._headers = {
             "Authorization": self._auth_header_value(pat),
             "Accept": "application/json",
-            "User-Agent": "application-inventory-service/1.6.3",
+            "User-Agent": "application-inventory-service/1.6.4",
         }
         self._retry = Retry(
-            total=5,
-            connect=0,
+            total=positive_int_env("APPLICATION_INVENTORY_ADO_MAX_RETRIES", DEFAULT_ADO_MAX_RETRIES),
+            connect=2,
             read=3,
             other=0,
-            backoff_factor=0.6,
+            backoff_factor=1.0,
             status_forcelist=(429, 500, 502, 503, 504),
             allowed_methods=frozenset({"GET"}),
             respect_retry_after_header=True,
@@ -64,7 +82,12 @@ class AzureDevOpsClient:
         if session is None:
             session = requests.Session()
             session.headers.update(self._headers)
-            adapter = HTTPAdapter(max_retries=self._retry, pool_connections=8, pool_maxsize=8)
+            adapter = HTTPAdapter(
+                max_retries=self._retry,
+                pool_connections=self._pool_size,
+                pool_maxsize=self._pool_size,
+                pool_block=True,
+            )
             session.mount("https://", adapter)
             self._thread_local.session = session
             with self._sessions_lock:
@@ -77,7 +100,10 @@ class AzureDevOpsClient:
     def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         url = self._url(path)
         try:
-            return self.session.get(url, params=self._with_api_version(params), timeout=self.timeout_seconds)
+            self._throttle.wait()
+            response = self.session.get(url, params=self._with_api_version(params), timeout=self.timeout_seconds)
+            self._throttle.observe(response)
+            return response
         except requests.RequestException as exc:
             raise AzureDevOpsError(provider_connection_message("Azure DevOps", url, exc)) from exc
 
@@ -296,3 +322,91 @@ def provider_connection_message(provider: str, url: str, exc: Exception) -> str:
         f"{provider} connection failed for {url}: {exc}. "
         "Check DNS, VPN/proxy access, container network settings, and whether the provider host is reachable."
     )
+
+
+class AzureDevOpsThrottle:
+    def __init__(self, requests_per_second: float, low_remaining_backoff_seconds: float) -> None:
+        self.min_interval_seconds = 0.0 if requests_per_second <= 0 else 1.0 / requests_per_second
+        self.low_remaining_backoff_seconds = low_remaining_backoff_seconds
+        self.lock = threading.Lock()
+        self.next_request_at = 0.0
+        self.block_until = 0.0
+
+    def wait(self) -> None:
+        sleep_seconds = 0.0
+        with self.lock:
+            now = time.monotonic()
+            scheduled_at = max(self.next_request_at, self.block_until)
+            if scheduled_at > now:
+                sleep_seconds = scheduled_at - now
+            base = max(scheduled_at, now)
+            self.next_request_at = base + self.min_interval_seconds
+        if sleep_seconds > 0:
+            time.sleep(sleep_seconds)
+
+    def observe(self, response: requests.Response) -> None:
+        retry_after = retry_after_seconds(response.headers.get("Retry-After"))
+        if retry_after > 0:
+            self.defer(retry_after)
+            LOGGER.info("Azure DevOps requested %.2fs client backoff.", retry_after)
+            return
+
+        if response.status_code == 429:
+            self.defer(max(self.low_remaining_backoff_seconds, self.min_interval_seconds * 4))
+            return
+
+        remaining = float_header(response.headers.get("X-RateLimit-Remaining"))
+        if remaining is not None and remaining <= 1:
+            self.defer(self.low_remaining_backoff_seconds)
+
+    def defer(self, seconds: float) -> None:
+        if seconds <= 0:
+            return
+        with self.lock:
+            self.block_until = max(self.block_until, time.monotonic() + seconds)
+
+
+def positive_float_env(name: str, default: float) -> float:
+    raw_value = os.getenv(name)
+    if not raw_value:
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
+def positive_int_env(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
+    if not raw_value:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def retry_after_seconds(value: str | None) -> float:
+    if not value:
+        return 0.0
+    cleaned = value.strip()
+    try:
+        return max(0.0, float(cleaned))
+    except ValueError:
+        pass
+    try:
+        retry_at = parsedate_to_datetime(cleaned)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return 0.0
+    return max(0.0, retry_at.timestamp() - time.time())
+
+
+def float_header(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None

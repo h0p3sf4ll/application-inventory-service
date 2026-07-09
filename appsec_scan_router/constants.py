@@ -186,7 +186,7 @@ CONTENT_FILES_TO_FETCH: tuple[str, ...] = (
 
 CONTENT_FILE_SUFFIXES = tuple(name.lower() for name in CONTENT_FILES_TO_FETCH)
 
-CSV_FIELDNAMES = (
+INVENTORY_FIELDNAMES = (
     "organization",
     "project",
     "repo_name",
@@ -218,27 +218,6 @@ CSV_FIELDNAMES = (
     *CATEGORY_FIELDNAMES,
     *STORE_FIELDNAMES,
     "detection_evidence",
-)
-
-SCANNER_TARGET_FIELDNAMES = (
-    "organization",
-    "project",
-    "repo_name",
-    "branch_name",
-    "branch_last_updated",
-    "source_url",
-    "web_url",
-    "inventory_name",
-    "inventory_version",
-    "inventory_types",
-    "primary_language",
-    "categories",
-    "branch_contributing_developers",
-    "confidence",
-    "score",
-    "semgrep_target",
-    "sonarqube_project_key",
-    "sonarqube_project_name",
 )
 
 SONARQUBE_FIELDNAMES = (

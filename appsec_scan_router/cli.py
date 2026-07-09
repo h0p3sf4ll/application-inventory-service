@@ -84,7 +84,7 @@ def parse_args(argv: list[str]) -> ScanConfig:
         "--out-dir",
         type=Path,
         default=Path.cwd(),
-        help="Directory for CSV, JSON, Excel, and scanner target reports. Defaults to the current directory.",
+        help="Directory for XLSX, Semgrep, and SonarQube target outputs. Defaults to the current directory.",
     )
     parser.add_argument(
         "--out-prefix",
@@ -364,13 +364,9 @@ def env_value(*names: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     config = parse_args(sys.argv[1:] if argv is None else argv)
-    results, csv_path, json_path, xlsx_path = scan_to_reports(config)
+    results, xlsx_path, semgrep_path, sonarqube_path = scan_to_reports(config)
     print(f"Done. Found {len(results)} inventory branches.")
-    print(f"CSV:  {csv_path}")
-    print(f"JSON: {json_path}")
-    print(f"XLSX: {xlsx_path}")
-    print(f"Scanner targets CSV:  {config.out_dir / f'{config.out_prefix}_scanner_targets.csv'}")
-    print(f"Scanner targets JSON: {config.out_dir / f'{config.out_prefix}_scanner_targets.json'}")
-    print(f"Semgrep targets:      {config.out_dir / f'{config.out_prefix}_semgrep_targets.txt'}")
-    print(f"SonarQube projects:   {config.out_dir / f'{config.out_prefix}_sonarqube_projects.csv'}")
+    print(f"XLSX:              {xlsx_path}")
+    print(f"Semgrep targets:   {semgrep_path}")
+    print(f"SonarQube targets: {sonarqube_path}")
     return 0

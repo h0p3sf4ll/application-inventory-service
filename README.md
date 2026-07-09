@@ -21,7 +21,7 @@ The project is published as `application-inventory-service`. The original `appse
 - Scans default branches, with production-like fallback branch resolution when no default branch exists.
 - Captures inventory name, version, type, language, mobile identifiers, contributors, last activity, and evidence.
 - Optionally validates detected mobile identifiers against Apple App Store and Google Play.
-- Writes CSV, JSON, XLSX, Semgrep target lists, SonarQube project manifests, and generic scanner target manifests.
+- Writes XLSX inventory reports, Semgrep target lists, and SonarQube project manifests labeled by selected application type.
 - Streams results into a normalized PostgreSQL schema, scoped by signed-in user when run from the UI.
 
 ## Documentation
@@ -76,18 +76,23 @@ Use the test login only for local development. For shared environments, configur
 ## Quick Start: Docker
 
 ```bash
-docker build -t application-inventory-service .
 mkdir -p reports
 cp .env.example .env
 docker run --rm \
   -p 48731:48731 \
   --env-file .env \
   -v "$PWD/reports:/reports" \
-  application-inventory-service \
+  h0p3sf4ll/application-inventory-service:1.6.4 \
   ui \
   --host 0.0.0.0 \
   --port 48731 \
   --reports-dir /reports
+```
+
+Build locally when you need to test unpublished changes:
+
+```bash
+docker build -t application-inventory-service:local .
 ```
 
 ## Azure DevOps
@@ -189,22 +194,24 @@ docker run --name application-inventory-postgres \
 | `APPLICATION_INVENTORY_POSTGRES_DSN` | PostgreSQL DSN |
 | `APPLICATION_INVENTORY_POSTGRES_SCHEMA` | PostgreSQL schema |
 | `APPLICATION_INVENTORY_POSTGRES_TABLE` | Flat compatibility table |
+| `APPLICATION_INVENTORY_ADO_REQUESTS_PER_SECOND` | Azure DevOps request pace per scanner process; defaults to `6` |
+| `APPLICATION_INVENTORY_ADO_MAX_RETRIES` | Azure DevOps retry count for throttled or transient reads; defaults to `8` |
+| `APPLICATION_INVENTORY_ADO_POOL_SIZE` | Azure DevOps per-thread connection pool size; defaults to `4` |
+| `APPLICATION_INVENTORY_ADO_LOW_REMAINING_BACKOFF_SECONDS` | Extra pause when Azure DevOps rate-limit remaining reaches zero; defaults to `2` |
 
 Legacy `APPSEC_INVENTORY_*` and `APPSEC_INVENTORY_SERVICE_*` variables remain supported.
 
 ## Outputs
 
-With the default prefix, the service writes:
+With the default prefix and no application type filter, the service writes:
 
-- `application_inventory_service.csv`
-- `application_inventory_service.json`
-- `application_inventory_service.xlsx`
-- `application_inventory_service_scanner_targets.csv`
-- `application_inventory_service_scanner_targets.json`
-- `application_inventory_service_semgrep_targets.txt`
-- `application_inventory_service_sonarqube_projects.csv`
+- `application_inventory_service_all_types.xlsx`
+- `application_inventory_service_all_types_semgrep_targets.txt`
+- `application_inventory_service_all_types_sonarqube_projects.csv`
 
-The scanner target files are intended for downstream orchestration with Semgrep, SonarQube, SCA tools, custom security scanners, or pipeline automation.
+When application types are selected, the type label is added to the output name, for example `application_inventory_service_mobile_app_api_service.xlsx`.
+
+The target files are intended for downstream orchestration with Semgrep, SonarQube, SCA tools, custom security scanners, or pipeline automation.
 
 ## SDK
 
@@ -230,7 +237,7 @@ config = ScanConfig(
     min_confidence="medium",
 )
 
-results, csv_path, json_path, xlsx_path = scan_to_reports(config)
+results, xlsx_path, semgrep_path, sonarqube_path = scan_to_reports(config)
 ```
 
 ## Release

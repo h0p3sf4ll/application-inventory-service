@@ -8,7 +8,7 @@ Application Inventory Service addresses that operating gap.
 
 Application Inventory Service discovers applications across Azure DevOps and GitHub Enterprise without cloning repositories. It inventories mobile apps, web apps, API services, microservices, middleware, serverless workloads, infrastructure code, libraries, AI-enabled applications, and ML-enabled applications.
 
-The service produces practical outputs: CSV, JSON, XLSX, PostgreSQL records, Semgrep target lists, SonarQube project manifests, and generic scanner manifests. It also provides a CLI, SDK, Docker container, and browser UI for teams that need both automation and an operator-facing workflow.
+The service produces practical outputs: XLSX inventory reports, PostgreSQL records, Semgrep target lists, and SonarQube project manifests. It also provides a CLI, SDK, Docker container, and browser UI for teams that need both automation and an operator-facing workflow.
 
 ## Why It Matters
 

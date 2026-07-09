@@ -91,13 +91,13 @@ aws ecr create-repository \
 aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 
-docker build -t "$REPO:1.6.3" .
-docker tag "$REPO:1.6.3" "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.3"
-docker push "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.3"
+docker build -t "$REPO:1.6.4" .
+docker tag "$REPO:1.6.4" "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.4"
+docker push "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.4"
 
 IMAGE_DIGEST=$(aws ecr describe-images \
   --repository-name "$REPO" \
-  --image-ids imageTag=1.6.3 \
+  --image-ids imageTag=1.6.4 \
   --region "$AWS_REGION" \
   --query 'imageDetails[0].imageDigest' \
   --output text)

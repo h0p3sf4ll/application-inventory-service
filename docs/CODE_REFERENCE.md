@@ -42,7 +42,7 @@ Commit activity utilities for contributor extraction and last-updated timestamps
 Functions:
 - `extract_repo_activity(commits)`: Extracts structured metadata from manifests, commits, or report rows.
 - `format_developer(person)`: Formats values for logs, reports, or API responses.
-- `developer_identity_key(person, fallback)`: Function that supports developer identity key behavior.
+- `developer_identity_key(person, fallback)`: Helper for developer identity key.
 - `parse_ado_datetime(value)`: Parses text, JSON, XML, YAML, dates, arguments, or provider values.
 - `format_ado_datetime(value)`: Formats values for logs, reports, or API responses.
 
@@ -52,54 +52,54 @@ OAuth, local test login, session, CSRF, and encrypted credential storage support
 Constants: `SESSION_COOKIE_NAME`, `SESSION_TTL_SECONDS`, `OAUTH_STATE_TTL_SECONDS`, `PROVIDER_NAMES`, `TRUE_VALUES`
 
 Classes:
-- `AuthenticatedUser`: Class used by the application runtime or SDK contract.
-  - `AuthenticatedUser.as_dict(self)`: Method that supports as dict behavior for its class.
-- `SessionRecord`: Class used by the application runtime or SDK contract.
-  - `SessionRecord.active(self, now=...)`: Method that supports active behavior for its class.
+- `AuthenticatedUser`: Runtime data object.
+  - `AuthenticatedUser.as_dict(self)`: Implements as dict behavior.
+- `SessionRecord`: Runtime data object.
+  - `SessionRecord.active(self, now=...)`: Implements active behavior.
 - `GitHubOAuthConfig`: Configuration object that carries validated runtime settings.
-  - `GitHubOAuthConfig.from_env(cls)`: Method that supports from env behavior for its class.
-  - `GitHubOAuthConfig.enabled(self)`: Method that supports enabled behavior for its class.
+  - `GitHubOAuthConfig.from_env(cls)`: Implements from env behavior.
+  - `GitHubOAuthConfig.enabled(self)`: Implements enabled behavior.
 - `GoogleOAuthConfig`: Configuration object that carries validated runtime settings.
-  - `GoogleOAuthConfig.from_env(cls)`: Method that supports from env behavior for its class.
-  - `GoogleOAuthConfig.enabled(self)`: Method that supports enabled behavior for its class.
+  - `GoogleOAuthConfig.from_env(cls)`: Implements from env behavior.
+  - `GoogleOAuthConfig.enabled(self)`: Implements enabled behavior.
 - `TestLoginConfig`: Configuration object that carries validated runtime settings.
-  - `TestLoginConfig.from_env(cls)`: Method that supports from env behavior for its class.
-  - `TestLoginConfig.user(self)`: Method that supports user behavior for its class.
+  - `TestLoginConfig.from_env(cls)`: Implements from env behavior.
+  - `TestLoginConfig.user(self)`: Implements user behavior.
 - `CredentialStore`: State store used by authentication, sessions, or credentials.
-  - `CredentialStore.encryption_key(self)`: Method that supports encryption key behavior for its class.
-  - `CredentialStore.save_token(self, user_id, provider, token)`: Method that supports save token behavior for its class.
-  - `CredentialStore.token(self, user_id, provider)`: Method that supports token behavior for its class.
+  - `CredentialStore.encryption_key(self)`: Implements encryption key behavior.
+  - `CredentialStore.save_token(self, user_id, provider, token)`: Implements save token behavior.
+  - `CredentialStore.token(self, user_id, provider)`: Implements token behavior.
   - `CredentialStore.delete_token(self, user_id, provider)`: Removes saved credentials or persisted values.
-  - `CredentialStore.statuses(self, user_id)`: Method that supports statuses behavior for its class.
+  - `CredentialStore.statuses(self, user_id)`: Implements statuses behavior.
   - `CredentialStore.read_data(self)`: Reads request bodies or encrypted credential state.
   - `CredentialStore.write_data(self, data)`: Writes files, database rows, server events, or response payloads.
 - `SessionStore`: State store used by authentication, sessions, or credentials.
   - `SessionStore.create(self, user)`: Creates schemas, clients, sessions, rows, or report structures.
   - `SessionStore.get(self, session_id)`: Retrieves a provider, HTTP, session, or report value.
   - `SessionStore.delete(self, session_id)`: Removes saved credentials or persisted values.
-- `GitHubOAuthService`: Class used by the application runtime or SDK contract.
-  - `GitHubOAuthService.enabled(self)`: Method that supports enabled behavior for its class.
-  - `GitHubOAuthService.authorization_url(self, redirect_uri)`: Method that supports authorization url behavior for its class.
-  - `GitHubOAuthService.complete(self, code, state, redirect_uri)`: Method that supports complete behavior for its class.
+- `GitHubOAuthService`: Runtime data object.
+  - `GitHubOAuthService.enabled(self)`: Implements enabled behavior.
+  - `GitHubOAuthService.authorization_url(self, redirect_uri)`: Implements authorization url behavior.
+  - `GitHubOAuthService.complete(self, code, state, redirect_uri)`: Implements complete behavior.
   - `GitHubOAuthService.exchange_code(self, code, redirect_uri)`: Exchanges an OAuth authorization code for an access token.
   - `GitHubOAuthService.fetch_user(self, access_token)`: Fetches repository content, commits, user profiles, or store pages.
-  - `GitHubOAuthService.consume_state(self, state)`: Method that supports consume state behavior for its class.
-  - `GitHubOAuthService.prune_states(self)`: Method that supports prune states behavior for its class.
-- `GoogleOAuthService`: Class used by the application runtime or SDK contract.
-  - `GoogleOAuthService.enabled(self)`: Method that supports enabled behavior for its class.
-  - `GoogleOAuthService.authorization_url(self, redirect_uri)`: Method that supports authorization url behavior for its class.
-  - `GoogleOAuthService.complete(self, code, state, redirect_uri)`: Method that supports complete behavior for its class.
+  - `GitHubOAuthService.consume_state(self, state)`: Implements consume state behavior.
+  - `GitHubOAuthService.prune_states(self)`: Implements prune states behavior.
+- `GoogleOAuthService`: Runtime data object.
+  - `GoogleOAuthService.enabled(self)`: Implements enabled behavior.
+  - `GoogleOAuthService.authorization_url(self, redirect_uri)`: Implements authorization url behavior.
+  - `GoogleOAuthService.complete(self, code, state, redirect_uri)`: Implements complete behavior.
   - `GoogleOAuthService.exchange_code(self, code, redirect_uri)`: Exchanges an OAuth authorization code for an access token.
   - `GoogleOAuthService.fetch_user(self, access_token)`: Fetches repository content, commits, user profiles, or store pages.
-  - `GoogleOAuthService.consume_state(self, state)`: Method that supports consume state behavior for its class.
-  - `GoogleOAuthService.prune_states(self)`: Method that supports prune states behavior for its class.
+  - `GoogleOAuthService.consume_state(self, state)`: Implements consume state behavior.
+  - `GoogleOAuthService.prune_states(self)`: Implements prune states behavior.
 - `AuthManager`: Coordinator object that manages related runtime state.
   - `AuthManager.session(self, cookie_header)`: Creates, reads, or serializes session state.
   - `AuthManager.create_session(self, user)`: Creates schemas, clients, sessions, rows, or report structures.
   - `AuthManager.logout(self, session_id)`: Ends the active UI session.
   - `AuthManager.status(self, record)`: Returns current scan, store, database, or credential status.
   - `AuthManager.create_test_session(self)`: Creates schemas, clients, sessions, rows, or report structures.
-  - `AuthManager.apply_credentials(self, payload, record)`: Method that supports apply credentials behavior for its class.
+  - `AuthManager.apply_credentials(self, payload, record)`: Implements apply credentials behavior.
   - `AuthManager.delete_credential(self, provider, record)`: Removes saved credentials or persisted values.
 
 Functions:
@@ -109,13 +109,13 @@ Functions:
 - `cookie_value(cookie_header, name)`: Builds or reads session cookie values.
 - `session_cookie(session_id, secure=...)`: Creates, reads, or serializes session state.
 - `expired_session_cookie(secure=...)`: Builds an expired session cookie header.
-- `chmod_private(path, mode)`: Function that supports chmod private behavior.
+- `chmod_private(path, mode)`: Helper for chmod private.
 - `utc_timestamp()`: Returns a UTC timestamp string.
 
 ### `appsec_scan_router.azure`
 Azure DevOps API client used by the scanner without cloning repositories.
 
-Constants: `LOGGER`
+Constants: `LOGGER`, `DEFAULT_ADO_REQUESTS_PER_SECOND`, `DEFAULT_ADO_POOL_SIZE`, `DEFAULT_ADO_MAX_RETRIES`, `DEFAULT_ADO_LOW_REMAINING_BACKOFF_SECONDS`
 
 Classes:
 - `AzureDevOpsClient`: Provider or external-service client that wraps network access and retries.
@@ -131,16 +131,24 @@ Classes:
   - `AzureDevOpsClient.list_repo_items(self, project_name, repo_id, branch_name=...)`: Lists provider resources such as projects, repositories, branches, or commits.
   - `AzureDevOpsClient.list_commits(self, project_name, repo_id, max_commits=..., page_size=..., branch_name=...)`: Lists provider resources such as projects, repositories, branches, or commits.
   - `AzureDevOpsClient.fetch_file_content(self, project_name, repo_id, file_path, branch_name=...)`: Fetches repository content, commits, user profiles, or store pages.
+- `AzureDevOpsThrottle`: Process-local request pacer that smooths Azure DevOps API calls across worker threads.
+  - `AzureDevOpsThrottle.wait(self)`: Waits until the next request slot is available.
+  - `AzureDevOpsThrottle.observe(self, response)`: Applies Azure DevOps throttling hints from response headers.
+  - `AzureDevOpsThrottle.defer(self, seconds)`: Defers future requests for a bounded backoff period.
 
 Functions:
 - `provider_connection_message(provider, url, exc)`: Reads provider-specific token, project, or client values.
+- `positive_float_env(name, default)`: Reads a non-negative float environment override.
+- `positive_int_env(name, default)`: Reads a positive integer environment override.
+- `retry_after_seconds(value)`: Parses a `Retry-After` value in seconds or HTTP date form.
+- `float_header(value)`: Parses numeric HTTP header values.
 
 ### `appsec_scan_router.cli`
 Command-line parser and executable entry point.
 
 Functions:
 - `parse_args(argv)`: Parses text, JSON, XML, YAML, dates, arguments, or provider values.
-- `validate_args(args, application_types, ado_org_pats)`: Function that supports validate args behavior.
+- `validate_args(args, application_types, ado_org_pats)`: Helper for validate args.
 - `provider_projects(args)`: Reads provider-specific token, project, or client values.
 - `provider_token(args)`: Reads provider-specific token, project, or client values.
 - `collect_ado_org_pats(args)`: Collects evidence, targets, metadata, or related values from input data.
@@ -153,11 +161,11 @@ Functions:
 ### `appsec_scan_router.constants`
 Shared constants for defaults, categories, report columns, and inventory type labels.
 
-Constants: `API_VERSION`, `DEFAULT_TIMEOUT_SECONDS`, `DEFAULT_MAX_WORKERS`, `DEFAULT_BRANCH_WORKERS`, `DEFAULT_CONTENT_WORKERS`, `DEFAULT_COMMIT_PAGE_SIZE`, `DEFAULT_BRANCH_AGE_DAYS`, `DEFAULT_STORE_COUNTRY`, `DEFAULT_STORE_TIMEOUT_SECONDS`, `DEFAULT_ACTIVITY_MODE`, `DEFAULT_OUT_PREFIX`, `DEFAULT_POSTGRES_SCHEMA`, `DEFAULT_POSTGRES_TABLE`, `DEFAULT_POSTGRES_HOST`, `DEFAULT_POSTGRES_PORT`, `DEFAULT_POSTGRES_DATABASE`, `DEFAULT_POSTGRES_USER`, `DEFAULT_POSTGRES_PASSWORD`, `MISSING_REQUESTS_MESSAGE`, `MISSING_PSYCOPG_MESSAGE`, `MISSING_CRYPTOGRAPHY_MESSAGE`, `FALLBACK_BRANCH_PRIORITY`, `ACTIVE_SHEET_NAME`, `OLDER_SHEET_NAME`, `KNOWN_CATEGORIES`, `CATEGORY_FIELDNAMES`, `KNOWN_INVENTORY_TYPES`, `TYPE_FIELDNAMES`, `APPLICATION_TYPE_LABELS`, `STORE_FIELDNAMES`, `CONTENT_FILES_TO_FETCH`, `CONTENT_FILE_SUFFIXES`, `CSV_FIELDNAMES`, `SCANNER_TARGET_FIELDNAMES`, `SONARQUBE_FIELDNAMES`
+Constants: `API_VERSION`, `DEFAULT_TIMEOUT_SECONDS`, `DEFAULT_MAX_WORKERS`, `DEFAULT_BRANCH_WORKERS`, `DEFAULT_CONTENT_WORKERS`, `DEFAULT_COMMIT_PAGE_SIZE`, `DEFAULT_BRANCH_AGE_DAYS`, `DEFAULT_STORE_COUNTRY`, `DEFAULT_STORE_TIMEOUT_SECONDS`, `DEFAULT_ACTIVITY_MODE`, `DEFAULT_OUT_PREFIX`, `DEFAULT_POSTGRES_SCHEMA`, `DEFAULT_POSTGRES_TABLE`, `DEFAULT_POSTGRES_HOST`, `DEFAULT_POSTGRES_PORT`, `DEFAULT_POSTGRES_DATABASE`, `DEFAULT_POSTGRES_USER`, `DEFAULT_POSTGRES_PASSWORD`, `MISSING_REQUESTS_MESSAGE`, `MISSING_PSYCOPG_MESSAGE`, `MISSING_CRYPTOGRAPHY_MESSAGE`, `FALLBACK_BRANCH_PRIORITY`, `ACTIVE_SHEET_NAME`, `OLDER_SHEET_NAME`, `KNOWN_CATEGORIES`, `CATEGORY_FIELDNAMES`, `KNOWN_INVENTORY_TYPES`, `TYPE_FIELDNAMES`, `APPLICATION_TYPE_LABELS`, `STORE_FIELDNAMES`, `CONTENT_FILES_TO_FETCH`, `CONTENT_FILE_SUFFIXES`, `INVENTORY_FIELDNAMES`, `SONARQUBE_FIELDNAMES`
 
 Functions:
-- `active_sheet_name(branch_age_days=...)`: Function that supports active sheet name behavior.
-- `older_sheet_name(branch_age_days=...)`: Function that supports older sheet name behavior.
+- `active_sheet_name(branch_age_days=...)`: Helper for active sheet name.
+- `older_sheet_name(branch_age_days=...)`: Helper for older sheet name.
 
 ### `appsec_scan_router.detection`
 Evidence-based repository classification for mobile, web, API, middleware, AI, ML, and infrastructure assets.
@@ -188,13 +196,13 @@ Functions:
 - `detect_serverless_evidence(path, content)`: Classifies a repository from paths and manifest evidence.
 - `detect_infrastructure_evidence(path, content)`: Classifies a repository from paths and manifest evidence.
 - `detect_application_config_evidence(path, content)`: Classifies a repository from paths and manifest evidence.
-- `has_script(data, names)`: Function that supports has script behavior.
-- `dependency_text_has_any(content, names)`: Function that supports dependency text has any behavior.
-- `dependency_text_matches(content, names)`: Function that supports dependency text matches behavior.
+- `has_script(data, names)`: Helper for has script.
+- `dependency_text_has_any(content, names)`: Helper for dependency text has any.
+- `dependency_text_matches(content, names)`: Helper for dependency text matches.
 - `detect_ai_dependency_name_evidence(path, dependency_names, source_label)`: Classifies a repository from paths and manifest evidence.
 - `detect_ai_dependency_text_evidence(path, content, source_label)`: Classifies a repository from paths and manifest evidence.
 - `collect_ai_dependency_evidence(path, source_label, matcher)`: Collects evidence, targets, metadata, or related values from input data.
-- `ai_capability_evidence(path, category, detail, weight)`: Function that supports ai capability evidence behavior.
+- `ai_capability_evidence(path, category, detail, weight)`: Helper for ai capability evidence.
 - `format_matches(matches)`: Formats values for logs, reports, or API responses.
 - `detect_expo_evidence(path, content)`: Classifies a repository from paths and manifest evidence.
 - `detect_expo_dynamic_config_evidence(path, content)`: Classifies a repository from paths and manifest evidence.
@@ -203,15 +211,15 @@ Functions:
 - `detect_cordova_evidence(path, content)`: Classifies a repository from paths and manifest evidence.
 - `detect_csproj_evidence(path, content)`: Classifies a repository from paths and manifest evidence.
 - `detect_pipeline_evidence(path, content)`: Classifies a repository from paths and manifest evidence.
-- `dedupe_evidence(evidence)`: Function that supports dedupe evidence behavior.
+- `dedupe_evidence(evidence)`: Helper for dedupe evidence.
 
 ### `appsec_scan_router.entrypoint`
 Container entry point that dispatches UI or CLI modes.
 
 Functions:
 - `main()`: Runs the module as a command-line entry point.
-- `exec_module(module, args)`: Function that supports exec module behavior.
-- `exec_callable(module, function, args)`: Function that supports exec callable behavior.
+- `exec_module(module, args)`: Helper for exec module.
+- `exec_callable(module, function, args)`: Helper for exec callable.
 
 ### `appsec_scan_router.github`
 GitHub Enterprise API client and URL normalization utilities.
@@ -226,20 +234,20 @@ Classes:
   - `GitHubEnterpriseClient.get_json(self, path, params=...)`: Retrieves a provider, HTTP, session, or report value.
   - `GitHubEnterpriseClient.list_projects(self)`: Lists provider resources such as projects, repositories, branches, or commits.
   - `GitHubEnterpriseClient.list_repos(self, project_name)`: Lists provider resources such as projects, repositories, branches, or commits.
-  - `GitHubEnterpriseClient.repo_from_api(self, repo)`: Method that supports repo from api behavior for its class.
+  - `GitHubEnterpriseClient.repo_from_api(self, repo)`: Implements repo from api behavior.
   - `GitHubEnterpriseClient.list_branches(self, project_name, repo_id)`: Lists provider resources such as projects, repositories, branches, or commits.
   - `GitHubEnterpriseClient.list_build_definitions_for_repo(self, project_name, repo_id)`: Lists provider resources such as projects, repositories, branches, or commits.
-  - `GitHubEnterpriseClient.deployment_is_successful(self, repo_id, deployment)`: Method that supports deployment is successful behavior for its class.
+  - `GitHubEnterpriseClient.deployment_is_successful(self, repo_id, deployment)`: Implements deployment is successful behavior.
   - `GitHubEnterpriseClient.list_repo_items(self, project_name, repo_id, branch_name=...)`: Lists provider resources such as projects, repositories, branches, or commits.
-  - `GitHubEnterpriseClient.tree_ref_for_branch(self, repo_id, branch_name)`: Method that supports tree ref for branch behavior for its class.
+  - `GitHubEnterpriseClient.tree_ref_for_branch(self, repo_id, branch_name)`: Implements tree ref for branch behavior.
   - `GitHubEnterpriseClient.list_commits(self, project_name, repo_id, max_commits=..., page_size=..., branch_name=...)`: Lists provider resources such as projects, repositories, branches, or commits.
   - `GitHubEnterpriseClient.fetch_file_content(self, project_name, repo_id, file_path, branch_name=...)`: Fetches repository content, commits, user profiles, or store pages.
 
 Functions:
 - `github_commit_to_activity_commit(commit)`: Handles GitHub Enterprise provider behavior.
 - `normalize_github_api_url(base_url)`: Normalizes input into the canonical representation used by the scanner.
-- `insecure_provider_urls_allowed()`: Function that supports insecure provider urls allowed behavior.
-- `allowed_github_hosts()`: Function that supports allowed github hosts behavior.
+- `insecure_provider_urls_allowed()`: Helper for insecure provider urls allowed.
+- `allowed_github_hosts()`: Helper for allowed github hosts.
 - `env_flag(*names)`: Reads environment variables or feature flags.
 
 ### `appsec_scan_router.metadata`
@@ -257,7 +265,7 @@ Functions:
 - `parse_info_plist_strings(content)`: Parses text, JSON, XML, YAML, dates, arguments, or provider values.
 - `apple_strings_value(content, key)`: Reads Apple-specific metadata or lookup values.
 - `parse_xcode_settings_metadata(content)`: Parses text, JSON, XML, YAML, dates, arguments, or provider values.
-- `xcode_setting_value(content, key)`: Function that supports xcode setting value behavior.
+- `xcode_setting_value(content, key)`: Helper for xcode setting value.
 - `collect_android_strings(file_contents)`: Collects evidence, targets, metadata, or related values from input data.
 - `parse_android_manifest(content, string_resources=...)`: Parses text, JSON, XML, YAML, dates, arguments, or provider values.
 - `resolve_android_label(label, string_resources)`: Resolves placeholders or labels to concrete values.
@@ -267,7 +275,7 @@ Functions:
 - `parse_expo_config(content)`: Parses text, JSON, XML, YAML, dates, arguments, or provider values.
 - `parse_expo_dynamic_config(content)`: Parses text, JSON, XML, YAML, dates, arguments, or provider values.
 - `parse_gradle_metadata(content, properties=...)`: Parses text, JSON, XML, YAML, dates, arguments, or provider values.
-- `gradle_assignment_value(content, key)`: Function that supports gradle assignment value behavior.
+- `gradle_assignment_value(content, key)`: Helper for gradle assignment value.
 - `parse_pubspec(content)`: Parses text, JSON, XML, YAML, dates, arguments, or provider values.
 - `parse_package_json(content)`: Parses text, JSON, XML, YAML, dates, arguments, or provider values.
 - `parse_csproj(content, properties=...)`: Parses text, JSON, XML, YAML, dates, arguments, or provider values.
@@ -278,16 +286,16 @@ Dataclasses and exceptions that define scanner contracts.
 
 Classes:
 - `AzureDevOpsError`: Exception type used to preserve provider-specific error details.
-- `AzureDevOpsOrgPat`: Class used by the application runtime or SDK contract.
-- `SourceTargetFilter`: Class used by the application runtime or SDK contract.
+- `AzureDevOpsOrgPat`: Runtime data object.
+- `SourceTargetFilter`: Runtime data object.
 - `ScanConfig`: Configuration object that carries validated runtime settings.
-- `RepoScanTarget`: Class used by the application runtime or SDK contract.
-- `BranchScanTarget`: Class used by the application runtime or SDK contract.
+- `RepoScanTarget`: Runtime data object.
+- `BranchScanTarget`: Runtime data object.
 - `MobileAppMetadata`: Dataclass that carries extracted metadata between scanner stages.
 - `RepoActivityMetadata`: Dataclass that carries extracted metadata between scanner stages.
-- `StoreListing`: Class used by the application runtime or SDK contract.
-- `DetectionEvidence`: Class used by the application runtime or SDK contract.
-  - `DetectionEvidence.as_dict(self)`: Method that supports as dict behavior for its class.
+- `StoreListing`: Runtime data object.
+- `DetectionEvidence`: Runtime data object.
+  - `DetectionEvidence.as_dict(self)`: Implements as dict behavior.
 
 ### `appsec_scan_router.org_tokens`
 Parser and serializer for multi-organization Azure DevOps PAT configuration.
@@ -298,7 +306,7 @@ Functions:
 - `parse_ado_org_pat_sequence(values)`: Parses text, JSON, XML, YAML, dates, arguments, or provider values.
 - `split_ado_org_pat_text(text)`: Splits delimited configuration text into entries.
 - `make_ado_org_pat(org, pat)`: Constructs a validated dataclass or parsed object.
-- `ado_org_pats_to_json(org_pats)`: Function that supports ado org pats to json behavior.
+- `ado_org_pats_to_json(org_pats)`: Helper for ado org pats to json.
 
 ### `appsec_scan_router.postgres`
 PostgreSQL schema creation, normalized upserts, status checks, and exports.
@@ -331,16 +339,16 @@ Functions:
 - `export_inventory_rows(dsn, schema=..., owner_user_id=..., limit=...)`: Exports normalized inventory data to CSV, JSON, or cell text.
 - `export_inventory_csv(dsn, schema=..., owner_user_id=..., limit=...)`: Exports normalized inventory data to CSV, JSON, or cell text.
 - `export_inventory_json(dsn, schema=..., owner_user_id=..., limit=...)`: Exports normalized inventory data to CSV, JSON, or cell text.
-- `normalized_row_count(connection, schema, owner_user_id)`: Function that supports normalized row count behavior.
+- `normalized_row_count(connection, schema, owner_user_id)`: Helper for normalized row count.
 - `flat_row_count(connection, schema, table, owner_user_id)`: Reads or writes the flat compatibility PostgreSQL table.
 - `store_listing_rows(result)`: Looks up, validates, or reports app-store data.
-- `schema_table_parts(schema, table)`: Function that supports schema table parts behavior.
+- `schema_table_parts(schema, table)`: Helper for schema table parts.
 - `table_identifier(table, schema=...)`: Builds safe PostgreSQL table identifiers.
 - `object_identifier(schema, name)`: Builds safe PostgreSQL object identifiers.
-- `sql_name(value, label)`: Function that supports sql name behavior.
+- `sql_name(value, label)`: Helper for sql name.
 - `index_name_prefix(table)`: Builds safe PostgreSQL index names.
 - `text_value(value)`: Normalizes values for safe text output.
-- `semicolon_values(value)`: Function that supports semicolon values behavior.
+- `semicolon_values(value)`: Helper for semicolon values.
 - `timestamp_value(value)`: Converts values into PostgreSQL timestamp-compatible strings.
 - `int_value(value)`: Converts a value into an integer where possible.
 - `bool_value(value)`: Converts a value into a boolean representation.
@@ -350,7 +358,7 @@ Functions:
 - `postgres_error_message(error)`: Builds PostgreSQL DSNs or configuration values.
 
 ### `appsec_scan_router.reports`
-Streaming CSV, JSON, XLSX, Semgrep, SonarQube, and generic scanner-target report writers.
+Streaming XLSX inventory reports, Semgrep target lists, and SonarQube target manifests.
 
 Constants: `WORKBOOK_COLUMN_WIDTHS`
 
@@ -359,14 +367,16 @@ Classes:
   - `StreamingReportWriter.__enter__(self)`: Opens the context-managed resource and returns it for use.
   - `StreamingReportWriter.__exit__(self, exc_type, exc_value, traceback)`: Closes the context-managed resource when the block exits.
   - `StreamingReportWriter.write_result(self, result)`: Writes files, database rows, server events, or response payloads.
-  - `StreamingReportWriter.flush(self)`: Method that supports flush behavior for its class.
+  - `StreamingReportWriter.flush(self)`: Implements flush behavior.
   - `StreamingReportWriter.close(self)`: Releases open sessions, files, or listeners.
 
 Functions:
-- `write_outputs(results, out_dir, out_prefix, branch_age_days=...)`: Writes files, database rows, server events, or response payloads.
-- `scanner_target_row(result)`: Builds scanner target references or rows.
-- `sonarqube_project_row(result)`: Function that supports sonarqube project row behavior.
+- `write_outputs(results, out_dir, out_prefix, branch_age_days=..., application_types=...)`: Writes XLSX, Semgrep, and SonarQube outputs.
+- `sonarqube_project_row(result)`: Builds a SonarQube target row.
 - `workbook_cell_value(value)`: Formats values for Excel workbook output.
+- `report_file_stem(out_prefix, application_types=...)`: Builds a report filename stem that includes selected application types.
+- `application_type_label(application_types=...)`: Builds the application-type label used in report filenames.
+- `safe_file_part(value)`: Normalizes a value for use in generated filenames.
 
 ### `appsec_scan_router.scanner`
 Core orchestration for provider discovery, branch resolution, content fetching, detection, enrichment, and report/database output.
@@ -386,7 +396,7 @@ Functions:
 - `scan_branch(client, target, branch_name, content_executor, min_confidence_rank, max_commits_per_repo, branch_age_days, activity_mode, store_client, application_types=...)`: Runs or coordinates repository and branch scanning.
 - `build_scan_row(target, branch_name, metadata, contents, paths, activity, confidence, score, categories, evidence, branch_age_days, store_client)`: Builds a command, URL, row, payload, or configuration object.
 - `row_sort_key(row)`: Builds database or report row values.
-- `log_detected_result(result)`: Function that supports log detected result behavior.
+- `log_detected_result(result)`: Helper for log detected result.
 - `create_store_client(config)`: Creates schemas, clients, sessions, rows, or report structures.
 - `branch_name_from_ref(ref_name)`: Computes branch metadata, branch selection, or branch report values.
 - `default_branch_name_from_repo(repo)`: Returns a default value derived from configuration or source metadata.
@@ -400,7 +410,7 @@ Functions:
 - `branch_deployment_score(branch_name)`: Computes branch metadata, branch selection, or branch report values.
 - `is_direct_deployment_branch_name(branch_name)`: Evaluates a predicate used by detection, validation, or UI flow.
 - `branch_name_match_keys(branch_name)`: Computes branch metadata, branch selection, or branch report values.
-- `normalized_branch_key(value)`: Function that supports normalized branch key behavior.
+- `normalized_branch_key(value)`: Helper for normalized branch key.
 - `branch_age_bucket(last_updated, branch_age_days, now=...)`: Computes branch metadata, branch selection, or branch report values.
 - `identifier_status(identifier)`: Builds or validates mobile/application identifier values.
 - `category_columns(categories)`: Builds category-specific report columns.
@@ -409,37 +419,35 @@ Functions:
 - `normalize_application_types(application_types)`: Normalizes input into the canonical representation used by the scanner.
 - `inventory_type_matches(inventory_types, application_types)`: Builds inventory names, versions, types, or report fields.
 - `store_lookup_allowed(application_types)`: Looks up, validates, or reports app-store data.
-- `log_scan_progress(repositories_prepared, repositories_total, branches_scanned, branches_total)`: Function that supports log scan progress behavior.
-- `repo_source_url(repo)`: Function that supports repo source url behavior.
+- `log_scan_progress(repositories_prepared, repositories_total, branches_scanned, branches_total)`: Helper for log scan progress.
+- `repo_source_url(repo)`: Helper for repo source url.
 - `scanner_target_ref(source_url, branch_name)`: Builds scanner target references or rows.
 - `sonar_project_key(project_name, repo_name, branch_name)`: Builds SonarQube project identifiers or rows.
 - `inventory_name_from_metadata(metadata, contents, repo_name)`: Builds inventory names, versions, types, or report fields.
 - `inventory_version_from_metadata(metadata, contents)`: Builds inventory names, versions, types, or report fields.
 - `primary_language_for_branch(contents, paths, categories)`: Determines the primary language or key report value.
-- `package_json_language(contents)`: Function that supports package json language behavior.
+- `package_json_language(contents)`: Helper for package json language.
 - `merged_package_dependency_names(contents)`: Merges dependency maps into a single dependency set.
 - `first_manifest_value(*values)`: Returns the first usable value from a sequence.
-- `package_json_value(contents, key)`: Function that supports package json value behavior.
-- `pyproject_value(contents, key)`: Function that supports pyproject value behavior.
-- `pom_xml_value(contents, tag_name)`: Function that supports pom xml value behavior.
-- `csproj_value(contents, tag_name)`: Function that supports csproj value behavior.
-- `pubspec_value(contents, key)`: Function that supports pubspec value behavior.
+- `package_json_value(contents, key)`: Helper for package json value.
+- `pyproject_value(contents, key)`: Helper for pyproject value.
+- `pom_xml_value(contents, tag_name)`: Helper for pom xml value.
+- `csproj_value(contents, tag_name)`: Helper for csproj value.
+- `pubspec_value(contents, key)`: Helper for pubspec value.
 - `fetch_repo_activity(client, project_name, repo_id, branch_name, max_commits, activity_mode)`: Fetches repository content, commits, user profiles, or store pages.
 - `fetch_contents(client, project_name, repo_id, branch_name, paths, executor)`: Fetches repository content, commits, user profiles, or store pages.
 - `collect_targets(client, project_name, target_filters=...)`: Collects evidence, targets, metadata, or related values from input data.
 - `source_organization(client)`: Builds provider target filters or target labels.
-- `selected_project_names(organization, project_name, target_filters=...)`: Function that supports selected project names behavior.
+- `selected_project_names(organization, project_name, target_filters=...)`: Helper for selected project names.
 - `target_filters_for_source(target_filters, organization)`: Builds or filters provider scan targets.
 - `target_filter_matches_source(filter_org, organization)`: Builds or filters provider scan targets.
-- `dedupe_values(values)`: Function that supports dedupe values behavior.
+- `dedupe_values(values)`: Helper for dedupe values.
 - `iter_completed_branch_target_lists(repo_executor, client, targets, max_in_flight)`: Yields completed asynchronous work items.
-- `iter_completed_repo_scans(repo_executor, client, targets, content_executor, max_in_flight, min_confidence_rank, max_commits_per_repo, branch_age_days, store_client, activity_mode=..., application_types=...)`: Yields completed asynchronous work items.
-
 ### `appsec_scan_router.sdk`
 Small callable SDK wrapper around scanner configuration and execution.
 
 Classes:
-- `ApplicationInventoryService`: Class used by the application runtime or SDK contract.
+- `ApplicationInventoryService`: Runtime data object.
   - `ApplicationInventoryService.scan(self, on_result=...)`: Runs or coordinates repository and branch scanning.
   - `ApplicationInventoryService.scan_to_reports(self)`: Runs or coordinates repository and branch scanning.
 
@@ -452,11 +460,11 @@ Classes:
 - `StoreLookupClient`: Provider or external-service client that wraps network access and retries.
   - `StoreLookupClient.session(self)`: Creates, reads, or serializes session state.
   - `StoreLookupClient.close(self)`: Releases open sessions, files, or listeners.
-  - `StoreLookupClient.lookup(self, identifier, categories)`: Method that supports lookup behavior for its class.
-  - `StoreLookupClient.lookup_platform(self, platform, identifier)`: Method that supports lookup platform behavior for its class.
-  - `StoreLookupClient.lookup_apple_app_store(self, identifier)`: Method that supports lookup apple app store behavior for its class.
-  - `StoreLookupClient.lookup_google_play(self, identifier)`: Method that supports lookup google play behavior for its class.
-- `MetaTagParser`: Class used by the application runtime or SDK contract.
+  - `StoreLookupClient.lookup(self, identifier, categories)`: Implements lookup behavior.
+  - `StoreLookupClient.lookup_platform(self, platform, identifier)`: Implements lookup platform behavior.
+  - `StoreLookupClient.lookup_apple_app_store(self, identifier)`: Implements lookup apple app store behavior.
+  - `StoreLookupClient.lookup_google_play(self, identifier)`: Implements lookup google play behavior.
+- `MetaTagParser`: Runtime data object.
   - `MetaTagParser.handle_starttag(self, tag, attrs)`: Handles a UI HTTP route or asynchronous scan result.
   - `MetaTagParser.handle_endtag(self, tag)`: Handles a UI HTTP route or asynchronous scan result.
   - `MetaTagParser.handle_data(self, data)`: Handles a UI HTTP route or asynchronous scan result.
@@ -466,12 +474,12 @@ Functions:
 - `store_columns(identifier, categories, store_client)`: Looks up, validates, or reports app-store data.
 - `disabled_store_listings()`: Builds disabled or unavailable store lookup values.
 - `identifier_missing_store_listings(categories)`: Builds or validates mobile/application identifier values.
-- `invalid_identifier_store_listings(categories, identifier)`: Function that supports invalid identifier store listings behavior.
+- `invalid_identifier_store_listings(categories, identifier)`: Helper for invalid identifier store listings.
 - `is_store_identifier_candidate(identifier)`: Evaluates a predicate used by detection, validation, or UI flow.
 - `store_columns_from_listings(listings)`: Looks up, validates, or reports app-store data.
-- `listing_column_values(platform, listing)`: Function that supports listing column values behavior.
+- `listing_column_values(platform, listing)`: Helper for listing column values.
 - `store_validation_result(listings)`: Looks up, validates, or reports app-store data.
-- `listing_validation_result(listing)`: Function that supports listing validation result behavior.
+- `listing_validation_result(listing)`: Helper for listing validation result.
 - `boolean_text(value)`: Converts a value into a boolean representation.
 - `aggregate_store_status(listings)`: Aggregates lower-level values into a report-ready status.
 - `display_name_for_platform(platform)`: Formats a user-facing label.
@@ -480,7 +488,7 @@ Functions:
 - `google_play_app_page(meta, title, identifier)`: Handles Google or Google Play provider behavior.
 - `extract_google_play_version(text)`: Extracts structured metadata from manifests, commits, or report rows.
 - `extract_google_play_updated(text)`: Extracts structured metadata from manifests, commits, or report rows.
-- `regex_store_value(text, pattern)`: Function that supports regex store value behavior.
+- `regex_store_value(text, pattern)`: Helper for regex store value.
 - `google_play_url(identifier, country)`: Handles Google or Google Play provider behavior.
 
 ### `appsec_scan_router.target_filters`
@@ -501,15 +509,15 @@ HTTP UI server, scan manager, request handlers, progress parsing, and UI configu
 Constants: `DEFAULT_UI_HOST`, `DEFAULT_UI_PORT`, `MAX_LOG_LINES`, `DEFAULT_MAX_JSON_BODY_BYTES`, `REPORT_EXTENSIONS`, `SCAN_STATUSES_DONE`, `BRANCH_PROGRESS_PATTERN`, `REPO_PROGRESS_PATTERN`, `TARGET_COUNT_PATTERN`, `SCAN_PROGRESS_PATTERN`, `HOST_HEADER_RE`, `SAFE_CHILD_ENV_KEYS`, `SECURITY_HEADER_VALUES`
 
 Classes:
-- `ScanRun`: Class used by the application runtime or SDK contract.
-  - `ScanRun.append_log(self, line)`: Method that supports append log behavior for its class.
-  - `ScanRun.set_status(self, status, exit_code=...)`: Method that supports set status behavior for its class.
-  - `ScanRun.publish(self, event, data)`: Method that supports publish behavior for its class.
+- `ScanRun`: Runtime data object.
+  - `ScanRun.append_log(self, line)`: Implements append log behavior.
+  - `ScanRun.set_status(self, status, exit_code=...)`: Implements set status behavior.
+  - `ScanRun.publish(self, event, data)`: Implements publish behavior.
   - `ScanRun.add_listener(self)`: Adds an item to the current in-memory collection or UI state.
   - `ScanRun.remove_listener(self, listener)`: Removes an item from UI state or listener collections.
   - `ScanRun.close_listeners(self)`: Releases open sessions, files, or listeners.
   - `ScanRun.report_files(self)`: Builds report metadata or content types.
-  - `ScanRun.summary(self)`: Method that supports summary behavior for its class.
+  - `ScanRun.summary(self)`: Implements summary behavior.
 - `ScanManager`: Coordinator object that manages related runtime state.
   - `ScanManager.list_scans(self, owner_user_id=...)`: Lists provider resources such as projects, repositories, branches, or commits.
   - `ScanManager.get_scan(self, scan_id)`: Retrieves a provider, HTTP, session, or report value.
@@ -538,13 +546,13 @@ Classes:
   - `ApplicationInventoryServiceHandler.read_json(self)`: Reads request bodies or encrypted credential state.
   - `ApplicationInventoryServiceHandler.send_json(self, payload, status=..., headers=...)`: Sends an HTTP response body from the UI server.
   - `ApplicationInventoryServiceHandler.send_bytes(self, content, content_type, status=..., headers=...)`: Sends an HTTP response body from the UI server.
-  - `ApplicationInventoryServiceHandler.log_message(self, format, *args)`: Method that supports log message behavior for its class.
-  - `ApplicationInventoryServiceHandler.redirect(self, location, cookie=...)`: Method that supports redirect behavior for its class.
-  - `ApplicationInventoryServiceHandler.end_headers(self)`: Method that supports end headers behavior for its class.
+  - `ApplicationInventoryServiceHandler.log_message(self, format, *args)`: Implements log message behavior.
+  - `ApplicationInventoryServiceHandler.redirect(self, location, cookie=...)`: Implements redirect behavior.
+  - `ApplicationInventoryServiceHandler.end_headers(self)`: Implements end headers behavior.
   - `ApplicationInventoryServiceHandler.current_session(self)`: Returns the current request/session state.
   - `ApplicationInventoryServiceHandler.require_session(self)`: Requires a valid authenticated session before continuing.
   - `ApplicationInventoryServiceHandler.valid_csrf(self, record)`: Validates session or request state.
-  - `ApplicationInventoryServiceHandler.redirect_uri(self, provider)`: Method that supports redirect uri behavior for its class.
+  - `ApplicationInventoryServiceHandler.redirect_uri(self, provider)`: Implements redirect uri behavior.
 
 Functions:
 - `normalize_scan_config(config)`: Normalizes input into the canonical representation used by the scanner.
@@ -552,7 +560,7 @@ Functions:
 - `discover_source_targets(config)`: Discovers source targets from provider APIs.
 - `discover_azure_targets(config, timeout)`: Discovers source targets from provider APIs.
 - `discover_github_targets(config, timeout)`: Discovers source targets from provider APIs.
-- `discovery_token(config, provider)`: Function that supports discovery token behavior.
+- `discovery_token(config, provider)`: Helper for discovery token.
 - `source_target(provider, org, project, kind, display_name=...)`: Builds provider target filters or target labels.
 - `sorted_targets(targets)`: Sorts values into deterministic report order.
 - `build_scan_command(config, reports_dir)`: Builds a command, URL, row, payload, or configuration object.
@@ -581,8 +589,8 @@ Functions:
 - `first_query_value(params, name)`: Returns the first usable value from a sequence.
 - `owner_scope(record)`: Reads owner scoping values for user-isolated scans.
 - `owner_login(record)`: Reads owner scoping values for user-isolated scans.
-- `run_owner_id(run)`: Function that supports run owner id behavior.
-- `ado_org_summary(org_pats)`: Function that supports ado org summary behavior.
+- `run_owner_id(run)`: Helper for run owner id.
+- `ado_org_summary(org_pats)`: Helper for ado org summary.
 - `clean_choice(value, allowed, default)`: Normalizes text by trimming, removing placeholders, or rejecting unresolved values.
 - `safe_prefix(value)`: Validates and sanitizes URLs, headers, prefixes, or file names.
 - `normalize_ui_application_types(value)`: Normalizes input into the canonical representation used by the scanner.
@@ -590,7 +598,7 @@ Functions:
 - `positive_int(value, default)`: Parses a positive integer with a default fallback.
 - `nonnegative_int(value, default)`: Parses a non-negative integer with a default fallback.
 - `utc_now()`: Returns a UTC timestamp string.
-- `secure_cookie()`: Function that supports secure cookie behavior.
+- `secure_cookie()`: Helper for secure cookie.
 - `serve(host, port, reports_dir)`: Runs the web UI server.
 - `parse_args(argv)`: Parses text, JSON, XML, YAML, dates, arguments, or provider values.
 - `main(argv=...)`: Runs the module as a command-line entry point.
@@ -609,9 +617,9 @@ Functions:
 - `merged_package_dependencies(data)`: Merges dependency maps into a single dependency set.
 - `yaml_has_flutter_dependency(content)`: Reads YAML-like scalar values used by lightweight manifest parsing.
 - `yaml_scalar(content, key)`: Reads YAML-like scalar values used by lightweight manifest parsing.
-- `xml_text(content, tag_name)`: Function that supports xml text behavior.
-- `regex_value(content, pattern)`: Function that supports regex value behavior.
-- `confidence_rank(confidence)`: Function that supports confidence rank behavior.
+- `xml_text(content, tag_name)`: Helper for xml text.
+- `regex_value(content, pattern)`: Helper for regex value.
+- `confidence_rank(confidence)`: Helper for confidence rank.
 
 ## Browser UI Functions
 
@@ -621,46 +629,46 @@ Browser-side controller for login, scan setup, progress monitoring, reports, dat
 Functions:
 - `addAdoOrgPat()`: Adds an item to the current in-memory collection or UI state.
 - `addSelectedTarget(target)`: Adds an item to the current in-memory collection or UI state.
-- `applicationTypeLabel(type)`: Function that supports application type label behavior.
-- `applicationTypesLabel(applicationTypes)`: Function that supports application types label behavior.
-- `applyDefaultValues()`: Function that supports apply default values behavior.
+- `applicationTypeLabel(type)`: Helper for application type label.
+- `applicationTypesLabel(applicationTypes)`: Helper for application types label.
+- `applyDefaultValues()`: Helper for apply default values.
 - `authHeaders(jsonBody)`: Builds or evaluates authentication-related data.
 - `authProviderName(provider)`: Builds or evaluates authentication-related data.
 - `authProviders(session)`: Builds or evaluates authentication-related data.
-- `bindEvents()`: Function that supports bind events behavior.
-- `capitalize(text)`: Function that supports capitalize behavior.
+- `bindEvents()`: Helper for bind events.
+- `capitalize(text)`: Helper for capitalize.
 - `checkDatabase()`: Checks current UI or provider state.
-- `checkedValues(name)`: Function that supports checked values behavior.
+- `checkedValues(name)`: Helper for checked values.
 - `clearDiscoveredTargets({silent = false} = {})`: Clears current UI state or selected values.
 - `clearSelectedTargets()`: Clears current UI state or selected values.
 - `closeEventSource()`: Releases open sessions, files, or listeners.
-- `commitPendingAdoOrgPat({silent = false} = {})`: Function that supports commit pending ado org pat behavior.
+- `commitPendingAdoOrgPat({silent = false} = {})`: Helper for commit pending ado org pat.
 - `copyCommand()`: Copies generated command text for the UI user.
 - `databasePayload()`: Reads, writes, exports, or reports PostgreSQL database state.
 - `downloadBlob(blob, filename)`: Downloads a client-side blob or log payload.
 - `downloadLogs()`: Downloads a client-side blob or log payload.
-- `durationText(totalSeconds)`: Function that supports duration text behavior.
-- `escapeHtml(value)`: Function that supports escape html behavior.
+- `durationText(totalSeconds)`: Helper for duration text.
+- `escapeHtml(value)`: Helper for escape html.
 - `exportDatabase(format)`: Exports normalized inventory data to CSV, JSON, or cell text.
 - `forgetSavedToken()`: Removes a saved provider token from UI state and encrypted storage.
 - `formatBytes(value)`: Formats values for logs, reports, or API responses.
 - `formatDate(value)`: Formats values for logs, reports, or API responses.
-- `formPayload()`: Function that supports form payload behavior.
+- `formPayload()`: Helper for form payload.
 - `handleAdoOrgPatKeydown(event)`: Handles a UI HTTP route or asynchronous scan result.
 - `handleSsoClick(event)`: Handles a UI HTTP route or asynchronous scan result.
 - `isLoggedIn()`: Evaluates a predicate used by detection, validation, or UI flow.
-- `listenToScan(scanId)`: Function that supports listen to scan behavior.
+- `listenToScan(scanId)`: Helper for listen to scan.
 - `loadForm()`: Loads state or source data from disk, HTTP, or form input.
 - `loadScans(preferredId = "")`: Loads state or source data from disk, HTTP, or form input.
 - `loadSession()`: Loads state or source data from disk, HTTP, or form input.
 - `loadSourceTargets()`: Loads state or source data from disk, HTTP, or form input.
 - `logout()`: Ends the active UI session.
 - `maskSecret(value)`: Masks a secret for display.
-- `mergeScan(scan)`: Function that supports merge scan behavior.
-- `normalizedTarget(target)`: Function that supports normalized target behavior.
-- `notify(message)`: Function that supports notify behavior.
-- `numberValue(data, name, fallback)`: Function that supports number value behavior.
-- `pluralize(noun, count)`: Function that supports pluralize behavior.
+- `mergeScan(scan)`: Helper for merge scan.
+- `normalizedTarget(target)`: Helper for normalized target.
+- `notify(message)`: Helper for notify.
+- `numberValue(data, name, fallback)`: Helper for number value.
+- `pluralize(noun, count)`: Helper for pluralize.
 - `providerLabel(provider)`: Reads provider-specific token, project, or client values.
 - `providerTargetNoun()`: Reads provider-specific token, project, or client values.
 - `removeAdoOrgPat(org)`: Removes an item from UI state or listener collections.
@@ -677,8 +685,8 @@ Functions:
 - `renderSsoOption(link, statusElement, provider, label)`: Renders UI state into the browser DOM.
 - `renderTargetFilters()`: Renders UI state into the browser DOM.
 - `renderTargetWarnings()`: Renders UI state into the browser DOM.
-- `resetDefaults()`: Function that supports reset defaults behavior.
-- `saveForm()`: Function that supports save form behavior.
+- `resetDefaults()`: Helper for reset defaults.
+- `saveForm()`: Helper for save form.
 - `scanEta(scan)`: Runs or coordinates repository and branch scanning.
 - `scanPercent(scan)`: Runs or coordinates repository and branch scanning.
 - `scanProgress(scan)`: Runs or coordinates repository and branch scanning.
@@ -686,12 +694,12 @@ Functions:
 - `scanRuntime(scan)`: Runs or coordinates repository and branch scanning.
 - `selectScan(scan, connect = true)`: Selects branch or UI target values from candidates.
 - `selectVisibleTargets()`: Selects branch or UI target values from candidates.
-- `setActiveView(viewId)`: Function that supports set active view behavior.
-- `setBusy(isBusy)`: Function that supports set busy behavior.
-- `setCheckboxGroup(name, values)`: Function that supports set checkbox group behavior.
-- `setDatabaseBusy(isBusy)`: Function that supports set database busy behavior.
-- `setTargetBusy(isBusy)`: Function that supports set target busy behavior.
-- `showAuthResult()`: Function that supports show auth result behavior.
+- `setActiveView(viewId)`: Helper for set active view.
+- `setBusy(isBusy)`: Helper for set busy.
+- `setCheckboxGroup(name, values)`: Helper for set checkbox group.
+- `setDatabaseBusy(isBusy)`: Helper for set database busy.
+- `setTargetBusy(isBusy)`: Helper for set target busy.
+- `showAuthResult()`: Helper for show auth result.
 - `sourceFieldChanged(target)`: Builds provider target filters or target labels.
 - `sourcePayload()`: Builds provider target filters or target labels.
 - `startScan()`: Starts a scan or sign-in flow.
@@ -706,7 +714,7 @@ Functions:
 - `targetKey(target)`: Builds or filters provider scan targets.
 - `targetLabel(target)`: Builds or filters provider scan targets.
 - `targetMeta(target)`: Builds or filters provider scan targets.
-- `tick()`: Function that supports tick behavior.
+- `tick()`: Helper for tick.
 - `toggleToken()`: Toggles UI state such as token visibility.
-- `value(data, name)`: Function that supports value behavior.
+- `value(data, name)`: Helper for value.
 - `visibleTargets()`: Returns currently visible UI targets.

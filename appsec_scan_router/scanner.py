@@ -47,11 +47,18 @@ LOGGER = logging.getLogger("appsec_scan_router")
 
 def scan_to_reports(config: ScanConfig) -> tuple[list[dict[str, Any]], Path, Path, Path]:
     with ExitStack() as stack:
-        writer = stack.enter_context(StreamingReportWriter(config.out_dir, config.out_prefix, config.branch_age_days))
+        writer = stack.enter_context(
+            StreamingReportWriter(
+                config.out_dir,
+                config.out_prefix,
+                config.branch_age_days,
+                config.application_types,
+            )
+        )
         postgres_writer = stack.enter_context(PostgresInventoryWriter(config)) if config.postgres_dsn else None
-        LOGGER.info("Streaming CSV report to %s", writer.csv_path)
-        LOGGER.info("Streaming JSON report to %s", writer.json_path)
         LOGGER.info("Streaming Excel report to %s", writer.xlsx_path)
+        LOGGER.info("Streaming Semgrep targets to %s", writer.semgrep_targets_path)
+        LOGGER.info("Streaming SonarQube targets to %s", writer.sonarqube_projects_path)
         if postgres_writer:
             LOGGER.info("Streaming PostgreSQL updates to schema %s and table %s", config.postgres_schema, config.postgres_table)
 
@@ -61,7 +68,7 @@ def scan_to_reports(config: ScanConfig) -> tuple[list[dict[str, Any]], Path, Pat
                 postgres_writer.write_result(result)
 
         results = scan(config, on_result=write_result)
-        return results, writer.csv_path, writer.json_path, writer.xlsx_path
+        return results, writer.xlsx_path, writer.semgrep_targets_path, writer.sonarqube_projects_path
 
 
 def scan(
@@ -1113,62 +1120,6 @@ def iter_completed_branch_target_lists(
         except StopIteration:
             return False
         pending.add(repo_executor.submit(list_branch_targets, client, target))
-        submitted += 1
-        return True
-
-    for _ in range(max(1, max_in_flight)):
-        if not submit_next():
-            break
-
-    while pending:
-        done, pending = wait(pending, return_when=FIRST_COMPLETED)
-        for future in done:
-            completed += 1
-            yield completed, future
-
-        while len(pending) < max_in_flight and submitted < len(targets):
-            if not submit_next():
-                break
-
-
-def iter_completed_repo_scans(
-    repo_executor: ThreadPoolExecutor,
-    client: AzureDevOpsClient,
-    targets: list[RepoScanTarget],
-    content_executor: ThreadPoolExecutor,
-    max_in_flight: int,
-    min_confidence_rank: int,
-    max_commits_per_repo: int,
-    branch_age_days: int,
-    store_client: StoreLookupClient | None,
-    activity_mode: str = DEFAULT_ACTIVITY_MODE,
-    application_types: Iterable[str] = (),
-) -> Iterable[tuple[int, Future[list[dict[str, Any]]]]]:
-    target_iter = iter(targets)
-    pending: set[Future[list[dict[str, Any]]]] = set()
-    submitted = 0
-    completed = 0
-
-    def submit_next() -> bool:
-        nonlocal submitted
-        try:
-            target = next(target_iter)
-        except StopIteration:
-            return False
-        pending.add(
-            repo_executor.submit(
-                scan_repo,
-                client,
-                target,
-                content_executor,
-                min_confidence_rank,
-                max_commits_per_repo,
-                branch_age_days,
-                store_client,
-                activity_mode,
-                application_types,
-            )
-        )
         submitted += 1
         return True
 
