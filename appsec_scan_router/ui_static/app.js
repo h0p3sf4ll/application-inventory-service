@@ -1,5 +1,4 @@
 const form = document.querySelector("#scanForm");
-const DEFAULT_GITHUB_APP_ID = "4255413";
 const loginPage = document.querySelector("#loginPage");
 const appShell = document.querySelector("#appShell");
 const startScanButton = document.querySelector("#startScan");
@@ -25,8 +24,6 @@ const targetFilterTitle = document.querySelector("#targetFilterTitle");
 const targetFilterDefault = document.querySelector("#targetFilterDefault");
 const targetFilterSummary = document.querySelector("#targetFilterSummary");
 const targetSearch = document.querySelector("#targetSearch");
-const githubAppPrivateKeyFileInput = document.querySelector("#githubAppPrivateKeyFile");
-const githubAppPrivateKeyFileStatus = document.querySelector("#githubAppPrivateKeyFileStatus");
 const githubSsoStatus = document.querySelector("#githubSsoStatus");
 const googleSsoStatus = document.querySelector("#googleSsoStatus");
 const testSsoStatus = document.querySelector("#testSsoStatus");
@@ -67,7 +64,6 @@ const state = {
   sourceTargets: [],
   selectedTargets: [],
   sourceTargetErrors: [],
-  githubAppPrivateKey: "",
 };
 
 const defaultValues = {
@@ -93,8 +89,6 @@ const defaultValues = {
   postgresSchema: "application_inventory",
   postgresTable: "application_inventory_assets",
   verbose: false,
-  githubAppId: DEFAULT_GITHUB_APP_ID,
-  githubAppInstallationId: "",
 };
 
 const persistedFields = [
@@ -102,7 +96,6 @@ const persistedFields = [
   "org",
   "repo",
   "baseUrl",
-  "githubAppInstallationId",
   "applicationTypes",
   "minConfidence",
   "activityMode",
@@ -167,7 +160,6 @@ function bindEvents() {
   targetSearch.addEventListener("input", renderTargetFilters);
   form.elements.adoOrgName.addEventListener("keydown", handleAdoOrgPatKeydown);
   form.elements.adoOrgPat.addEventListener("keydown", handleAdoOrgPatKeydown);
-  githubAppPrivateKeyFileInput.addEventListener("change", handleGithubAppPrivateKeyFileChange);
   logoutGitHub.addEventListener("click", logout);
   loginGitHubSso.addEventListener("click", handleSsoClick);
   loginGoogleSso.addEventListener("click", handleSsoClick);
@@ -552,9 +544,6 @@ function formPayload() {
     project: "",
     repo: isGithubProvider(provider) ? value(data, "repo") : "",
     baseUrl: isGithubProvider(provider) ? value(data, "baseUrl") : "",
-    githubAppId: isGithubProvider(provider) ? DEFAULT_GITHUB_APP_ID : "",
-    githubAppInstallationId: isGithubProvider(provider) ? value(data, "githubAppInstallationId") : "",
-    githubAppPrivateKey: isGithubProvider(provider) ? state.githubAppPrivateKey : "",
     outPrefix: defaultValues.outPrefix,
     applicationTypes: checkedValues("applicationTypes"),
     minConfidence: value(data, "minConfidence") || defaultValues.minConfidence,
@@ -622,11 +611,8 @@ function syncProviderFields() {
 
 function syncGithubAppFields() {
   const enabled = isGithubProvider(new FormData(form).get("provider") || "azure-devops");
-  document.querySelectorAll(".github-app-config").forEach((node) => {
+  document.querySelectorAll(".github-app-status").forEach((node) => {
     node.classList.toggle("hidden", !enabled);
-    node.querySelectorAll("input, textarea, select").forEach((control) => {
-      control.disabled = !enabled;
-    });
   });
 }
 
@@ -781,9 +767,6 @@ function sourcePayload() {
     org: isGithubProvider(provider) ? value(data, "org") : "",
     adoOrgPats: isAzureProvider(provider) ? value(data, "adoOrgPats") : "",
     baseUrl: isGithubProvider(provider) ? value(data, "baseUrl") : "",
-    githubAppId: isGithubProvider(provider) ? DEFAULT_GITHUB_APP_ID : "",
-    githubAppInstallationId: isGithubProvider(provider) ? value(data, "githubAppInstallationId") : "",
-    githubAppPrivateKey: isGithubProvider(provider) ? state.githubAppPrivateKey : "",
     timeout: numberValue(data, "timeout", Number(defaultValues.timeout)),
   };
 }
@@ -966,39 +949,7 @@ function sourceFieldChanged(target) {
   if (!target || !target.name) {
     return false;
   }
-  return ["provider", "org", "baseUrl", "repo", "githubAppInstallationId"].includes(target.name);
-}
-
-async function handleGithubAppPrivateKeyFileChange(event) {
-  const file = event.target.files && event.target.files[0];
-  if (!file) {
-    return;
-  }
-  if (file.size > 256 * 1024) {
-    event.target.value = "";
-    state.githubAppPrivateKey = "";
-    githubAppPrivateKeyFileStatus.textContent = "Choose a PEM file smaller than 256 KB.";
-    notify("The PEM file is too large.");
-    return;
-  }
-  try {
-    const key = await file.text();
-    if (!key.includes("-----BEGIN") || !key.includes("PRIVATE KEY-----")) {
-      event.target.value = "";
-      state.githubAppPrivateKey = "";
-      githubAppPrivateKeyFileStatus.textContent = "Choose a PEM private key file.";
-      notify("The selected file is not a PEM private key.");
-      return;
-    }
-    state.githubAppPrivateKey = key;
-    githubAppPrivateKeyFileStatus.textContent = `${file.name} loaded for this scan only.`;
-    notify("PEM file loaded for this scan.");
-  } catch (error) {
-    event.target.value = "";
-    state.githubAppPrivateKey = "";
-    githubAppPrivateKeyFileStatus.textContent = "The PEM file could not be read.";
-    notify(error.message || "The PEM file could not be read.");
-  }
+  return ["provider", "org", "baseUrl", "repo"].includes(target.name);
 }
 
 function loadForm() {
@@ -1043,9 +994,6 @@ function saveForm() {
 
 function resetDefaults() {
   state.adoOrgPats = [];
-  state.githubAppPrivateKey = "";
-  githubAppPrivateKeyFileInput.value = "";
-  githubAppPrivateKeyFileStatus.textContent = "The file is read for this scan and is not stored by the service.";
   clearDiscoveredTargets({silent: true});
   applyDefaultValues();
   syncProviderFields();

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import queue
 import re
@@ -9,6 +10,7 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -24,6 +26,7 @@ from .azure import AzureDevOpsClient
 from .constants import (
     APPLICATION_TYPE_LABELS,
     DEFAULT_GITHUB_APP_ID,
+    DEFAULT_GITHUB_APP_INSTALLATION_ID,
     DEFAULT_OUT_PREFIX,
     DEFAULT_POSTGRES_DATABASE,
     DEFAULT_POSTGRES_HOST,
@@ -37,6 +40,7 @@ from .constants import (
 from .github import GitHubAppCredentials, GitHubEnterpriseClient
 from .models import AzureDevOpsError
 from .org_tokens import ado_org_pats_to_json, parse_ado_org_pat_values
+from .observability import configure_logging, log_github_app_context, observability_dsn
 from .postgres import database_status, export_inventory_csv, export_inventory_json
 from .scanner import normalize_application_types, store_lookup_allowed
 from .target_filters import parse_source_target_filter_values, target_filter_value
@@ -87,6 +91,9 @@ SECURITY_HEADER_VALUES = {
     "X-Robots-Tag": "noindex, nofollow",
     "X-XSS-Protection": "0",
 }
+
+
+LOGGER = logging.getLogger("appsec_scan_router")
 
 
 @dataclass
@@ -224,6 +231,18 @@ class ScanManager:
         with self.lock:
             return self.scans.get(scan_id)
 
+    def metrics(self) -> dict[str, int]:
+        with self.lock:
+            statuses = [run.status for run in self.scans.values()]
+        return {
+            "scansTotal": len(statuses),
+            "scansQueued": statuses.count("queued"),
+            "scansRunning": statuses.count("running"),
+            "scansSucceeded": statuses.count("succeeded"),
+            "scansFailed": statuses.count("failed"),
+            "scansStopped": statuses.count("stopped"),
+        }
+
     def start_scan(self, config: dict[str, Any]) -> ScanRun:
         normalized = normalize_scan_config(config)
         scan_id = new_scan_id()
@@ -240,6 +259,20 @@ class ScanManager:
         )
         with self.lock:
             self.scans[scan_id] = run
+        LOGGER.info(
+            "Scan queued scan_id=%s provider=%s",
+            scan_id,
+            normalized.get("provider", ""),
+            extra=scan_log_extra(run, "scan.queued"),
+        )
+        if normalized.get("provider") in {"github-enterprise", "mixed"}:
+            log_github_app_context(
+                normalized.get("githubAppId", DEFAULT_GITHUB_APP_ID),
+                normalized.get("githubAppInstallationId", DEFAULT_GITHUB_APP_INSTALLATION_ID),
+                scan_id=scan_id,
+                owner_user_id=normalized.get("ownerUserId", ""),
+                owner_user_login=normalized.get("ownerUserLogin", ""),
+            )
         thread = threading.Thread(target=self._run_scan, args=(run,), name=f"scan-{scan_id}", daemon=True)
         thread.start()
         return run
@@ -258,8 +291,11 @@ class ScanManager:
         return run
 
     def _run_scan(self, run: ScanRun) -> None:
-        env = scan_environment(run.config)
+        child_config = dict(run.config)
+        child_config["scanId"] = run.id
+        env = scan_environment(child_config)
         run.set_status("running")
+        LOGGER.info("Scan started scan_id=%s", run.id, extra=scan_log_extra(run, "scan.started", status="running"))
         run.append_log(f"Command: {' '.join(run.display_command)}")
         try:
             process = subprocess.Popen(
@@ -279,11 +315,13 @@ class ScanManager:
         except FileNotFoundError as exc:
             run.append_log(str(exc))
             run.set_status("failed", 127)
+            LOGGER.error("Scan failed scan_id=%s", run.id, extra=scan_log_extra(run, "scan.failed", status="failed"))
             run.close_listeners()
             return
         except Exception as exc:
             run.append_log(str(exc))
             run.set_status("failed", 1)
+            LOGGER.exception("Scan failed scan_id=%s", run.id, extra=scan_log_extra(run, "scan.failed", status="failed"))
             run.close_listeners()
             return
 
@@ -293,6 +331,13 @@ class ScanManager:
             run.set_status("succeeded", exit_code)
         else:
             run.set_status("failed", exit_code)
+        LOGGER.info(
+            "Scan completed scan_id=%s status=%s exit_code=%s",
+            run.id,
+            run.status,
+            exit_code,
+            extra=scan_log_extra(run, "scan.completed", status=run.status),
+        )
         run.close_listeners()
 
 
@@ -301,6 +346,33 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
     sys_version = ""
     manager: ScanManager
     auth: AuthManager
+    observability_dsn: str = ""
+    observability_schema: str = DEFAULT_POSTGRES_SCHEMA
+
+    def handle_one_request(self) -> None:
+        started = time.monotonic()
+        try:
+            super().handle_one_request()
+        finally:
+            method = clean_text(getattr(self, "command", ""))
+            path = urlparse(clean_text(getattr(self, "path", ""))).path
+            if method and path:
+                LOGGER.info(
+                    "HTTP request %s %s status=%s",
+                    method,
+                    path,
+                    getattr(self, "response_status", 0),
+                    extra={
+                        "event_type": "http.request",
+                        "duration_ms": round((time.monotonic() - started) * 1000, 2),
+                        "status": str(getattr(self, "response_status", 0)),
+                        "metadata": {"method": method, "path": path},
+                    },
+                )
+
+    def send_response(self, code: int, message: str | None = None) -> None:
+        self.response_status = code
+        super().send_response(code, message)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -312,7 +384,10 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             self.handle_static(path)
             return
         if path == "/api/health":
-            self.send_json({"status": "ok"})
+            self.handle_health()
+            return
+        if path == "/api/metrics":
+            self.handle_metrics()
             return
         if path == "/api/config":
             self.send_json(default_ui_config(self.manager.reports_root))
@@ -523,6 +598,40 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
         self.send_json({"database": status})
+
+    def handle_health(self) -> None:
+        database = None
+        if self.observability_dsn:
+            database = database_status(
+                self.observability_dsn,
+                schema=self.observability_schema,
+                table=DEFAULT_POSTGRES_TABLE,
+            )
+        self.send_json(
+            {
+                "status": "ok" if database is None or database.get("connected") else "degraded",
+                "service": "application-inventory-service",
+                "database": database,
+                "observability": {
+                    "enabled": bool(self.observability_dsn),
+                    "schema": self.observability_schema,
+                    "table": f"{self.observability_schema}.observability_events",
+                },
+            }
+        )
+
+    def handle_metrics(self) -> None:
+        self.send_json(
+            {
+                "service": "application-inventory-service",
+                "metrics": self.manager.metrics(),
+                "observability": {
+                    "enabled": bool(self.observability_dsn),
+                    "schema": self.observability_schema,
+                    "table": f"{self.observability_schema}.observability_events",
+                },
+            }
+        )
 
     def handle_database_export(self) -> None:
         try:
@@ -745,11 +854,21 @@ def normalize_scan_config(config: dict[str, Any]) -> dict[str, Any]:
     if provider in {"github-enterprise", "mixed"} and not base_url:
         raise ValueError("GitHub Enterprise API URL is required.")
     github_app_id = DEFAULT_GITHUB_APP_ID if provider in {"github-enterprise", "mixed"} else ""
-    github_app_installation_id = clean_text(config.get("githubAppInstallationId"))
+    github_app_installation_id = DEFAULT_GITHUB_APP_INSTALLATION_ID if provider in {"github-enterprise", "mixed"} else ""
     github_app_private_key = clean_text(config.get("githubAppPrivateKey"))
     github_app_private_key_file = clean_text(config.get("githubAppPrivateKeyFile"))
+    github_app_environment_names = (
+        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY",
+        "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY",
+        "GITHUB_APP_PRIVATE_KEY",
+        "GHE_APP_PRIVATE_KEY",
+        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
+        "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
+        "GITHUB_APP_PRIVATE_KEY_FILE",
+        "GHE_APP_PRIVATE_KEY_FILE",
+    )
     app_configuration_supplied = any(
-        (github_app_installation_id, github_app_private_key, github_app_private_key_file)
+        (github_app_private_key, github_app_private_key_file, *(env_value(name) for name in github_app_environment_names))
     )
     if provider in {"github-enterprise", "mixed"} and app_configuration_supplied:
         try:
@@ -1088,6 +1207,12 @@ def scan_environment(config: dict[str, Any]) -> dict[str, str]:
         env.pop("APPSEC_INVENTORY_POSTGRES_TABLE", None)
     owner_user_id = clean_text(config.get("ownerUserId") or "anonymous")
     owner_user_login = clean_text(config.get("ownerUserLogin") or "anonymous")
+    scan_id = clean_text(config.get("scanId"))
+    provider = clean_text(config.get("provider"))
+    if scan_id:
+        env["APPLICATION_INVENTORY_SCAN_ID"] = scan_id
+    if provider:
+        env["APPLICATION_INVENTORY_PROVIDER"] = provider
     env["APPLICATION_INVENTORY_OWNER_USER_ID"] = owner_user_id
     env["APPLICATION_INVENTORY_OWNER_USER_LOGIN"] = owner_user_login
     env["APPSEC_INVENTORY_OWNER_USER_ID"] = owner_user_id
@@ -1116,17 +1241,16 @@ def set_github_app_environment(env: dict[str, str], config: dict[str, Any]) -> N
     )
     app_configuration_supplied = any(
         (
-            clean_text(config.get("githubAppInstallationId")),
             clean_text(config.get("githubAppPrivateKey")),
             clean_text(config.get("githubAppPrivateKeyFile")),
-            *(clean_text(os.getenv(name)) for name in environment_names),
+            *(clean_text(os.getenv(name)) for name in environment_names if "PRIVATE_KEY" in name),
         )
     )
     if not app_configuration_supplied:
         return
     values = {
-        "APPLICATION_INVENTORY_GITHUB_APP_ID": clean_text(config.get("githubAppId")),
-        "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID": clean_text(config.get("githubAppInstallationId")),
+        "APPLICATION_INVENTORY_GITHUB_APP_ID": DEFAULT_GITHUB_APP_ID,
+        "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID": DEFAULT_GITHUB_APP_INSTALLATION_ID,
         "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY": clean_text(config.get("githubAppPrivateKey")),
         "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE": clean_text(config.get("githubAppPrivateKeyFile")),
     }
@@ -1432,6 +1556,18 @@ def run_owner_id(run: ScanRun) -> str:
     return str(run.config.get("ownerUserId") or "anonymous")
 
 
+def scan_log_extra(run: ScanRun, event_type: str, status: str = "") -> dict[str, Any]:
+    return {
+        "event_type": event_type,
+        "scan_id": run.id,
+        "owner_user_id": run.config.get("ownerUserId", ""),
+        "owner_user_login": run.config.get("ownerUserLogin", ""),
+        "provider": run.config.get("provider", ""),
+        "organization": run.config.get("orgDisplay") or run.config.get("org", ""),
+        "status": status,
+    }
+
+
 def ado_org_summary(org_pats: tuple[Any, ...]) -> str:
     if not org_pats:
         return ""
@@ -1512,7 +1648,31 @@ def secure_cookie() -> bool:
 def serve(host: str, port: int, reports_dir: Path) -> None:
     manager = ScanManager(reports_dir.resolve())
     auth = AuthManager(manager.reports_root)
-    handler = type("ConfiguredApplicationInventoryServiceHandler", (ApplicationInventoryServiceHandler,), {"manager": manager, "auth": auth})
+    observability_schema = env_value(
+        "APPLICATION_INVENTORY_OBSERVABILITY_SCHEMA",
+        "APPSEC_INVENTORY_OBSERVABILITY_SCHEMA",
+        "APPLICATION_INVENTORY_POSTGRES_SCHEMA",
+        "APPSEC_INVENTORY_POSTGRES_SCHEMA",
+    ) or DEFAULT_POSTGRES_SCHEMA
+    configured_observability_dsn = observability_dsn()
+    configure_logging(
+        env_flag("APPLICATION_INVENTORY_SERVICE_VERBOSE", "APPSEC_INVENTORY_SERVICE_VERBOSE"),
+        dsn=configured_observability_dsn,
+        schema=observability_schema,
+        source="ui",
+    )
+    LOGGER.info("UI service started host=%s port=%s", host, port, extra={"event_type": "service.started"})
+    log_github_app_context(DEFAULT_GITHUB_APP_ID, DEFAULT_GITHUB_APP_INSTALLATION_ID)
+    handler = type(
+        "ConfiguredApplicationInventoryServiceHandler",
+        (ApplicationInventoryServiceHandler,),
+        {
+            "manager": manager,
+            "auth": auth,
+            "observability_dsn": configured_observability_dsn,
+            "observability_schema": observability_schema,
+        },
+    )
     server = ThreadingHTTPServer((host, port), handler)
     print(f"Application Inventory Service UI listening on http://{host}:{port}")
     print(f"Reports root: {manager.reports_root}")

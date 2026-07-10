@@ -15,7 +15,7 @@ import ado_mobile_scanner
 import mobile_scanner
 from appsec_scan_router.auth import AuthManager, CredentialStore, GoogleOAuthConfig, TestLoginConfig, expired_session_cookie, session_cookie
 from appsec_scan_router.github import GitHubAppCredentials, GitHubAppTokenProvider, normalize_github_api_url
-from appsec_scan_router.postgres import POSTGRES_COLUMNS
+from appsec_scan_router.postgres import POSTGRES_COLUMNS, sanitize_observability_message
 from appsec_scan_router.ui import default_ui_config
 from openpyxl import load_workbook
 
@@ -49,6 +49,8 @@ class PublicApiTests(unittest.TestCase):
         self.assertIn("ml_enabled", scanner.KNOWN_INVENTORY_TYPES)
         self.assertEqual(scanner.APPLICATION_TYPE_LABELS["ml_enabled"], "ML-enabled")
         self.assertEqual(scanner.DEFAULT_POSTGRES_SCHEMA, "application_inventory")
+        self.assertEqual(scanner.DEFAULT_GITHUB_APP_ID, "4255413")
+        self.assertEqual(scanner.DEFAULT_GITHUB_APP_INSTALLATION_ID, "145419902")
         self.assertTrue(callable(scanner.parse_ado_org_pat_values))
         self.assertTrue(callable(scanner.ado_org_pats_to_json))
         self.assertTrue(callable(scanner.parse_source_target_filter_values))
@@ -434,6 +436,30 @@ class ProviderClientTests(unittest.TestCase):
         self.assertEqual(credentials.installation_id, "456")
         self.assertIn("\n", credentials.private_key)
 
+    def test_github_app_credentials_use_fixed_ids_with_key_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            key_path = Path(tmpdir) / "github-app.pem"
+            key_path.write_text("-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----", encoding="utf-8")
+            with patch.dict(
+                "os.environ",
+                {"APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE": str(key_path)},
+                clear=True,
+            ):
+                credentials = GitHubAppCredentials.from_env()
+
+        self.assertIsNotNone(credentials)
+        self.assertEqual(credentials.app_id, "4255413")
+        self.assertEqual(credentials.installation_id, "145419902")
+
+    def test_observability_message_redacts_sensitive_values(self):
+        message = "postgresql://postgres:postgres@localhost:5432/postgres --pat secret Bearer token password=secret"
+
+        sanitized = sanitize_observability_message(message)
+
+        self.assertNotIn("postgres:postgres", sanitized)
+        self.assertNotIn("secret", sanitized)
+        self.assertNotIn("Bearer token", sanitized)
+
     def test_normalizes_github_commits_for_activity_extraction(self):
         commit = scanner.github_commit_to_activity_commit(
             {
@@ -637,21 +663,22 @@ class ProviderClientTests(unittest.TestCase):
 
 
 class UiServiceTests(unittest.TestCase):
-    def test_ui_offers_pem_file_upload_without_persisting_key_field(self):
+    def test_ui_hides_server_managed_github_app_credentials(self):
         html = (Path(__file__).parents[1] / "appsec_scan_router" / "ui_static" / "index.html").read_text(encoding="utf-8")
         javascript = (Path(__file__).parents[1] / "appsec_scan_router" / "ui_static" / "app.js").read_text(encoding="utf-8")
 
-        self.assertIn('id="githubAppPrivateKeyFile"', html)
-        self.assertIn('accept=".pem,.key,.txt,application/x-pem-file,text/plain"', html)
-        self.assertIn('value="4255413"', html)
-        self.assertIn('readonly', html)
+        self.assertIn('class="provider-github github-app-status hidden full"', html)
+        self.assertIn("Managed by service", html)
+        self.assertNotIn("githubAppPrivateKeyFile", html)
+        self.assertNotIn("githubAppInstallationId", html)
+        self.assertNotIn('value="4255413"', html)
         self.assertNotIn('name="githubAppPrivateKey"', html)
         self.assertNotIn('name="project"', html)
         self.assertNotIn('name="token"', html)
         self.assertNotIn('name="saveToken"', html)
         self.assertIn('id="adoOrgRequirementBadge">Required</span>', html)
-        self.assertIn("handleGithubAppPrivateKeyFileChange", javascript)
-        self.assertIn('const DEFAULT_GITHUB_APP_ID = "4255413"', javascript)
+        self.assertNotIn("handleGithubAppPrivateKeyFileChange", javascript)
+        self.assertNotIn("DEFAULT_GITHUB_APP_ID", javascript)
         self.assertNotIn('"githubAppPrivateKey"', javascript.split("const persistedFields", 1)[1].split("];", 1)[0])
         self.assertNotIn("syncCredentialFields", javascript)
 
@@ -716,12 +743,12 @@ class UiServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(config["githubAppId"], "4255413")
-        self.assertEqual(config["githubAppInstallationId"], "456")
+        self.assertEqual(config["githubAppInstallationId"], "145419902")
         self.assertIn("BEGIN PRIVATE KEY", config["githubAppPrivateKey"])
 
         environment = ui_module.scan_environment(config)
         self.assertEqual(environment["APPLICATION_INVENTORY_GITHUB_APP_ID"], "4255413")
-        self.assertEqual(environment["APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID"], "456")
+        self.assertEqual(environment["APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID"], "145419902")
         self.assertIn("BEGIN PRIVATE KEY", environment["APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY"])
 
     def test_normalize_scan_config_accepts_mixed_sources(self):

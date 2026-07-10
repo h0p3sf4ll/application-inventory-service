@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 import sys
 from pathlib import Path
@@ -12,6 +11,8 @@ from .constants import (
     DEFAULT_BRANCH_WORKERS,
     DEFAULT_CONTENT_WORKERS,
     DEFAULT_MAX_WORKERS,
+    DEFAULT_GITHUB_APP_ID,
+    DEFAULT_GITHUB_APP_INSTALLATION_ID,
     DEFAULT_OUT_PREFIX,
     DEFAULT_POSTGRES_TABLE,
     DEFAULT_POSTGRES_SCHEMA,
@@ -22,6 +23,7 @@ from .constants import (
 )
 from .github import GitHubAppCredentials, normalize_github_api_url
 from .models import AzureDevOpsOrgPat, ScanConfig, SourceTargetFilter
+from .observability import configure_logging as configure_observability_logging, log_github_app_context
 from .org_tokens import parse_ado_org_pat_values
 from .scanner import normalize_application_types, scan_to_reports, store_lookup_allowed
 from .target_filters import parse_source_target_filter_values
@@ -82,7 +84,7 @@ def parse_args(argv: list[str]) -> ScanConfig:
     )
     parser.add_argument(
         "--github-app-id",
-        default=env_value("APPLICATION_INVENTORY_GITHUB_APP_ID", "APPSEC_INVENTORY_GITHUB_APP_ID", "GITHUB_APP_ID", "GHE_APP_ID"),
+        default=env_value("APPLICATION_INVENTORY_GITHUB_APP_ID", "APPSEC_INVENTORY_GITHUB_APP_ID", "GITHUB_APP_ID", "GHE_APP_ID") or DEFAULT_GITHUB_APP_ID,
         help="GitHub App ID. Prefer the environment variable for automation.",
     )
     parser.add_argument(
@@ -92,7 +94,7 @@ def parse_args(argv: list[str]) -> ScanConfig:
             "APPSEC_INVENTORY_GITHUB_APP_INSTALLATION_ID",
             "GITHUB_APP_INSTALLATION_ID",
             "GHE_APP_INSTALLATION_ID",
-        ),
+        ) or DEFAULT_GITHUB_APP_INSTALLATION_ID,
         help="GitHub App installation ID. Prefer the environment variable for automation.",
     )
     parser.add_argument(
@@ -225,7 +227,9 @@ def parse_args(argv: list[str]) -> ScanConfig:
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging.")
     args = parser.parse_args(argv)
 
-    configure_logging(args.verbose)
+    configure_logging(args.verbose, args.postgres_dsn, args.postgres_schema)
+    if args.provider in {"github-enterprise", "mixed"}:
+        log_github_app_context(args.github_app_id, args.github_app_installation_id)
     application_types = normalize_application_types(args.application_types)
     ado_org_pats = collect_ado_org_pats(args)
     target_filters = collect_target_filters(args)
@@ -403,12 +407,12 @@ def provider_token_message(provider: str) -> str:
     return "Missing Azure DevOps PAT. Set ADO_PAT or pass --pat."
 
 
-def configure_logging(verbose: bool) -> None:
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
+def configure_logging(
+    verbose: bool,
+    dsn: str = "",
+    schema: str = "application_inventory",
+) -> dict[str, object]:
+    return configure_observability_logging(verbose, dsn=dsn, schema=schema, source="cli")
 
 
 def env_value(*names: str) -> str:

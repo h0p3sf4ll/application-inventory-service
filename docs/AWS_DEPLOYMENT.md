@@ -91,13 +91,13 @@ aws ecr create-repository \
 aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 
-docker build -t "$REPO:1.6.5" .
-docker tag "$REPO:1.6.5" "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.5"
-docker push "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.5"
+docker build -t "$REPO:1.6.6" .
+docker tag "$REPO:1.6.6" "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.6"
+docker push "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.6"
 
 IMAGE_DIGEST=$(aws ecr describe-images \
   --repository-name "$REPO" \
-  --image-ids imageTag=1.6.5 \
+  --image-ids imageTag=1.6.6 \
   --region "$AWS_REGION" \
   --query 'imageDetails[0].imageDigest' \
   --output text)
@@ -117,6 +117,8 @@ Store these in AWS Secrets Manager:
 | `APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET` | GitHub OAuth secret |
 | `APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET` | Google OAuth secret |
 | `APPLICATION_INVENTORY_POSTGRES_DSN` | PostgreSQL DSN |
+| `APPLICATION_INVENTORY_OBSERVABILITY_DSN` | PostgreSQL DSN for service logs; use the inventory DSN only when the same database is approved |
+| `APPLICATION_INVENTORY_OBSERVABILITY_SCHEMA` | PostgreSQL schema for service logs; defaults to `application_inventory` |
 | `APPLICATION_INVENTORY_GITHUB_APP_ID` | GitHub App ID |
 | `APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID` | GitHub App installation ID |
 | `APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE` | Path to a secret-mounted GitHub App PEM key |

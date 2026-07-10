@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import json
+import os
 import re
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -32,6 +36,7 @@ NORMALIZED_TABLES = (
     "inventory_categories",
     "branch_contributors",
     "store_listings",
+    "observability_events",
 )
 
 EXPORT_COLUMNS = (
@@ -85,6 +90,93 @@ EXPORT_COLUMNS = (
     "scan_started_at",
     "synced_at",
 )
+
+
+class PostgresLogHandler(logging.Handler):
+    def __init__(self, dsn: str, schema: str = DEFAULT_POSTGRES_SCHEMA, source: str = "service") -> None:
+        super().__init__()
+        self.dsn = dsn
+        self.schema = sql_name(schema or DEFAULT_POSTGRES_SCHEMA, "PostgreSQL schema")
+        self.source = text_value(source) or "service"
+        self.connection: Any = None
+        self.lock = threading.RLock()
+        self.retry_after = 0.0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if psycopg is None or sql is None or Jsonb is None or time.monotonic() < self.retry_after:
+            return
+        try:
+            with self.lock:
+                connection = self._open_connection()
+                metadata = record.__dict__.get("metadata")
+                metadata = metadata if isinstance(metadata, dict) else {}
+                connection.execute(
+                    sql.SQL(
+                        """
+                        INSERT INTO {table} (
+                            level,
+                            logger,
+                            source,
+                            event_type,
+                            message,
+                            scan_id,
+                            owner_user_id,
+                            owner_user_login,
+                            provider,
+                            organization,
+                            duration_ms,
+                            status,
+                            metadata
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """
+                    ).format(table=object_identifier(self.schema, "observability_events")),
+                    (
+                        record.levelname,
+                        record.name,
+                        self.source,
+                        text_value(record.__dict__.get("event_type")) or "log",
+                        sanitize_observability_message(record.getMessage()),
+                        text_value(record.__dict__.get("scan_id")) or text_value(os.getenv("APPLICATION_INVENTORY_SCAN_ID")),
+                        text_value(record.__dict__.get("owner_user_id")) or text_value(os.getenv("APPLICATION_INVENTORY_OWNER_USER_ID")),
+                        text_value(record.__dict__.get("owner_user_login")) or text_value(os.getenv("APPLICATION_INVENTORY_OWNER_USER_LOGIN")),
+                        text_value(record.__dict__.get("provider")) or text_value(os.getenv("APPLICATION_INVENTORY_PROVIDER")),
+                        text_value(record.__dict__.get("organization")),
+                        float(record.__dict__["duration_ms"]) if record.__dict__.get("duration_ms") is not None else None,
+                        text_value(record.__dict__.get("status")),
+                        Jsonb(metadata),
+                    ),
+                )
+        except Exception:
+            self._close_connection()
+            self.retry_after = time.monotonic() + 15
+
+    def close(self) -> None:
+        with self.lock:
+            self._close_connection()
+        super().close()
+
+    def _open_connection(self) -> Any:
+        if self.connection is None or self.connection.closed:
+            self.connection = psycopg.connect(self.dsn, autocommit=True, connect_timeout=3)
+            create_observability_table(self.connection, self.schema)
+        return self.connection
+
+    def _close_connection(self) -> None:
+        if self.connection is not None:
+            try:
+                self.connection.close()
+            except Exception:
+                pass
+            self.connection = None
+
+
+def sanitize_observability_message(message: str) -> str:
+    sanitized = re.sub(r"(?i)(postgresql://)[^\s]+", r"\1[redacted]", text_value(message))
+    sanitized = re.sub(r"(?i)(bearer\s+)[^\s]+", r"\1[redacted]", sanitized)
+    sanitized = re.sub(r"(?i)(--(?:pat|ado-org-pat)\s+)[^\s]+", r"\1[redacted]", sanitized)
+    sanitized = re.sub(r"(?i)(password\s*[=:]\s*)[^\s]+", r"\1[redacted]", sanitized)
+    return sanitized[:8000]
 
 
 class PostgresInventoryWriter:
@@ -462,6 +554,7 @@ def create_database_schema(connection: Any, schema: str, flat_table: str) -> Non
     connection.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {schema}").format(schema=sql.Identifier(valid_schema)))
     create_flat_table(connection, valid_schema, valid_table)
     create_normalized_tables(connection, valid_schema)
+    create_observability_table(connection, valid_schema)
     create_export_view(connection, valid_schema)
 
 
@@ -716,6 +809,45 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
         )
 
 
+def create_observability_table(connection: Any, schema: str) -> None:
+    connection.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {table} (
+                event_id bigserial PRIMARY KEY,
+                occurred_at timestamptz NOT NULL DEFAULT now(),
+                level text NOT NULL,
+                logger text NOT NULL,
+                source text NOT NULL DEFAULT 'service',
+                event_type text NOT NULL DEFAULT 'log',
+                message text NOT NULL,
+                scan_id text,
+                owner_user_id text,
+                owner_user_login text,
+                provider text,
+                organization text,
+                duration_ms double precision,
+                status text,
+                metadata jsonb NOT NULL DEFAULT '{{}}'::jsonb
+            )
+            """
+        ).format(table=object_identifier(schema, "observability_events"))
+    )
+    for index_name, columns in (
+        ("occurred_at_idx", "occurred_at"),
+        ("scan_id_idx", "scan_id"),
+        ("owner_user_id_idx", "owner_user_id"),
+        ("level_idx", "level"),
+    ):
+        connection.execute(
+            sql.SQL("CREATE INDEX IF NOT EXISTS {index} ON {table} ({column})").format(
+                index=sql.Identifier(f"{schema}_observability_events_{index_name}"[:63]),
+                table=object_identifier(schema, "observability_events"),
+                column=sql.Identifier(columns),
+            )
+        )
+
+
 def create_export_view(connection: Any, schema: str) -> None:
     connection.execute(
         sql.SQL(
@@ -822,12 +954,13 @@ def database_status(dsn: str, schema: str = DEFAULT_POSTGRES_SCHEMA, table: str 
                 "database": database,
                 "schema": resolved_schema,
                 "flatTable": resolved_table,
-                "normalizedTables": list(NORMALIZED_TABLES),
-                "branchRows": branch_count,
-                "flatRows": flat_count,
-            }
+            "normalizedTables": list(NORMALIZED_TABLES),
+            "branchRows": branch_count,
+            "flatRows": flat_count,
+            "observabilityRows": observability_row_count(connection, resolved_schema),
+        }
     except Exception as exc:
-        return {"connected": False, "status": "unavailable", "message": postgres_error_message(exc), "detail": str(exc)}
+        return {"connected": False, "status": "unavailable", "message": postgres_error_message(exc)}
 
 
 def export_inventory_rows(
@@ -902,6 +1035,16 @@ def flat_row_count(connection: Any, schema: str, table: str, owner_user_id: str)
                 table=object_identifier(schema, table)
             ),
             (owner_user_id, owner_user_id),
+        ).fetchone()[0]
+    )
+
+
+def observability_row_count(connection: Any, schema: str) -> int:
+    return int(
+        connection.execute(
+            sql.SQL("SELECT count(*) FROM {table}").format(
+                table=object_identifier(schema, "observability_events")
+            )
         ).fetchone()[0]
     )
 

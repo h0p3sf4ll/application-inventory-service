@@ -75,7 +75,7 @@ The local test user is enabled by default for local runs. For shared environment
 
 For Azure DevOps scans, add one or more organization/PAT pairs in the Azure organizations section. The UI does not use a shared organization, project, or standalone PAT field; each organization is always paired with its own PAT, and credentials are used only for the current scan.
 
-For GitHub Enterprise scans, the UI accepts the GitHub App PEM private key through file upload. The App ID is fixed to `4255413`; the uploaded file is read in the browser for the current scan and is not saved in UI preferences.
+For GitHub Enterprise scans, the UI uses the service-managed GitHub App credentials on every run. The App ID is `4255413`, the installation ID is `145419902`, and the PEM path is configured through the server environment. The UI does not expose either ID or provide a PEM upload control.
 
 ## Quick Start: Docker
 
@@ -86,7 +86,7 @@ docker run --rm \
   -p 48731:48731 \
   --env-file .env \
   -v "$PWD/reports:/reports" \
-  h0p3sf4ll/application-inventory-service:1.6.5 \
+  h0p3sf4ll/application-inventory-service:1.6.6 \
   ui \
   --host 0.0.0.0 \
   --port 48731 \
@@ -137,8 +137,8 @@ application-inventory-service \
 ## GitHub Enterprise
 
 ```bash
-export GITHUB_APP_ID="123456"
-export GITHUB_APP_INSTALLATION_ID="98765432"
+export GITHUB_APP_ID="4255413"
+export GITHUB_APP_INSTALLATION_ID="145419902"
 export GITHUB_APP_PRIVATE_KEY_FILE="/run/secrets/github-app.pem"
 
 application-inventory-service \
@@ -159,8 +159,8 @@ Use `mixed` when the inventory must include both providers. The `--org` value is
 
 ```bash
 export APPLICATION_INVENTORY_ADO_ORG_PATS='[{"org":"FabrikamADO","pat":"ado-read-token"}]'
-export GITHUB_APP_ID="123456"
-export GITHUB_APP_INSTALLATION_ID="98765432"
+export GITHUB_APP_ID="4255413"
+export GITHUB_APP_INSTALLATION_ID="145419902"
 export GITHUB_APP_PRIVATE_KEY_FILE="/run/secrets/github-app.pem"
 
 application-inventory-service \
@@ -186,6 +186,10 @@ application-inventory-service \
   --postgres-table application_inventory_assets \
   --out-dir reports
 ```
+
+The service creates the normalized inventory tables and `application_inventory.observability_events`. Structured events include service lifecycle, HTTP request timing, scan lifecycle, provider, user scope, status, and sanitized metadata. The UI exposes database-backed health at `/api/health` and operational counters at `/api/metrics`.
+
+For local development, set `APPLICATION_INVENTORY_OBSERVABILITY_DSN=postgresql://postgres:postgres@localhost:5432/postgres`. In shared environments, use a secret manager or workload identity and grant the service permission to create or migrate tables in the configured schema.
 
 Local development database:
 
@@ -218,6 +222,9 @@ docker run --name application-inventory-postgres \
 | `APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID` | GitHub App installation ID |
 | `APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE` | Secret-mounted GitHub App PEM private key path |
 | `APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY` | GitHub App PEM private key; use a secret manager or mounted file in shared environments |
+| `APPLICATION_INVENTORY_OBSERVABILITY_DSN` | PostgreSQL DSN for structured service logs; falls back to the inventory PostgreSQL DSN |
+| `APPLICATION_INVENTORY_OBSERVABILITY_SCHEMA` | PostgreSQL schema for structured service logs; defaults to `application_inventory` |
+| `APPLICATION_INVENTORY_SERVICE_VERBOSE` | Enables verbose service logging |
 | `APPLICATION_INVENTORY_SERVICE_SECRET_KEY` | Fernet key for encrypted token storage |
 | `APPLICATION_INVENTORY_SERVICE_STATE_DIR` | Secure state directory |
 | `APPLICATION_INVENTORY_ADO_ORG_PATS` | JSON or `ORG=PAT` list for Azure DevOps multi-org scans |
@@ -256,8 +263,8 @@ config = ScanConfig(
     base_url="https://github.fabrikam.example/api/v3",
     org="FabrikamGH",
     pat="",
-    github_app_id="123456",
-    github_app_installation_id="98765432",
+    github_app_id="4255413",
+    github_app_installation_id="145419902",
     github_app_private_key_file="/run/secrets/github-app.pem",
     project=None,
     ado_org_pats=(

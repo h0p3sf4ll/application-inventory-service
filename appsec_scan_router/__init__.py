@@ -19,6 +19,7 @@ from .constants import (
     DEFAULT_COMMIT_PAGE_SIZE,
     DEFAULT_CONTENT_WORKERS,
     DEFAULT_GITHUB_APP_ID,
+    DEFAULT_GITHUB_APP_INSTALLATION_ID,
     DEFAULT_MAX_WORKERS,
     DEFAULT_OUT_PREFIX,
     DEFAULT_POSTGRES_DATABASE,
@@ -92,6 +93,7 @@ from .models import (
 )
 from .org_tokens import ado_org_pats_to_json, parse_ado_org_pat_values
 from .postgres import (
+    PostgresLogHandler,
     PostgresInventoryWriter,
     database_status,
     export_inventory_csv,
@@ -227,6 +229,7 @@ __all__ = [
     "DEFAULT_COMMIT_PAGE_SIZE",
     "DEFAULT_CONTENT_WORKERS",
     "DEFAULT_GITHUB_APP_ID",
+    "DEFAULT_GITHUB_APP_INSTALLATION_ID",
     "DEFAULT_MAX_WORKERS",
     "DEFAULT_OUT_PREFIX",
     "DEFAULT_POSTGRES_DATABASE",
@@ -257,6 +260,7 @@ __all__ = [
     "RepoActivityMetadata",
     "RepoScanTarget",
     "PostgresInventoryWriter",
+    "PostgresLogHandler",
     "database_status",
     "export_inventory_csv",
     "export_inventory_json",

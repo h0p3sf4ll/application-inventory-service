@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse, urlunparse
 
-from .constants import DEFAULT_COMMIT_PAGE_SIZE, MISSING_REQUESTS_MESSAGE
+from .constants import (
+    DEFAULT_COMMIT_PAGE_SIZE,
+    DEFAULT_GITHUB_APP_ID,
+    DEFAULT_GITHUB_APP_INSTALLATION_ID,
+    MISSING_REQUESTS_MESSAGE,
+)
 from .models import AzureDevOpsError
 from .azure import provider_connection_message
 from .utils import clean_value
@@ -50,10 +55,10 @@ class GitHubAppCredentials:
         private_key: str = "",
         private_key_file: str = "",
     ) -> GitHubAppCredentials | None:
-        resolved_app_id = clean_value(app_id) or github_env_value(
+        configured_app_id = clean_value(app_id) or github_env_value(
             "APPLICATION_INVENTORY_GITHUB_APP_ID", "APPSEC_INVENTORY_GITHUB_APP_ID", "GITHUB_APP_ID", "GHE_APP_ID"
         )
-        resolved_installation_id = clean_value(installation_id) or github_env_value(
+        configured_installation_id = clean_value(installation_id) or github_env_value(
             "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID",
             "APPSEC_INVENTORY_GITHUB_APP_INSTALLATION_ID",
             "GITHUB_APP_INSTALLATION_ID",
@@ -71,8 +76,14 @@ class GitHubAppCredentials:
             "GITHUB_APP_PRIVATE_KEY_FILE",
             "GHE_APP_PRIVATE_KEY_FILE",
         )
-        if not any((resolved_app_id, resolved_installation_id, resolved_private_key, resolved_private_key_file)):
+        if not any((configured_app_id, configured_installation_id, resolved_private_key, resolved_private_key_file)):
             return None
+        resolved_app_id = configured_app_id or DEFAULT_GITHUB_APP_ID
+        resolved_installation_id = configured_installation_id or DEFAULT_GITHUB_APP_INSTALLATION_ID
+        if not resolved_private_key and not resolved_private_key_file:
+            if resolved_app_id == DEFAULT_GITHUB_APP_ID and resolved_installation_id == DEFAULT_GITHUB_APP_INSTALLATION_ID:
+                return None
+            raise ValueError("GitHub App private key or private key file is required.")
         if not resolved_app_id or not resolved_app_id.isdigit():
             raise ValueError("GitHub App ID must be numeric.")
         if not resolved_installation_id or not resolved_installation_id.isdigit():
@@ -117,6 +128,18 @@ class GitHubAppTokenProvider:
         )
         self._session.mount("https://", HTTPAdapter(max_retries=retry))
         self._session.mount("http://", HTTPAdapter(max_retries=retry))
+        LOGGER.info(
+            "GitHub App configured app_id=%s installation_id=%s",
+            credentials.app_id,
+            credentials.installation_id,
+            extra={
+                "event_type": "github_app.configured",
+                "metadata": {
+                    "app_id": credentials.app_id,
+                    "installation_id": credentials.installation_id,
+                },
+            },
+        )
 
     def close(self) -> None:
         self._session.close()
@@ -134,7 +157,7 @@ class GitHubAppTokenProvider:
             "Authorization": f"Bearer {assertion}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "application-inventory-service/1.6.5",
+            "User-Agent": "application-inventory-service/1.6.6",
         }
         try:
             response = self._session.post(url, headers=headers, timeout=self.timeout_seconds)
@@ -192,7 +215,7 @@ class GitHubEnterpriseClient:
         self._headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "application-inventory-service/1.6.5",
+            "User-Agent": "application-inventory-service/1.6.6",
         }
         self._retry = Retry(
             total=5,

@@ -39,6 +39,8 @@ flowchart LR
 7. Results from every source stream through the same report writer and PostgreSQL writer.
 8. Scanner manifests are consumed by downstream security tooling.
 
+The service emits structured lifecycle, request, scan, and provider-authentication events to the configured PostgreSQL observability table. The UI exposes health and metrics endpoints without exposing provider secrets.
+
 ## Storage Model
 
 The UI writes local reports and encrypted token state under the configured reports/state directory. In production, mount durable storage such as Amazon EFS. Inventory data should be stored in Amazon RDS for PostgreSQL.

@@ -316,12 +316,21 @@ Functions:
 - `make_ado_org_pat(org, pat)`: Constructs a validated dataclass or parsed object.
 - `ado_org_pats_to_json(org_pats)`: Helper for ado org pats to json.
 
+### `appsec_scan_router.observability`
+Structured logging configuration and provider-authentication audit events.
+
+Functions:
+- `configure_logging(verbose, dsn, schema, source)`: Configures console logging and optional PostgreSQL persistence.
+- `observability_dsn(explicit_dsn)`: Resolves the observability DSN from explicit or environment configuration.
+- `log_github_app_context(app_id, installation_id, scan_id, owner_user_id, owner_user_login)`: Records non-secret GitHub App identifiers in structured logs.
+
 ### `appsec_scan_router.postgres`
 PostgreSQL schema creation, normalized upserts, status checks, and exports.
 
 Constants: `CONTROL_CHARACTER_RE`, `SQL_NAME_RE`, `NORMALIZED_TABLES`, `EXPORT_COLUMNS`, `PRIMARY_KEY_COLUMNS`, `POSTGRES_COLUMNS`, `FLAT_TABLE_MIGRATIONS`
 
 Classes:
+- `PostgresLogHandler`: Persists sanitized structured log records in `observability_events` without blocking the application when PostgreSQL is unavailable.
 - `PostgresInventoryWriter`: Context-managed writer that streams results to reports or storage.
   - `PostgresInventoryWriter.__enter__(self)`: Opens the context-managed resource and returns it for use.
   - `PostgresInventoryWriter.__exit__(self, exc_type, exc_value, traceback)`: Closes the context-managed resource when the block exits.
@@ -342,6 +351,7 @@ Functions:
 - `create_database_schema(connection, schema, flat_table)`: Creates schemas, clients, sessions, rows, or report structures.
 - `create_flat_table(connection, schema, table)`: Creates schemas, clients, sessions, rows, or report structures.
 - `create_normalized_tables(connection, schema)`: Creates schemas, clients, sessions, rows, or report structures.
+- `create_observability_table(connection, schema)`: Creates the structured service event table and indexes.
 - `create_export_view(connection, schema)`: Creates schemas, clients, sessions, rows, or report structures.
 - `database_status(dsn, schema=..., table=..., owner_user_id=...)`: Reads, writes, exports, or reports PostgreSQL database state.
 - `export_inventory_rows(dsn, schema=..., owner_user_id=..., limit=...)`: Exports normalized inventory data to CSV, JSON, or cell text.
@@ -548,6 +558,8 @@ Classes:
   - `ApplicationInventoryServiceHandler.handle_delete_credential(self)`: Handles a UI HTTP route or asynchronous scan result.
   - `ApplicationInventoryServiceHandler.handle_database_status(self)`: Handles a UI HTTP route or asynchronous scan result.
   - `ApplicationInventoryServiceHandler.handle_database_export(self)`: Handles a UI HTTP route or asynchronous scan result.
+  - `ApplicationInventoryServiceHandler.handle_health(self)`: Returns database-backed service health and observability status.
+  - `ApplicationInventoryServiceHandler.handle_metrics(self)`: Returns scan counters and observability configuration.
   - `ApplicationInventoryServiceHandler.handle_source_targets(self)`: Handles a UI HTTP route or asynchronous scan result.
   - `ApplicationInventoryServiceHandler.send_static(self, name, content_type)`: Sends an HTTP response body from the UI server.
   - `ApplicationInventoryServiceHandler.send_report(self, run, filename)`: Sends an HTTP response body from the UI server.
