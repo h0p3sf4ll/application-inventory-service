@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse, urlunparse
 
 from .constants import MISSING_CRYPTOGRAPHY_MESSAGE, MISSING_REQUESTS_MESSAGE
 from .utils import clean_value
@@ -86,6 +86,67 @@ class GitHubOAuthConfig:
     @property
     def enabled(self) -> bool:
         return bool(self.client_id and self.client_secret)
+
+
+@dataclass(frozen=True)
+class GitHubEnterpriseOAuthConfig(GitHubOAuthConfig):
+    @classmethod
+    def from_env(cls) -> GitHubEnterpriseOAuthConfig:
+        base_url = env_value(
+            "APPLICATION_INVENTORY_SERVICE_GITHUB_ENTERPRISE_BASE_URL",
+            "APPSEC_INVENTORY_SERVICE_GITHUB_ENTERPRISE_BASE_URL",
+            "APPLICATION_INVENTORY_SERVICE_GHE_BASE_URL",
+            "APPSEC_INVENTORY_SERVICE_GHE_BASE_URL",
+            "GITHUB_ENTERPRISE_BASE_URL",
+            "GHE_BASE_URL",
+        )
+        origin = enterprise_oauth_origin(base_url)
+        authorize_url = env_value(
+            "APPLICATION_INVENTORY_SERVICE_GHE_AUTHORIZE_URL",
+            "APPSEC_INVENTORY_SERVICE_GHE_AUTHORIZE_URL",
+            "APPLICATION_INVENTORY_SERVICE_GITHUB_ENTERPRISE_AUTHORIZE_URL",
+            "APPSEC_INVENTORY_SERVICE_GITHUB_ENTERPRISE_AUTHORIZE_URL",
+        )
+        token_url = env_value(
+            "APPLICATION_INVENTORY_SERVICE_GHE_TOKEN_URL",
+            "APPSEC_INVENTORY_SERVICE_GHE_TOKEN_URL",
+            "APPLICATION_INVENTORY_SERVICE_GITHUB_ENTERPRISE_TOKEN_URL",
+            "APPSEC_INVENTORY_SERVICE_GITHUB_ENTERPRISE_TOKEN_URL",
+        )
+        user_url = env_value(
+            "APPLICATION_INVENTORY_SERVICE_GHE_USER_URL",
+            "APPSEC_INVENTORY_SERVICE_GHE_USER_URL",
+            "APPLICATION_INVENTORY_SERVICE_GITHUB_ENTERPRISE_USER_URL",
+            "APPSEC_INVENTORY_SERVICE_GITHUB_ENTERPRISE_USER_URL",
+        )
+        return cls(
+            client_id=env_value(
+                "APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_ID",
+                "APPSEC_INVENTORY_SERVICE_GHE_CLIENT_ID",
+                "APPLICATION_INVENTORY_SERVICE_GITHUB_ENTERPRISE_CLIENT_ID",
+                "APPSEC_INVENTORY_SERVICE_GITHUB_ENTERPRISE_CLIENT_ID",
+            ),
+            client_secret=env_value(
+                "APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_SECRET",
+                "APPSEC_INVENTORY_SERVICE_GHE_CLIENT_SECRET",
+                "APPLICATION_INVENTORY_SERVICE_GITHUB_ENTERPRISE_CLIENT_SECRET",
+                "APPSEC_INVENTORY_SERVICE_GITHUB_ENTERPRISE_CLIENT_SECRET",
+            ),
+            authorize_url=valid_oauth_endpoint((authorize_url or f"{origin}/login/oauth/authorize") if origin else authorize_url),
+            token_url=valid_oauth_endpoint((token_url or f"{origin}/login/oauth/access_token") if origin else token_url),
+            user_url=valid_oauth_endpoint((user_url or f"{origin}/api/v3/user") if origin else user_url),
+            scope=env_value(
+                "APPLICATION_INVENTORY_SERVICE_GHE_SCOPE",
+                "APPSEC_INVENTORY_SERVICE_GHE_SCOPE",
+                "APPLICATION_INVENTORY_SERVICE_GITHUB_ENTERPRISE_SCOPE",
+                "APPSEC_INVENTORY_SERVICE_GITHUB_ENTERPRISE_SCOPE",
+            )
+            or "read:user read:org",
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.client_id and self.client_secret and self.authorize_url and self.token_url and self.user_url)
 
 
 @dataclass(frozen=True)
@@ -253,10 +314,12 @@ class SessionStore:
 
 
 class GitHubOAuthService:
-    def __init__(self, config: GitHubOAuthConfig) -> None:
+    def __init__(self, config: GitHubOAuthConfig, provider: str = "github", display_name: str = "GitHub") -> None:
         if requests is None:
             raise SystemExit(MISSING_REQUESTS_MESSAGE)
         self.config = config
+        self.provider = provider
+        self.display_name = display_name
         self.states: dict[str, float] = {}
         self.lock = threading.RLock()
 
@@ -266,7 +329,7 @@ class GitHubOAuthService:
 
     def authorization_url(self, redirect_uri: str) -> str:
         if not self.enabled:
-            raise ValueError("GitHub login is not configured.")
+            raise ValueError(f"{self.display_name} login is not configured.")
         state = secrets.token_urlsafe(32)
         with self.lock:
             self.states[state] = time.time() + OAUTH_STATE_TTL_SECONDS
@@ -282,10 +345,13 @@ class GitHubOAuthService:
         return f"{self.config.authorize_url}?{query}"
 
     def complete(self, code: str, state: str, redirect_uri: str) -> AuthenticatedUser:
+        return self.complete_with_token(code, state, redirect_uri)[0]
+
+    def complete_with_token(self, code: str, state: str, redirect_uri: str) -> tuple[AuthenticatedUser, str]:
         if not self.consume_state(state):
-            raise ValueError("GitHub login expired. Try signing in again.")
+            raise ValueError(f"{self.display_name} login expired. Try signing in again.")
         access_token = self.exchange_code(code, redirect_uri)
-        return self.fetch_user(access_token)
+        return self.fetch_user(access_token), access_token
 
     def exchange_code(self, code: str, redirect_uri: str) -> str:
         try:
@@ -303,12 +369,12 @@ class GitHubOAuthService:
             response.raise_for_status()
             data = response.json()
         except requests.RequestException as exc:
-            raise ValueError(f"GitHub login failed while exchanging the authorization code: {exc}") from exc
+            raise ValueError(f"{self.display_name} login failed while exchanging the authorization code: {exc}") from exc
         except ValueError as exc:
-            raise ValueError("GitHub login returned an invalid token response.") from exc
+            raise ValueError(f"{self.display_name} login returned an invalid token response.") from exc
         token = clean_value(data.get("access_token")) if isinstance(data, dict) else ""
         if not token:
-            raise ValueError("GitHub login did not return an access token.")
+            raise ValueError(f"{self.display_name} login did not return an access token.")
         return token
 
     def fetch_user(self, access_token: str) -> AuthenticatedUser:
@@ -319,26 +385,26 @@ class GitHubOAuthService:
                     "Accept": "application/vnd.github+json",
                     "Authorization": f"Bearer {access_token}",
                     "X-GitHub-Api-Version": "2022-11-28",
-                    "User-Agent": "application-inventory-service/1.6.6",
+                    "User-Agent": "application-inventory-service/1.6.7",
                 },
                 timeout=20,
             )
             response.raise_for_status()
             data = response.json()
         except requests.RequestException as exc:
-            raise ValueError(f"GitHub login failed while loading the user profile: {exc}") from exc
+            raise ValueError(f"{self.display_name} login failed while loading the user profile: {exc}") from exc
         except ValueError as exc:
-            raise ValueError("GitHub login returned an invalid user profile.") from exc
+            raise ValueError(f"{self.display_name} login returned an invalid user profile.") from exc
         user_id = clean_value(data.get("id")) if isinstance(data, dict) else ""
         login = clean_value(data.get("login")) if isinstance(data, dict) else ""
         if not user_id or not login:
-            raise ValueError("GitHub login returned an incomplete user profile.")
+            raise ValueError(f"{self.display_name} login returned an incomplete user profile.")
         return AuthenticatedUser(
             id=user_id,
             login=login,
             name=clean_value(data.get("name")),
             avatar_url=clean_value(data.get("avatar_url")),
-            provider="github",
+            provider=self.provider,
         )
 
     def consume_state(self, state: str) -> bool:
@@ -422,7 +488,7 @@ class GoogleOAuthService:
                 headers={
                     "Accept": "application/json",
                     "Authorization": f"Bearer {access_token}",
-                    "User-Agent": "application-inventory-service/1.6.6",
+                    "User-Agent": "application-inventory-service/1.6.7",
                 },
                 timeout=20,
             )
@@ -461,6 +527,11 @@ class AuthManager:
     def __init__(self, reports_root: Path) -> None:
         self.sessions = SessionStore()
         self.github_oauth = GitHubOAuthService(GitHubOAuthConfig.from_env())
+        self.github_enterprise_oauth = GitHubOAuthService(
+            GitHubEnterpriseOAuthConfig.from_env(),
+            provider="github-enterprise",
+            display_name="GitHub Enterprise",
+        )
         self.google_oauth = GoogleOAuthService(GoogleOAuthConfig.from_env())
         self.test_login = TestLoginConfig.from_env()
         self.oauth = self.github_oauth
@@ -469,8 +540,11 @@ class AuthManager:
     def session(self, cookie_header: str) -> SessionRecord | None:
         return self.sessions.get(cookie_value(cookie_header, SESSION_COOKIE_NAME))
 
-    def create_session(self, user: AuthenticatedUser) -> SessionRecord:
-        return self.sessions.create(user)
+    def create_session(self, user: AuthenticatedUser, provider_token: str = "") -> SessionRecord:
+        record = self.sessions.create(user)
+        if provider_token and user.provider in PROVIDER_NAMES:
+            self.credentials.save_token(user.id, user.provider, provider_token)
+        return record
 
     def logout(self, session_id: str) -> None:
         self.sessions.delete(session_id)
@@ -482,6 +556,7 @@ class AuthManager:
             "user": record.user.as_dict() if record else None,
             "csrfToken": record.csrf_token if record else "",
             "githubLoginEnabled": self.github_oauth.enabled,
+            "githubEnterpriseLoginEnabled": self.github_enterprise_oauth.enabled,
             "googleLoginEnabled": self.google_oauth.enabled,
             "testLoginEnabled": self.test_login.enabled,
             "authProviders": [
@@ -490,6 +565,12 @@ class AuthManager:
                     "label": "GitHub SSO",
                     "enabled": self.github_oauth.enabled,
                     "startUrl": "/api/auth/github/start",
+                },
+                {
+                    "id": "github-enterprise",
+                    "label": "GitHub Enterprise",
+                    "enabled": self.github_enterprise_oauth.enabled,
+                    "startUrl": "/api/auth/github-enterprise/start",
                 },
                 {
                     "id": "google",
@@ -513,7 +594,8 @@ class AuthManager:
         return self.create_session(self.test_login.user())
 
     def apply_credentials(self, payload: dict[str, Any], record: SessionRecord | None) -> dict[str, Any]:
-        provider = provider_name(payload.get("provider", "azure-devops"))
+        requested_provider = clean_value(payload.get("provider", "azure-devops"))
+        provider = "github-enterprise" if requested_provider == "mixed" else provider_name(requested_provider)
         token = clean_value(payload.get("token"))
         save_token = bool(payload.get("saveToken"))
         if save_token and not record:
@@ -555,6 +637,54 @@ def env_value(*names: str) -> str:
         if value:
             return value
     return ""
+
+
+def enterprise_oauth_origin(value: str) -> str:
+    raw_value = clean_value(value)
+    if not raw_value:
+        return ""
+    parsed = urlparse(raw_value if "://" in raw_value else f"https://{raw_value}")
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        return ""
+    if parsed.scheme != "https" and not insecure_urls_allowed():
+        return ""
+    path = parsed.path.rstrip("/")
+    if path.endswith("/api/v3"):
+        path = path[: -len("/api/v3")].rstrip("/")
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", "")).rstrip("/")
+
+
+def valid_oauth_endpoint(value: str) -> str:
+    raw_value = clean_value(value)
+    if not raw_value:
+        return ""
+    parsed = urlparse(raw_value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        return ""
+    if parsed.scheme != "https" and not insecure_urls_allowed():
+        return ""
+    return raw_value.rstrip("/")
+
+
+def insecure_urls_allowed() -> bool:
+    return env_value(
+        "APPLICATION_INVENTORY_SERVICE_ALLOW_INSECURE_PROVIDER_URLS",
+        "APPSEC_INVENTORY_SERVICE_ALLOW_INSECURE_PROVIDER_URLS",
+    ).lower() in TRUE_VALUES
 
 
 def provider_name(value: Any) -> str:

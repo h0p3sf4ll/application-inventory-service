@@ -21,12 +21,19 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from .auth import AuthManager, GitHubOAuthConfig, GoogleOAuthConfig, SessionRecord, TestLoginConfig, expired_session_cookie, session_cookie
+from .auth import (
+    AuthManager,
+    GitHubEnterpriseOAuthConfig,
+    GitHubOAuthConfig,
+    GoogleOAuthConfig,
+    SessionRecord,
+    TestLoginConfig,
+    expired_session_cookie,
+    session_cookie,
+)
 from .azure import AzureDevOpsClient
 from .constants import (
     APPLICATION_TYPE_LABELS,
-    DEFAULT_GITHUB_APP_ID,
-    DEFAULT_GITHUB_APP_INSTALLATION_ID,
     DEFAULT_OUT_PREFIX,
     DEFAULT_POSTGRES_DATABASE,
     DEFAULT_POSTGRES_HOST,
@@ -37,12 +44,20 @@ from .constants import (
     DEFAULT_POSTGRES_USER,
     KNOWN_INVENTORY_TYPES,
 )
-from .github import GitHubAppCredentials, GitHubEnterpriseClient
+from .github import (
+    GitHubAppCredentials,
+    GitHubEnterpriseClient,
+    configured_github_api_url,
+    configured_github_app_id,
+    configured_github_installation_id,
+    configured_github_owners,
+    parse_github_urls,
+)
 from .models import AzureDevOpsError
 from .org_tokens import ado_org_pats_to_json, parse_ado_org_pat_values
 from .observability import configure_logging, log_github_app_context, observability_dsn
 from .postgres import database_status, export_inventory_csv, export_inventory_json
-from .scanner import normalize_application_types, store_lookup_allowed
+from .scanner import normalize_application_types, normalize_store_countries, store_lookup_allowed
 from .target_filters import parse_source_target_filter_values, target_filter_value
 
 
@@ -267,8 +282,8 @@ class ScanManager:
         )
         if normalized.get("provider") in {"github-enterprise", "mixed"}:
             log_github_app_context(
-                normalized.get("githubAppId", DEFAULT_GITHUB_APP_ID),
-                normalized.get("githubAppInstallationId", DEFAULT_GITHUB_APP_INSTALLATION_ID),
+                normalized.get("githubAppId") or configured_github_app_id(),
+                normalized.get("githubAppInstallationId") or configured_github_installation_id(),
                 scan_id=scan_id,
                 owner_user_id=normalized.get("ownerUserId", ""),
                 owner_user_login=normalized.get("ownerUserLogin", ""),
@@ -401,6 +416,12 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         if path == "/api/auth/github/callback":
             self.handle_github_auth_callback(parsed.query)
             return
+        if path == "/api/auth/github-enterprise/start":
+            self.handle_github_enterprise_auth_start()
+            return
+        if path == "/api/auth/github-enterprise/callback":
+            self.handle_github_enterprise_auth_callback(parsed.query)
+            return
         if path == "/api/auth/google/start":
             self.handle_google_auth_start()
             return
@@ -532,6 +553,31 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             self.redirect("/?auth=failed&provider=github")
             return
         self.redirect("/?auth=success&provider=github", session_cookie(record.id, secure_cookie()))
+
+    def handle_github_enterprise_auth_start(self) -> None:
+        try:
+            self.redirect(self.auth.github_enterprise_oauth.authorization_url(self.redirect_uri("github-enterprise")))
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def handle_github_enterprise_auth_callback(self, query: str) -> None:
+        params = parse_qs(query)
+        code = clean_text(first_query_value(params, "code"))
+        state = clean_text(first_query_value(params, "state"))
+        if not code or not state:
+            self.redirect("/?auth=failed&provider=github-enterprise")
+            return
+        try:
+            user, token = self.auth.github_enterprise_oauth.complete_with_token(
+                code,
+                state,
+                self.redirect_uri("github-enterprise"),
+            )
+            record = self.auth.create_session(user, provider_token=token)
+        except ValueError:
+            self.redirect("/?auth=failed&provider=github-enterprise")
+            return
+        self.redirect("/?auth=success&provider=github-enterprise", session_cookie(record.id, secure_cookie()))
 
     def handle_google_auth_start(self) -> None:
         try:
@@ -671,7 +717,8 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
-        self.send_json(targets)
+        status = HTTPStatus.BAD_GATEWAY if targets.get("errors") else HTTPStatus.OK
+        self.send_json(targets, status)
 
     def send_static(self, name: str, content_type: str) -> None:
         try:
@@ -839,22 +886,28 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
 
 def normalize_scan_config(config: dict[str, Any]) -> dict[str, Any]:
     provider = clean_choice(config.get("provider"), {"azure-devops", "github-enterprise", "mixed"}, "azure-devops")
-    org = clean_text(config.get("org"))
+    legacy_org = clean_text(config.get("org"))
+    github_urls = parse_github_urls(config.get("githubUrls"), default=legacy_org if provider in {"github-enterprise", "mixed"} else "")
+    if provider in {"github-enterprise", "mixed"} and not github_urls:
+        github_urls = configured_github_owners()
+    if provider in {"github-enterprise", "mixed"} and not github_urls:
+        raise ValueError("Configure at least one GitHub organization in the UI or APPLICATION_INVENTORY_GITHUB_URLS.")
+    org = github_urls[0] if provider in {"github-enterprise", "mixed"} else legacy_org
     ado_org_pats = parse_ado_org_pat_values([config.get("adoOrgPats")])
     target_filters = parse_source_target_filter_values([config.get("targetFilters")])
+    if provider in {"github-enterprise", "mixed"} and not target_filters:
+        target_filters = parse_source_target_filter_values(
+            [env_value("APPLICATION_INVENTORY_GITHUB_REPOSITORIES", "APPSEC_INVENTORY_GITHUB_REPOSITORIES")]
+        )
     if provider == "azure-devops" and not ado_org_pats:
         raise ValueError("Add at least one Azure organization and PAT.")
-    if provider == "github-enterprise" and not org:
-        raise ValueError("Organization is required.")
-    if provider == "mixed" and not org:
-        raise ValueError("GitHub owner is required for a mixed scan.")
     if provider == "mixed" and not ado_org_pats:
         raise ValueError("Add at least one Azure organization and PAT for a mixed scan.")
-    base_url = clean_text(config.get("baseUrl"))
+    base_url = configured_github_api_url()
     if provider in {"github-enterprise", "mixed"} and not base_url:
         raise ValueError("GitHub Enterprise API URL is required.")
-    github_app_id = DEFAULT_GITHUB_APP_ID if provider in {"github-enterprise", "mixed"} else ""
-    github_app_installation_id = DEFAULT_GITHUB_APP_INSTALLATION_ID if provider in {"github-enterprise", "mixed"} else ""
+    github_app_id = configured_github_app_id() if provider in {"github-enterprise", "mixed"} else ""
+    github_app_installation_id = configured_github_installation_id() if provider in {"github-enterprise", "mixed"} else ""
     github_app_private_key = clean_text(config.get("githubAppPrivateKey"))
     github_app_private_key_file = clean_text(config.get("githubAppPrivateKeyFile"))
     github_app_environment_names = (
@@ -882,10 +935,18 @@ def normalize_scan_config(config: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(str(exc)) from exc
     application_types = list(normalize_ui_application_types(config.get("applicationTypes")))
     database_config = normalize_database_config(config)
+    store_countries = normalize_store_countries(config.get("storeCountries") or config.get("storeCountry") or "US")
     normalized = {
         "provider": provider,
         "org": org,
-        "orgDisplay": mixed_org_summary(org, ado_org_pats) if provider == "mixed" else ado_org_summary(ado_org_pats) if ado_org_pats else org,
+        "orgDisplay": mixed_org_summary(", ".join(github_urls), ado_org_pats)
+        if provider == "mixed"
+        else ", ".join(github_urls)
+        if provider == "github-enterprise"
+        else ado_org_summary(ado_org_pats)
+        if ado_org_pats
+        else org,
+        "githubUrls": list(github_urls),
         "adoOrgPats": [{"org": item.org, "pat": item.pat} for item in ado_org_pats],
         "targetFilters": [{"org": item.org, "project": item.project} for item in target_filters],
         "project": clean_text(config.get("project")),
@@ -911,7 +972,8 @@ def normalize_scan_config(config: dict[str, Any]) -> dict[str, Any]:
         "timeout": positive_int(config.get("timeout"), 30),
         "branchAgeDays": positive_int(config.get("branchAgeDays"), 90),
         "storeLookup": bool(config.get("storeLookup")) and store_lookup_allowed(application_types),
-        "storeCountry": clean_text(config.get("storeCountry") or "US").upper()[:2],
+        "storeCountry": store_countries[0],
+        "storeCountries": list(store_countries),
         "storeTimeout": positive_int(config.get("storeTimeout"), 15),
         "verbose": bool(config.get("verbose")),
     }
@@ -986,8 +1048,10 @@ def discover_azure_targets(config: dict[str, Any], timeout: int) -> dict[str, An
 
 
 def discover_github_targets(config: dict[str, Any], timeout: int) -> dict[str, Any]:
-    owner = clean_text(config.get("org"))
-    base_url = clean_text(config.get("baseUrl"))
+    owners = parse_github_urls(config.get("githubUrls"), default=clean_text(config.get("org"))) or configured_github_owners()
+    if not owners:
+        raise ValueError("Configure at least one GitHub organization in the UI or APPLICATION_INVENTORY_GITHUB_URLS.")
+    base_url = configured_github_api_url()
     token = discovery_token(config, "github-enterprise")
     try:
         app_credentials = GitHubAppCredentials.from_values(
@@ -998,41 +1062,36 @@ def discover_github_targets(config: dict[str, Any], timeout: int) -> dict[str, A
         )
     except ValueError as exc:
         raise ValueError(str(exc)) from exc
-    if not owner:
-        raise ValueError("GitHub owner is required to load repositories.")
-    if not base_url:
-        raise ValueError("GitHub Enterprise API URL is required to load repositories.")
     if not token and not app_credentials:
         raise ValueError("GitHub App credentials are required to load repositories.")
 
-    try:
-        client_kwargs = {"app_credentials": app_credentials} if app_credentials else {}
-        client = GitHubEnterpriseClient(base_url, owner, token, timeout, **client_kwargs)
-    except ValueError as exc:
-        raise ValueError(str(exc)) from exc
-    try:
-        repos = client.list_repos("")
-    except AzureDevOpsError as exc:
-        return {
-            "provider": "github-enterprise",
-            "targets": [],
-            "errors": [{"org": owner, "message": str(exc)}],
-        }
-    finally:
-        client.close()
-
-    targets = []
-    for repo in repos:
-        if repo.get("isDisabled"):
+    targets: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for owner in owners:
+        try:
+            client_kwargs = {"app_credentials": app_credentials} if app_credentials and not token else {}
+            client = GitHubEnterpriseClient(base_url, owner, token, timeout, **client_kwargs)
+        except ValueError as exc:
+            errors.append({"org": owner, "message": str(exc)})
             continue
-        name = clean_text(repo.get("name"))
-        full_name = clean_text(repo.get("fullName"))
-        if name:
-            targets.append(source_target("github-enterprise", owner, name, "repository", full_name or name))
+        try:
+            repos = client.list_repos("")
+        except AzureDevOpsError as exc:
+            errors.append({"org": owner, "message": str(exc)})
+            continue
+        finally:
+            client.close()
+        for repo in repos:
+            if repo.get("isDisabled"):
+                continue
+            name = clean_text(repo.get("name"))
+            full_name = clean_text(repo.get("fullName"))
+            if name:
+                targets.append(source_target("github-enterprise", owner, name, "repository", full_name or name))
     return {
         "provider": "github-enterprise",
         "targets": sorted_targets(targets),
-        "errors": [],
+        "errors": errors,
     }
 
 
@@ -1105,11 +1164,11 @@ def build_scan_command(config: dict[str, Any], reports_dir: Path) -> list[str]:
         config["ownerUserId"],
         "--owner-user-login",
         config["ownerUserLogin"],
-        "--store-country",
-        config["storeCountry"],
         "--store-timeout",
         str(config["storeTimeout"]),
     ]
+    for country in config.get("storeCountries", [config["storeCountry"]]):
+        command.extend(["--store-country", country])
     for application_type in config["applicationTypes"]:
         command.extend(["--application-type", application_type])
     if config["postgresEnabled"]:
@@ -1122,11 +1181,9 @@ def build_scan_command(config: dict[str, Any], reports_dir: Path) -> list[str]:
             if value:
                 command.extend(["--target-filter", value])
     if config["provider"] in {"github-enterprise", "mixed"}:
-        command.extend(["--org", config["org"]])
         command.extend(["--base-url", config["baseUrl"]])
-        target = "" if target_filters else config["repo"] or config["project"]
-        if target:
-            command.extend(["--repo", target])
+        for github_url in config.get("githubUrls", []):
+            command.extend(["--github-url", github_url])
     if config["provider"] in {"azure-devops", "mixed"}:
         if config["provider"] == "azure-devops" and not config.get("adoOrgPats"):
             command.extend(["--org", config["org"]])
@@ -1187,7 +1244,8 @@ def scan_environment(config: dict[str, Any]) -> dict[str, str]:
         else:
             inherit_secret(env, "GITHUB_TOKEN")
             inherit_secret(env, "GHE_TOKEN")
-        set_github_app_environment(env, config)
+        if not token:
+            set_github_app_environment(env, config)
     postgres_dsn = clean_text(config.get("postgresDsn"))
     if config.get("postgresEnabled") and postgres_dsn:
         postgres_schema = clean_text(config.get("postgresSchema") or DEFAULT_POSTGRES_SCHEMA)
@@ -1249,24 +1307,32 @@ def set_github_app_environment(env: dict[str, str], config: dict[str, Any]) -> N
     if not app_configuration_supplied:
         return
     values = {
-        "APPLICATION_INVENTORY_GITHUB_APP_ID": DEFAULT_GITHUB_APP_ID,
-        "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID": DEFAULT_GITHUB_APP_INSTALLATION_ID,
+        "APPLICATION_INVENTORY_GITHUB_APP_ID": configured_github_app_id(),
+        "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID": configured_github_installation_id(),
         "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY": clean_text(config.get("githubAppPrivateKey")),
         "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE": clean_text(config.get("githubAppPrivateKeyFile")),
     }
     aliases = {
-        "APPLICATION_INVENTORY_GITHUB_APP_ID": ("APPSEC_INVENTORY_GITHUB_APP_ID", "GITHUB_APP_ID", "GHE_APP_ID"),
+        "APPLICATION_INVENTORY_GITHUB_APP_ID": (
+            "APPLICATION_INVENTORY_GITHUB_APP_ID",
+            "APPSEC_INVENTORY_GITHUB_APP_ID",
+            "GITHUB_APP_ID",
+            "GHE_APP_ID",
+        ),
         "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID": (
+            "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID",
             "APPSEC_INVENTORY_GITHUB_APP_INSTALLATION_ID",
             "GITHUB_APP_INSTALLATION_ID",
             "GHE_APP_INSTALLATION_ID",
         ),
         "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY": (
+            "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY",
             "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY",
             "GITHUB_APP_PRIVATE_KEY",
             "GHE_APP_PRIVATE_KEY",
         ),
         "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE": (
+            "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
             "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
             "GITHUB_APP_PRIVATE_KEY_FILE",
             "GHE_APP_PRIVATE_KEY_FILE",
@@ -1384,11 +1450,17 @@ def parse_iso_datetime(value: str) -> datetime | None:
 
 def default_ui_config(reports_root: Path) -> dict[str, Any]:
     github_oauth_config = GitHubOAuthConfig.from_env()
+    github_enterprise_oauth_config = GitHubEnterpriseOAuthConfig.from_env()
     google_oauth_config = GoogleOAuthConfig.from_env()
     test_login_config = TestLoginConfig.from_env()
+    github_repositories = parse_source_target_filter_values(
+        [env_value("APPLICATION_INVENTORY_GITHUB_REPOSITORIES", "APPSEC_INVENTORY_GITHUB_REPOSITORIES")]
+    )
     return {
         "defaults": {
             "provider": "azure-devops",
+            "githubUrls": list(configured_github_owners()),
+            "githubRepositories": [target_filter_value(item) for item in github_repositories],
             "outPrefix": DEFAULT_OUT_PREFIX,
             "applicationTypes": [],
             "applicationTypeChoices": [
@@ -1404,6 +1476,7 @@ def default_ui_config(reports_root: Path) -> dict[str, Any]:
             "timeout": 30,
             "branchAgeDays": 90,
             "storeCountry": "US",
+            "storeCountries": ["US"],
             "storeTimeout": 15,
             "postgresEnabled": True,
             "postgresHost": env_value("APPLICATION_INVENTORY_POSTGRES_HOST", "APPSEC_INVENTORY_POSTGRES_HOST") or DEFAULT_POSTGRES_HOST,
@@ -1415,6 +1488,7 @@ def default_ui_config(reports_root: Path) -> dict[str, Any]:
         },
         "auth": {
             "githubLoginEnabled": github_oauth_config.enabled,
+            "githubEnterpriseLoginEnabled": github_enterprise_oauth_config.enabled,
             "googleLoginEnabled": google_oauth_config.enabled,
             "testLoginEnabled": test_login_config.enabled,
             "authProviders": [
@@ -1423,6 +1497,12 @@ def default_ui_config(reports_root: Path) -> dict[str, Any]:
                     "label": "GitHub SSO",
                     "enabled": github_oauth_config.enabled,
                     "startUrl": "/api/auth/github/start",
+                },
+                {
+                    "id": "github-enterprise",
+                    "label": "GitHub Enterprise",
+                    "enabled": github_enterprise_oauth_config.enabled,
+                    "startUrl": "/api/auth/github-enterprise/start",
                 },
                 {
                     "id": "google",
@@ -1662,7 +1742,7 @@ def serve(host: str, port: int, reports_dir: Path) -> None:
         source="ui",
     )
     LOGGER.info("UI service started host=%s port=%s", host, port, extra={"event_type": "service.started"})
-    log_github_app_context(DEFAULT_GITHUB_APP_ID, DEFAULT_GITHUB_APP_INSTALLATION_ID)
+    log_github_app_context(configured_github_app_id(), configured_github_installation_id())
     handler = type(
         "ConfiguredApplicationInventoryServiceHandler",
         (ApplicationInventoryServiceHandler,),

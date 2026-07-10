@@ -8,12 +8,22 @@ from unittest.mock import Mock, patch
 
 import appsec_scan_router as scanner
 import appsec_scan_router.azure as azure_module
+import appsec_scan_router.github as github_module
 import appsec_scan_router.scanner as scanner_module
 import appsec_scan_router.ui as ui_module
 import application_inventory_service
 import ado_mobile_scanner
 import mobile_scanner
-from appsec_scan_router.auth import AuthManager, CredentialStore, GoogleOAuthConfig, TestLoginConfig, expired_session_cookie, session_cookie
+from appsec_scan_router.auth import (
+    AuthManager,
+    AuthenticatedUser,
+    CredentialStore,
+    GitHubEnterpriseOAuthConfig,
+    GoogleOAuthConfig,
+    TestLoginConfig,
+    expired_session_cookie,
+    session_cookie,
+)
 from appsec_scan_router.github import GitHubAppCredentials, GitHubAppTokenProvider, normalize_github_api_url
 from appsec_scan_router.postgres import POSTGRES_COLUMNS, sanitize_observability_message
 from appsec_scan_router.ui import default_ui_config
@@ -49,10 +59,11 @@ class PublicApiTests(unittest.TestCase):
         self.assertIn("ml_enabled", scanner.KNOWN_INVENTORY_TYPES)
         self.assertEqual(scanner.APPLICATION_TYPE_LABELS["ml_enabled"], "ML-enabled")
         self.assertEqual(scanner.DEFAULT_POSTGRES_SCHEMA, "application_inventory")
-        self.assertEqual(scanner.DEFAULT_GITHUB_APP_ID, "4255413")
-        self.assertEqual(scanner.DEFAULT_GITHUB_APP_INSTALLATION_ID, "145419902")
+        self.assertEqual(scanner.DEFAULT_GITHUB_APP_ID, "")
+        self.assertEqual(scanner.DEFAULT_GITHUB_APP_INSTALLATION_ID, "")
         self.assertTrue(callable(scanner.parse_ado_org_pat_values))
         self.assertTrue(callable(scanner.ado_org_pats_to_json))
+        self.assertEqual(scanner.parse_github_urls(["https://github.com/global-snt", "security-team"]), ("global-snt", "security-team"))
         self.assertTrue(callable(scanner.parse_source_target_filter_values))
         self.assertTrue(callable(scanner.source_target_filters_to_json))
         self.assertIs(scanner.SourceTargetFilter, ado_mobile_scanner.SourceTargetFilter)
@@ -112,6 +123,38 @@ class AuthTests(unittest.TestCase):
         self.assertTrue(config.enabled)
         self.assertEqual(config.client_id, "google-client")
         self.assertEqual(config.scope, "openid email profile")
+
+    def test_github_enterprise_oauth_config_derives_endpoints(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "APPLICATION_INVENTORY_SERVICE_GHE_BASE_URL": "https://ghe.example.com/api/v3",
+                "APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_ID": "ghe-client",
+                "APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_SECRET": "ghe-secret",
+            },
+            clear=True,
+        ):
+            config = GitHubEnterpriseOAuthConfig.from_env()
+
+        self.assertTrue(config.enabled)
+        self.assertEqual(config.authorize_url, "https://ghe.example.com/login/oauth/authorize")
+        self.assertEqual(config.token_url, "https://ghe.example.com/login/oauth/access_token")
+        self.assertEqual(config.user_url, "https://ghe.example.com/api/v3/user")
+        self.assertEqual(config.scope, "read:user read:org")
+
+    def test_github_enterprise_oauth_config_rejects_insecure_base_url_by_default(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "APPLICATION_INVENTORY_SERVICE_GHE_BASE_URL": "http://ghe.example.com",
+                "APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_ID": "ghe-client",
+                "APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_SECRET": "ghe-secret",
+            },
+            clear=True,
+        ):
+            config = GitHubEnterpriseOAuthConfig.from_env()
+
+        self.assertFalse(config.enabled)
 
     def test_test_login_config_reads_environment(self):
         with patch.dict(
@@ -175,6 +218,8 @@ class AuthTests(unittest.TestCase):
         self.assertTrue(status["googleLoginEnabled"])
         self.assertTrue(status["testLoginEnabled"])
         self.assertEqual(providers["github"]["startUrl"], "/api/auth/github/start")
+        self.assertFalse(status["githubEnterpriseLoginEnabled"])
+        self.assertEqual(providers["github-enterprise"]["startUrl"], "/api/auth/github-enterprise/start")
         self.assertEqual(providers["google"]["startUrl"], "/api/auth/google/start")
         self.assertEqual(providers["test"]["startUrl"], "/api/auth/test/start")
 
@@ -184,13 +229,41 @@ class AuthTests(unittest.TestCase):
 
         provider_ids = [provider["id"] for provider in config["auth"]["authProviders"]]
         application_type_ids = [choice["value"] for choice in config["defaults"]["applicationTypeChoices"]]
-        self.assertEqual(provider_ids, ["github", "google", "test"])
+        self.assertEqual(provider_ids, ["github", "github-enterprise", "google", "test"])
         self.assertIn("googleLoginEnabled", config["auth"])
         self.assertTrue(config["auth"]["testLoginEnabled"])
         self.assertIn("ml_enabled", application_type_ids)
         self.assertEqual(config["defaults"]["activityMode"], "contributors")
+        self.assertEqual(config["defaults"]["githubUrls"], [])
+        self.assertNotIn("baseUrl", config["defaults"])
         self.assertEqual(config["defaults"]["postgresHost"], "localhost")
         self.assertEqual(config["defaults"]["postgresSchema"], "application_inventory")
+
+    def test_default_ui_config_reads_backend_github_scope(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            "os.environ",
+            {
+                "APPLICATION_INVENTORY_GITHUB_URLS": "owner-a,owner-b",
+                "APPLICATION_INVENTORY_GITHUB_REPOSITORIES": "owner-a=payments-api,owner-b=identity-service",
+                "APPLICATION_INVENTORY_GITHUB_API_URL": "https://github.example.com/api/v3",
+            },
+            clear=True,
+        ):
+            config = default_ui_config(Path(tmpdir))
+
+        self.assertEqual(config["defaults"]["githubUrls"], ["owner-a", "owner-b"])
+        self.assertEqual(config["defaults"]["githubRepositories"], ["owner-a=payments-api", "owner-b=identity-service"])
+        self.assertNotIn("baseUrl", config["defaults"])
+
+    def test_github_enterprise_session_stores_token_for_scan(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict("os.environ", {}, clear=True):
+            manager = AuthManager(Path(tmpdir))
+            user = AuthenticatedUser(id="ghe-user", login="ghe.user", provider="github-enterprise")
+            record = manager.create_session(user, provider_token="ghe-access-token")
+
+            payload = manager.apply_credentials({"provider": "github-enterprise"}, record)
+
+        self.assertEqual(payload["token"], "ghe-access-token")
 
     def test_session_cookies_include_security_attributes(self):
         cookie = session_cookie("session-id", secure=True)
@@ -250,6 +323,32 @@ class AuthTests(unittest.TestCase):
 
 
 class MultiOrganizationScanTests(unittest.TestCase):
+    def test_scan_dispatches_each_github_url(self):
+        config = scanner.ScanConfig(
+            org="global-snt",
+            pat="github-token",
+            project=None,
+            out_dir=Path("reports"),
+            out_prefix="scan",
+            max_workers=1,
+            content_workers=1,
+            max_commits_per_repo=0,
+            timeout_seconds=30,
+            min_confidence="low",
+            provider="github-enterprise",
+            base_url="https://api.github.com",
+            github_urls=("global-snt", "security-team"),
+        )
+
+        def fake_scan(source_config, on_result=None):
+            return [{"provider": source_config.provider, "organization": source_config.org}]
+
+        with patch.object(scanner_module, "scan_single_org", side_effect=fake_scan) as scan_single_org:
+            results = scanner.scan(config)
+
+        self.assertEqual([call.args[0].org for call in scan_single_org.call_args_list], ["global-snt", "security-team"])
+        self.assertEqual([row["organization"] for row in results], ["global-snt", "security-team"])
+
     def test_scan_mixed_dispatches_all_configured_sources(self):
         config = scanner.ScanConfig(
             org="FabrikamGH",
@@ -442,14 +541,28 @@ class ProviderClientTests(unittest.TestCase):
             key_path.write_text("-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----", encoding="utf-8")
             with patch.dict(
                 "os.environ",
-                {"APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE": str(key_path)},
+                {
+                    "APPLICATION_INVENTORY_GITHUB_APP_ID": "123",
+                    "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID": "456",
+                    "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE": str(key_path),
+                },
                 clear=True,
             ):
                 credentials = GitHubAppCredentials.from_env()
 
         self.assertIsNotNone(credentials)
-        self.assertEqual(credentials.app_id, "4255413")
-        self.assertEqual(credentials.installation_id, "145419902")
+        self.assertEqual(credentials.app_id, "123")
+        self.assertEqual(credentials.installation_id, "456")
+
+    def test_github_app_jwt_uses_string_issuer(self):
+        credentials = GitHubAppCredentials("123", "456", "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----")
+        provider = GitHubAppTokenProvider("https://api.github.com", credentials, 10)
+        with patch.object(github_module.jwt, "encode", return_value="app-jwt") as encode:
+            self.assertEqual(provider._app_jwt(), "app-jwt")
+
+        claims = encode.call_args.args[0]
+        self.assertEqual(claims["iss"], "123")
+        provider.close()
 
     def test_observability_message_redacts_sensitive_values(self):
         message = "postgresql://postgres:postgres@localhost:5432/postgres --pat secret Bearer token password=secret"
@@ -674,6 +787,13 @@ class UiServiceTests(unittest.TestCase):
         self.assertNotIn('value="4255413"', html)
         self.assertNotIn('name="githubAppPrivateKey"', html)
         self.assertNotIn('name="project"', html)
+        self.assertNotIn('name="repo"', html)
+        self.assertIn('name="githubUrl"', html)
+        self.assertNotIn("GitHub API URL", html)
+        self.assertNotIn("progressValue", html)
+        self.assertNotIn("etaValue", html)
+        self.assertIn("log-error", javascript)
+        self.assertIn("log-success", javascript)
         self.assertNotIn('name="token"', html)
         self.assertNotIn('name="saveToken"', html)
         self.assertIn('id="adoOrgRequirementBadge">Required</span>', html)
@@ -688,29 +808,28 @@ class UiServiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             scanner.normalize_scan_config({"provider": "azure-devops", "org": "FabrikamCloud"})
 
-    def test_normalize_scan_config_requires_github_base_url(self):
-        with self.assertRaises(ValueError):
-            scanner.normalize_scan_config(
+    def test_normalize_scan_config_defaults_github_url_and_api_url(self):
+        with patch.dict("os.environ", {"APPLICATION_INVENTORY_GITHUB_URLS": "global-snt"}, clear=False):
+            config = scanner.normalize_scan_config({"provider": "github-enterprise"})
+
+        self.assertEqual(config["githubUrls"], ["global-snt"])
+        self.assertEqual(config["org"], "global-snt")
+        self.assertEqual(config["baseUrl"], "https://api.github.com")
+
+    def test_build_scan_command_for_github_enterprise(self):
+        with patch.dict("os.environ", {"APPLICATION_INVENTORY_GITHUB_API_URL": "https://github.fabrikam.example/api/v3"}, clear=False):
+            config = scanner.normalize_scan_config(
                 {
                     "provider": "github-enterprise",
                     "org": "FabrikamCloud",
+                    "repo": "mobile-app",
+                    "outPrefix": "inventory scan",
+                    "applicationTypes": ["mobile_app", "ai_enabled", "ml_enabled"],
+                    "minConfidence": "medium",
+                    "activityMode": "latest",
+                    "storeLookup": True,
                 }
             )
-
-    def test_build_scan_command_for_github_enterprise(self):
-        config = scanner.normalize_scan_config(
-            {
-                "provider": "github-enterprise",
-                "org": "FabrikamCloud",
-                "repo": "mobile-app",
-                "baseUrl": "https://github.fabrikam.example/api/v3",
-                "outPrefix": "inventory scan",
-                "applicationTypes": ["mobile_app", "ai_enabled", "ml_enabled"],
-                "minConfidence": "medium",
-                "activityMode": "latest",
-                "storeLookup": True,
-            }
-        )
 
         command = scanner.build_scan_command(config, Path("/reports/scan-1"))
 
@@ -718,8 +837,9 @@ class UiServiceTests(unittest.TestCase):
         self.assertIn("github-enterprise", command)
         self.assertIn("--base-url", command)
         self.assertIn("https://github.fabrikam.example/api/v3", command)
-        self.assertIn("--repo", command)
-        self.assertIn("mobile-app", command)
+        self.assertIn("--github-url", command)
+        self.assertIn("FabrikamCloud", command)
+        self.assertNotIn("--repo", command)
         self.assertIn("--store-lookup", command)
         self.assertIn("application_inventory_service", command)
         self.assertIn("--owner-user-id", command)
@@ -731,39 +851,78 @@ class UiServiceTests(unittest.TestCase):
         self.assertIn("ml_enabled", command)
 
     def test_normalize_scan_config_accepts_github_app_credentials(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "APPLICATION_INVENTORY_GITHUB_APP_ID": "123",
+                "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID": "456",
+            },
+            clear=False,
+        ):
+            config = scanner.normalize_scan_config(
+                {
+                    "provider": "github-enterprise",
+                    "org": "FabrikamCloud",
+                    "githubAppPrivateKey": "-----BEGIN PRIVATE KEY-----\\nfake\\n-----END PRIVATE KEY-----",
+                }
+            )
+
+        self.assertEqual(config["githubAppId"], "123")
+        self.assertEqual(config["githubAppInstallationId"], "456")
+        self.assertIn("BEGIN PRIVATE KEY", config["githubAppPrivateKey"])
+
+        with patch.dict(
+            "os.environ",
+            {
+                "APPLICATION_INVENTORY_GITHUB_APP_ID": "123",
+                "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID": "456",
+            },
+            clear=False,
+        ):
+            environment = ui_module.scan_environment(config)
+        self.assertEqual(environment["APPLICATION_INVENTORY_GITHUB_APP_ID"], "123")
+        self.assertEqual(environment["APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID"], "456")
+        self.assertIn("BEGIN PRIVATE KEY", environment["APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY"])
+
+    def test_scan_environment_forwards_primary_github_app_private_key_file(self):
         config = scanner.normalize_scan_config(
             {
                 "provider": "github-enterprise",
                 "org": "FabrikamCloud",
-                "baseUrl": "https://github.fabrikam.example/api/v3",
-                "githubAppId": "123",
-                "githubAppInstallationId": "456",
-                "githubAppPrivateKey": "-----BEGIN PRIVATE KEY-----\\nfake\\n-----END PRIVATE KEY-----",
+                "baseUrl": "https://api.github.com",
             }
         )
 
-        self.assertEqual(config["githubAppId"], "4255413")
-        self.assertEqual(config["githubAppInstallationId"], "145419902")
-        self.assertIn("BEGIN PRIVATE KEY", config["githubAppPrivateKey"])
+        with patch.dict(
+            "os.environ",
+            {"APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE": "/run/secrets/github-app.pem"},
+            clear=False,
+        ):
+            environment = ui_module.scan_environment(config)
 
-        environment = ui_module.scan_environment(config)
-        self.assertEqual(environment["APPLICATION_INVENTORY_GITHUB_APP_ID"], "4255413")
-        self.assertEqual(environment["APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID"], "145419902")
-        self.assertIn("BEGIN PRIVATE KEY", environment["APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY"])
+        self.assertEqual(
+            environment["APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE"],
+            "/run/secrets/github-app.pem",
+        )
 
     def test_normalize_scan_config_accepts_mixed_sources(self):
-        config = scanner.normalize_scan_config(
+        with patch.dict(
+            "os.environ",
             {
-                "provider": "mixed",
-                "org": "FabrikamGH",
-                "baseUrl": "https://github.fabrikam.example/api/v3",
-                "adoOrgPats": [{"org": "FabrikamADO", "pat": "ado-token"}],
-                "githubAppId": "123",
-                "githubAppInstallationId": "456",
-                "githubAppPrivateKey": "-----BEGIN PRIVATE KEY-----\\nfake\\n-----END PRIVATE KEY-----",
-                "postgresEnabled": False,
-            }
-        )
+                "APPLICATION_INVENTORY_GITHUB_APP_ID": "123",
+                "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID": "456",
+            },
+            clear=False,
+        ):
+            config = scanner.normalize_scan_config(
+                {
+                    "provider": "mixed",
+                    "org": "FabrikamGH",
+                    "adoOrgPats": [{"org": "FabrikamADO", "pat": "ado-token"}],
+                    "githubAppPrivateKey": "-----BEGIN PRIVATE KEY-----\\nfake\\n-----END PRIVATE KEY-----",
+                    "postgresEnabled": False,
+                }
+            )
 
         self.assertEqual(config["provider"], "mixed")
         self.assertEqual(config["orgDisplay"], "FabrikamGH + FabrikamADO")
@@ -785,7 +944,7 @@ class UiServiceTests(unittest.TestCase):
 
         self.assertEqual(command.count("--provider"), 1)
         self.assertIn("mixed", command)
-        self.assertIn("--org", command)
+        self.assertIn("--github-url", command)
         self.assertIn("FabrikamGH", command)
         self.assertIn("APPLICATION_INVENTORY_ADO_ORG_PATS", environment)
         self.assertNotIn("ado-token", command)
@@ -1135,12 +1294,14 @@ class UiServiceTests(unittest.TestCase):
             def close(self):
                 return None
 
-        with patch.object(ui_module, "GitHubEnterpriseClient", FakeGitHubClient):
+        with (
+            patch.object(ui_module, "GitHubEnterpriseClient", FakeGitHubClient),
+            patch.dict("os.environ", {"APPLICATION_INVENTORY_GITHUB_API_URL": "https://github.fabrikam.example/api/v3"}, clear=False),
+        ):
             data = ui_module.discover_source_targets(
                 {
                     "provider": "github-enterprise",
                     "org": "FabrikamCloud",
-                    "baseUrl": "https://github.fabrikam.example/api/v3",
                     "token": "token",
                     "timeout": 11,
                 }
@@ -2105,6 +2266,38 @@ class StoreLookupTests(unittest.TestCase):
             (scanner.APPLE_PLATFORM, scanner.GOOGLE_PLATFORM),
         )
 
+    def test_normalize_store_countries_deduplicates_and_uppercases(self):
+        self.assertEqual(scanner.normalize_store_countries("us, ca\nGB"), ("US", "CA", "GB"))
+        self.assertEqual(scanner.normalize_store_countries([]), ("US",))
+        with self.assertRaises(ValueError):
+            scanner.normalize_store_countries(["USA"])
+
+    def test_store_columns_aggregate_multiple_countries(self):
+        columns = scanner.store_columns_from_listings(
+            [
+                scanner.StoreListing(
+                    platform=scanner.APPLE_PLATFORM,
+                    status="found",
+                    name="Agsnap",
+                    identifier="com.fabrikam.agsnap",
+                    version="1.0.2",
+                    country="US",
+                ),
+                scanner.StoreListing(
+                    platform=scanner.APPLE_PLATFORM,
+                    status="found",
+                    name="Agsnap",
+                    identifier="com.fabrikam.agsnap",
+                    version="1.0.3",
+                    country="CA",
+                ),
+            ]
+        )
+
+        self.assertEqual(columns["store_validation_passed"], "TRUE")
+        self.assertEqual(columns["store_platforms"], "Apple App Store (US, CA)")
+        self.assertEqual(columns["apple_app_store_version"], "1.0.2; 1.0.3")
+
     def test_store_columns_from_found_listings(self):
         columns = scanner.store_columns_from_listings(
             [
@@ -2216,6 +2409,25 @@ class StoreLookupTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_parse_args_supports_multiple_github_urls_and_defaults_api_url(self):
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "token"}, clear=True):
+            config = scanner.parse_args(
+                [
+                    "--provider",
+                    "github-enterprise",
+                    "--github-url",
+                    "https://github.com/global-snt",
+                    "--github-url",
+                    "security-team",
+                    "--out-dir",
+                    "reports",
+                ]
+            )
+
+        self.assertEqual(config.github_urls, ("global-snt", "security-team"))
+        self.assertEqual(config.org, "global-snt")
+        self.assertEqual(config.base_url, "https://api.github.com")
+
     def test_parse_args_requires_pat(self):
         with self.assertRaises(SystemExit):
             scanner.parse_args(["--org", "example"])
@@ -2277,6 +2489,8 @@ class CliTests(unittest.TestCase):
                 "--store-lookup",
                 "--store-country",
                 "ca",
+                "--store-country",
+                "us",
                 "--store-timeout",
                 "7",
             ]
@@ -2286,6 +2500,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(config.activity_mode, "latest")
         self.assertTrue(config.store_lookup)
         self.assertEqual(config.store_country, "CA")
+        self.assertEqual(config.store_countries, ("CA", "US"))
         self.assertEqual(config.store_timeout_seconds, 7)
 
     def test_parse_args_rejects_invalid_store_options(self):

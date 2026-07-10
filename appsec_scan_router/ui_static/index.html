@@ -31,6 +31,15 @@
               <small id="githubSsoStatus">Checking configuration</small>
             </span>
           </a>
+          <a class="sso-option disabled" id="loginGitHubEnterpriseSso" href="#" aria-disabled="true">
+            <span class="sso-mark github-mark">
+              <img src="/static/github-mark.svg" alt="" aria-hidden="true">
+            </span>
+            <span>
+              <strong>GitHub Enterprise</strong>
+              <small id="githubEnterpriseSsoStatus">Checking configuration</small>
+            </span>
+          </a>
           <a class="sso-option disabled" id="loginGoogleSso" href="#" aria-disabled="true">
             <span class="sso-mark google-mark">
               <img src="/static/google-g.svg" alt="" aria-hidden="true">
@@ -117,27 +126,23 @@
             </div>
 
           <div class="field-grid">
-            <label class="provider-github hidden">
-              <span class="label-line">
-                <span id="orgFieldLabel">GitHub owner</span>
-                <span class="field-badge required" id="orgRequirementBadge">Required</span>
-              </span>
-              <input name="org" autocomplete="organization" placeholder="GitHub organization or owner">
-            </label>
-            <label class="provider-github provider-github-only hidden">
-              <span class="label-line">
-                <span>Repository</span>
-                <span class="field-badge optional">Optional</span>
-              </span>
-              <input name="repo" placeholder="All repositories if blank">
-            </label>
-            <label class="provider-github hidden full">
-              <span class="label-line">
-                <span>GitHub API URL</span>
+            <div class="provider-github github-url-builder full hidden">
+              <input name="githubUrls" type="hidden">
+              <div class="label-line">
+                <span>GitHub URLs</span>
                 <span class="field-badge required">Required</span>
-              </span>
-              <input name="baseUrl" placeholder="https://github.example.com/api/v3">
-            </label>
+              </div>
+              <div class="github-url-inputs">
+                <label>
+                  <span class="label-line">
+                    <span>GitHub URL</span>
+                  </span>
+                  <input name="githubUrl" autocomplete="url" placeholder="your-org or https://github.com/your-org">
+                </label>
+                <button class="ghost" id="addGithubUrl" type="button">Add</button>
+              </div>
+              <div class="github-url-list" id="githubUrlList" aria-live="polite"></div>
+            </div>
             <section class="provider-github github-app-status hidden full" aria-labelledby="githubAppHeading">
               <div class="label-line">
                 <span id="githubAppHeading">GitHub App access</span>
@@ -319,13 +324,30 @@
               </span>
               <input name="timeout" type="number" min="1" value="30">
             </label>
-            <label class="mobile-option">
-              <span class="label-line">
-                <span>Store country</span>
+            <fieldset class="mobile-option store-country-picker">
+              <legend>
+                <span>Store countries</span>
                 <span class="default-badge">Default: US</span>
-              </span>
-              <input name="storeCountry" maxlength="2" value="US">
-            </label>
+              </legend>
+              <div class="store-country-options">
+                <label class="store-country-option"><input name="storeCountries" type="checkbox" value="US"><span>US</span></label>
+                <label class="store-country-option"><input name="storeCountries" type="checkbox" value="CA"><span>Canada</span></label>
+                <label class="store-country-option"><input name="storeCountries" type="checkbox" value="GB"><span>UK</span></label>
+                <label class="store-country-option"><input name="storeCountries" type="checkbox" value="AU"><span>Australia</span></label>
+                <label class="store-country-option"><input name="storeCountries" type="checkbox" value="DE"><span>Germany</span></label>
+                <label class="store-country-option"><input name="storeCountries" type="checkbox" value="FR"><span>France</span></label>
+                <label class="store-country-option"><input name="storeCountries" type="checkbox" value="ES"><span>Spain</span></label>
+                <label class="store-country-option"><input name="storeCountries" type="checkbox" value="IT"><span>Italy</span></label>
+                <label class="store-country-option"><input name="storeCountries" type="checkbox" value="JP"><span>Japan</span></label>
+                <label class="store-country-option"><input name="storeCountries" type="checkbox" value="KR"><span>South Korea</span></label>
+                <label class="store-country-option"><input name="storeCountries" type="checkbox" value="IN"><span>India</span></label>
+                <label class="store-country-option"><input name="storeCountries" type="checkbox" value="BR"><span>Brazil</span></label>
+                <label class="store-country-option"><input name="storeCountries" type="checkbox" value="MX"><span>Mexico</span></label>
+                <label class="store-country-option"><input name="storeCountries" type="checkbox" value="SG"><span>Singapore</span></label>
+                <label class="store-country-option"><input name="storeCountries" type="checkbox" value="AE"><span>UAE</span></label>
+                <label class="store-country-option"><input name="storeCountries" type="checkbox" value="ZA"><span>South Africa</span></label>
+              </div>
+            </fieldset>
             <label class="mobile-option">
               <span class="label-line">
                 <span>Store timeout</span>
@@ -446,23 +468,9 @@
                   <strong id="detectedCount">0</strong>
                 </div>
                 <div>
-                  <span class="metric-label">Progress</span>
-                  <strong id="progressValue">0%</strong>
-                </div>
-                <div>
-                  <span class="metric-label">ETA</span>
-                  <strong id="etaValue">Not started</strong>
-                </div>
-                <div>
                   <span class="metric-label">Runtime</span>
                   <strong id="runtimeValue">0s</strong>
                 </div>
-              </div>
-              <div class="status-bar">
-                <div class="status-track">
-                  <span id="progressFill"></span>
-                </div>
-                <div class="status-detail" id="progressDetail">No scan running</div>
               </div>
               <div class="active-run">
                 <div>

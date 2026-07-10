@@ -59,6 +59,9 @@ Classes:
 - `GitHubOAuthConfig`: Configuration object that carries validated runtime settings.
   - `GitHubOAuthConfig.from_env(cls)`: Implements from env behavior.
   - `GitHubOAuthConfig.enabled(self)`: Implements enabled behavior.
+- `GitHubEnterpriseOAuthConfig`: GitHub Enterprise OAuth endpoints, client settings, and scopes resolved from environment variables.
+  - `GitHubEnterpriseOAuthConfig.from_env(cls)`: Resolves the Enterprise OAuth configuration.
+  - `GitHubEnterpriseOAuthConfig.enabled(self)`: Confirms that the client and all OAuth endpoints are configured.
 - `GoogleOAuthConfig`: Configuration object that carries validated runtime settings.
   - `GoogleOAuthConfig.from_env(cls)`: Implements from env behavior.
   - `GoogleOAuthConfig.enabled(self)`: Implements enabled behavior.
@@ -81,6 +84,7 @@ Classes:
   - `GitHubOAuthService.enabled(self)`: Implements enabled behavior.
   - `GitHubOAuthService.authorization_url(self, redirect_uri)`: Implements authorization url behavior.
   - `GitHubOAuthService.complete(self, code, state, redirect_uri)`: Implements complete behavior.
+  - `GitHubOAuthService.complete_with_token(self, code, state, redirect_uri)`: Completes OAuth and returns the user with the access token for encrypted storage.
   - `GitHubOAuthService.exchange_code(self, code, redirect_uri)`: Exchanges an OAuth authorization code for an access token.
   - `GitHubOAuthService.fetch_user(self, access_token)`: Fetches repository content, commits, user profiles, or store pages.
   - `GitHubOAuthService.consume_state(self, state)`: Implements consume state behavior.
@@ -252,6 +256,8 @@ Classes:
 Functions:
 - `github_commit_to_activity_commit(commit)`: Handles GitHub Enterprise provider behavior.
 - `normalize_github_api_url(base_url)`: Normalizes input into the canonical representation used by the scanner.
+- `normalize_github_owner(value)`: Converts a GitHub owner URL or owner name to the canonical owner value.
+- `parse_github_urls(value, default)`: Parses and deduplicates multiple GitHub owner URLs or names.
 - `insecure_provider_urls_allowed()`: Helper for insecure provider urls allowed.
 - `allowed_github_hosts()`: Helper for allowed github hosts.
 - `github_env_value(*names)`: Reads the first configured GitHub App environment value.
@@ -405,6 +411,7 @@ Functions:
 - `scan_to_reports(config)`: Runs or coordinates repository and branch scanning.
 - `scan(config, on_result=...)`: Runs or coordinates repository and branch scanning.
 - `scan_ado_organizations(config, on_result=...)`: Runs the Azure DevOps portion of a multi-organization or mixed scan.
+- `scan_github_organizations(config, on_result=...)`: Runs the GitHub portion for each configured owner URL.
 - `scan_mixed(config, on_result=...)`: Runs Azure DevOps and GitHub Enterprise through one result callback.
 - `scan_single_org(config, on_result=...)`: Runs or coordinates repository and branch scanning.
 - `create_source_client(config)`: Creates schemas, clients, sessions, rows, or report structures.
@@ -477,11 +484,11 @@ Apple App Store and Google Play lookup and validation helpers.
 Constants: `LOGGER`, `APPLE_PLATFORM`, `GOOGLE_PLATFORM`, `APPLE_DISPLAY_NAME`, `GOOGLE_DISPLAY_NAME`, `CROSS_PLATFORM_CATEGORIES`, `BOTH_STORE_PLATFORMS`, `STORE_IDENTIFIER_PATTERN`
 
 Classes:
-- `StoreLookupClient`: Provider or external-service client that wraps network access and retries.
+- `StoreLookupClient`: Provider or external-service client that wraps network access and retries across one or more country stores.
   - `StoreLookupClient.session(self)`: Creates, reads, or serializes session state.
   - `StoreLookupClient.close(self)`: Releases open sessions, files, or listeners.
   - `StoreLookupClient.lookup(self, identifier, categories)`: Implements lookup behavior.
-  - `StoreLookupClient.lookup_platform(self, platform, identifier)`: Implements lookup platform behavior.
+- `StoreLookupClient.lookup_platform(self, platform, identifier, country=...)`: Implements lookup platform behavior for a selected country.
   - `StoreLookupClient.lookup_apple_app_store(self, identifier)`: Implements lookup apple app store behavior.
   - `StoreLookupClient.lookup_google_play(self, identifier)`: Implements lookup google play behavior.
 - `MetaTagParser`: Runtime data object.
@@ -497,6 +504,7 @@ Functions:
 - `invalid_identifier_store_listings(categories, identifier)`: Helper for invalid identifier store listings.
 - `is_store_identifier_candidate(identifier)`: Evaluates a predicate used by detection, validation, or UI flow.
 - `store_columns_from_listings(listings)`: Looks up, validates, or reports app-store data.
+- `aggregate_platform_listings(platform, listings)`: Combines country-specific listings for the existing report columns.
 - `listing_column_values(platform, listing)`: Helper for listing column values.
 - `store_validation_result(listings)`: Looks up, validates, or reports app-store data.
 - `listing_validation_result(listing)`: Helper for listing validation result.

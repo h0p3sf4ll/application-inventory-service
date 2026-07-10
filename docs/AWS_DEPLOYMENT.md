@@ -91,13 +91,14 @@ aws ecr create-repository \
 aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 
-docker build -t "$REPO:1.6.6" .
-docker tag "$REPO:1.6.6" "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.6"
-docker push "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:1.6.6"
+IMAGE_TAG=1.6.7
+docker build -t "$REPO:$IMAGE_TAG" .
+docker tag "$REPO:$IMAGE_TAG" "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:$IMAGE_TAG"
+docker push "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:$IMAGE_TAG"
 
 IMAGE_DIGEST=$(aws ecr describe-images \
   --repository-name "$REPO" \
-  --image-ids imageTag=1.6.6 \
+  --image-ids imageTag="$IMAGE_TAG" \
   --region "$AWS_REGION" \
   --query 'imageDetails[0].imageDigest' \
   --output text)
@@ -115,6 +116,7 @@ Store these in AWS Secrets Manager:
 | --- | --- |
 | `APPLICATION_INVENTORY_SERVICE_SECRET_KEY` | Fernet key for encrypted token storage |
 | `APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET` | GitHub OAuth secret |
+| `APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_SECRET` | GitHub Enterprise OAuth secret |
 | `APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET` | Google OAuth secret |
 | `APPLICATION_INVENTORY_POSTGRES_DSN` | PostgreSQL DSN |
 | `APPLICATION_INVENTORY_OBSERVABILITY_DSN` | PostgreSQL DSN for service logs; use the inventory DSN only when the same database is approved |
@@ -122,6 +124,9 @@ Store these in AWS Secrets Manager:
 | `APPLICATION_INVENTORY_GITHUB_APP_ID` | GitHub App ID |
 | `APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID` | GitHub App installation ID |
 | `APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE` | Path to a secret-mounted GitHub App PEM key |
+| `APPLICATION_INVENTORY_GITHUB_API_URL` | Backend-only GitHub API endpoint; defaults to `https://api.github.com` |
+| `APPLICATION_INVENTORY_GITHUB_URLS` | Comma-separated or newline-separated GitHub owners |
+| `APPLICATION_INVENTORY_GITHUB_REPOSITORIES` | Optional `OWNER=REPOSITORY` defaults |
 | Provider tokens | Optional Azure DevOps PAT or legacy GitHub token fallback |
 
 Generate a Fernet key:
@@ -157,6 +162,7 @@ Environment:
 | `APPLICATION_INVENTORY_SERVICE_COOKIE_SECURE` | `true` |
 | `APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED` | `false` |
 | `APPLICATION_INVENTORY_SERVICE_PUBLIC_URL` | `https://inventory.example.com` |
+| `APPLICATION_INVENTORY_SERVICE_GHE_BASE_URL` | `https://github.enterprise.example` when Enterprise OAuth sign-in is enabled |
 | `APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS` | Approved GitHub Enterprise hostnames |
 | `APPLICATION_INVENTORY_SERVICE_ALLOW_INSECURE_PROVIDER_URLS` | `false` |
 | `APPLICATION_INVENTORY_SERVICE_MAX_JSON_BODY_BYTES` | `1048576` |
@@ -194,6 +200,7 @@ Configure OAuth apps with the public ALB or Route 53 hostname:
 
 ```text
 https://inventory.example.com/api/auth/github/callback
+https://inventory.example.com/api/auth/github-enterprise/callback
 https://inventory.example.com/api/auth/google/callback
 ```
 
@@ -293,7 +300,7 @@ Ship logs to a central SIEM if inventory results or errors may support audit or 
 6. Create ECS task definition and service.
 7. Attach ALB target group and health check.
 8. Configure Route 53 and ACM certificate.
-9. Configure GitHub or Google OAuth callback URLs.
+9. Configure GitHub, GitHub Enterprise, or Google OAuth callback URLs.
 10. Run a small project/repository scan.
 11. Validate reports, PostgreSQL rows, CloudWatch logs, and scanner target outputs.
 

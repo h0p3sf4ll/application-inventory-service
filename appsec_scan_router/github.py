@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -12,6 +14,7 @@ from typing import Any
 from urllib.parse import quote, urlparse, urlunparse
 
 from .constants import (
+    DEFAULT_GITHUB_API_URL,
     DEFAULT_COMMIT_PAGE_SIZE,
     DEFAULT_GITHUB_APP_ID,
     DEFAULT_GITHUB_APP_INSTALLATION_ID,
@@ -157,7 +160,7 @@ class GitHubAppTokenProvider:
             "Authorization": f"Bearer {assertion}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "application-inventory-service/1.6.6",
+            "User-Agent": "application-inventory-service/1.6.7",
         }
         try:
             response = self._session.post(url, headers=headers, timeout=self.timeout_seconds)
@@ -179,7 +182,7 @@ class GitHubAppTokenProvider:
         now = int(time.time())
         try:
             encoded = jwt.encode(
-                {"iat": now - 60, "exp": now + 540, "iss": int(self.credentials.app_id)},
+                {"iat": now - 60, "exp": now + 540, "iss": self.credentials.app_id},
                 self.credentials.private_key,
                 algorithm="RS256",
             )
@@ -215,7 +218,7 @@ class GitHubEnterpriseClient:
         self._headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "application-inventory-service/1.6.6",
+            "User-Agent": "application-inventory-service/1.6.7",
         }
         self._retry = Retry(
             total=5,
@@ -494,7 +497,7 @@ def github_commit_to_activity_commit(commit: dict[str, Any]) -> dict[str, Any]:
 def normalize_github_api_url(base_url: str) -> str:
     text = clean_value(base_url).rstrip("/")
     if not text:
-        return "https://api.github.com"
+        return DEFAULT_GITHUB_API_URL
     if "://" not in text:
         text = f"https://{text}"
     parsed = urlparse(text)
@@ -506,12 +509,58 @@ def normalize_github_api_url(base_url: str) -> str:
         raise ValueError("GitHub Enterprise API URL must not contain credentials.")
     hostname = clean_value(parsed.hostname).lower()
     allowed_hosts = allowed_github_hosts()
-    if allowed_hosts and hostname not in allowed_hosts:
+    if allowed_hosts and hostname not in allowed_hosts and hostname != "api.github.com":
         raise ValueError("GitHub Enterprise API URL host is not allowed by configuration.")
+    if hostname == "api.github.com":
+        return DEFAULT_GITHUB_API_URL
     path = parsed.path.rstrip("/")
     if not path.endswith("/api/v3"):
         path = f"{path}/api/v3"
     return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+
+
+def normalize_github_owner(value: Any) -> str:
+    text = clean_value(value).strip().rstrip("/")
+    if not text:
+        return ""
+    if "://" in text or text.lower().startswith("github.com/"):
+        candidate = text if "://" in text else f"https://{text}"
+        parsed = urlparse(candidate)
+        if parsed.hostname and parsed.hostname.lower() not in {"github.com", "www.github.com"}:
+            raise ValueError("GitHub URL must use github.com.")
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        text = segments[0] if segments else ""
+    if not text or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", text):
+        raise ValueError("GitHub URL must be a GitHub owner or github.com owner URL.")
+    return text
+
+
+def parse_github_urls(value: Any, default: str = "") -> tuple[str, ...]:
+    values: list[Any] = []
+    if isinstance(value, dict):
+        values.append(value.get("url") or value.get("owner"))
+    elif isinstance(value, (list, tuple, set)):
+        values.extend(value)
+    elif value is not None:
+        text = clean_value(value)
+        if text.startswith("["):
+            try:
+                decoded = json.loads(text)
+            except ValueError as exc:
+                raise ValueError("GitHub URLs must be valid JSON or one URL per line.") from exc
+            return parse_github_urls(decoded, default=default)
+        values.extend(part for part in re.split(r"[\n,]", text) if part.strip())
+    if not values and default:
+        values.append(default)
+    result: list[str] = []
+    seen: set[str] = set()
+    for value_item in values:
+        candidate = value_item.get("url") or value_item.get("owner") if isinstance(value_item, dict) else value_item
+        owner = normalize_github_owner(candidate)
+        if owner and owner.casefold() not in seen:
+            result.append(owner)
+            seen.add(owner.casefold())
+    return tuple(result)
 
 
 def insecure_provider_urls_allowed() -> bool:
@@ -529,6 +578,41 @@ def github_env_value(*names: str) -> str:
         if value:
             return value
     return ""
+
+
+def configured_github_api_url() -> str:
+    value = github_env_value(
+        "APPLICATION_INVENTORY_GITHUB_API_URL",
+        "APPLICATION_INVENTORY_BASE_URL",
+        "APPSEC_INVENTORY_GITHUB_API_URL",
+        "APPSEC_SCAN_BASE_URL",
+        "GITHUB_API_URL",
+        "GHE_API_URL",
+    )
+    return normalize_github_api_url(value or DEFAULT_GITHUB_API_URL)
+
+
+def configured_github_owners() -> tuple[str, ...]:
+    value = github_env_value("APPLICATION_INVENTORY_GITHUB_URLS", "APPSEC_INVENTORY_GITHUB_URLS")
+    return parse_github_urls(value)
+
+
+def configured_github_app_id() -> str:
+    return github_env_value(
+        "APPLICATION_INVENTORY_GITHUB_APP_ID",
+        "APPSEC_INVENTORY_GITHUB_APP_ID",
+        "GITHUB_APP_ID",
+        "GHE_APP_ID",
+    )
+
+
+def configured_github_installation_id() -> str:
+    return github_env_value(
+        "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID",
+        "APPSEC_INVENTORY_GITHUB_APP_INSTALLATION_ID",
+        "GITHUB_APP_INSTALLATION_ID",
+        "GHE_APP_INSTALLATION_ID",
+    )
 
 
 def parse_github_expiry(value: Any) -> float:

@@ -10,9 +10,10 @@ from .constants import (
     DEFAULT_BRANCH_AGE_DAYS,
     DEFAULT_BRANCH_WORKERS,
     DEFAULT_CONTENT_WORKERS,
-    DEFAULT_MAX_WORKERS,
+    DEFAULT_GITHUB_API_URL,
     DEFAULT_GITHUB_APP_ID,
     DEFAULT_GITHUB_APP_INSTALLATION_ID,
+    DEFAULT_MAX_WORKERS,
     DEFAULT_OUT_PREFIX,
     DEFAULT_POSTGRES_TABLE,
     DEFAULT_POSTGRES_SCHEMA,
@@ -21,11 +22,19 @@ from .constants import (
     DEFAULT_TIMEOUT_SECONDS,
     KNOWN_INVENTORY_TYPES,
 )
-from .github import GitHubAppCredentials, normalize_github_api_url
+from .github import (
+    GitHubAppCredentials,
+    configured_github_api_url,
+    configured_github_app_id,
+    configured_github_installation_id,
+    configured_github_owners,
+    normalize_github_api_url,
+    parse_github_urls,
+)
 from .models import AzureDevOpsOrgPat, ScanConfig, SourceTargetFilter
 from .observability import configure_logging as configure_observability_logging, log_github_app_context
 from .org_tokens import parse_ado_org_pat_values
-from .scanner import normalize_application_types, scan_to_reports, store_lookup_allowed
+from .scanner import normalize_application_types, normalize_store_countries, scan_to_reports, store_lookup_allowed
 from .target_filters import parse_source_target_filter_values
 
 
@@ -40,7 +49,14 @@ def parse_args(argv: list[str]) -> ScanConfig:
         default=env_value("APPLICATION_INVENTORY_PROVIDER", "APPSEC_SCAN_PROVIDER") or "azure-devops",
         help="Source provider, or mixed to scan Azure DevOps and GitHub Enterprise in one run.",
     )
-    parser.add_argument("--org", help="Azure DevOps organization or GitHub owner.")
+    parser.add_argument("--org", help="Azure DevOps organization. Kept as a compatibility alias for one GitHub URL.")
+    parser.add_argument(
+        "--github-url",
+        action="append",
+        default=[],
+        metavar="OWNER_OR_URL",
+        help="GitHub owner or github.com owner URL. May be repeated. Defaults to APPLICATION_INVENTORY_GITHUB_URLS.",
+    )
     parser.add_argument(
         "--ado-org-pat",
         action="append",
@@ -75,8 +91,8 @@ def parse_args(argv: list[str]) -> ScanConfig:
     )
     parser.add_argument(
         "--base-url",
-        default=env_value("APPLICATION_INVENTORY_BASE_URL", "APPSEC_SCAN_BASE_URL", "GITHUB_API_URL", "GHE_API_URL"),
-        help="GitHub Enterprise API URL, for example https://github.example.com/api/v3.",
+        default=configured_github_api_url(),
+        help=f"GitHub API URL. Defaults to the fixed public endpoint {DEFAULT_GITHUB_API_URL}.",
     )
     parser.add_argument(
         "--pat",
@@ -84,7 +100,7 @@ def parse_args(argv: list[str]) -> ScanConfig:
     )
     parser.add_argument(
         "--github-app-id",
-        default=env_value("APPLICATION_INVENTORY_GITHUB_APP_ID", "APPSEC_INVENTORY_GITHUB_APP_ID", "GITHUB_APP_ID", "GHE_APP_ID") or DEFAULT_GITHUB_APP_ID,
+        default=configured_github_app_id() or DEFAULT_GITHUB_APP_ID,
         help="GitHub App ID. Prefer the environment variable for automation.",
     )
     parser.add_argument(
@@ -94,7 +110,7 @@ def parse_args(argv: list[str]) -> ScanConfig:
             "APPSEC_INVENTORY_GITHUB_APP_INSTALLATION_ID",
             "GITHUB_APP_INSTALLATION_ID",
             "GHE_APP_INSTALLATION_ID",
-        ) or DEFAULT_GITHUB_APP_INSTALLATION_ID,
+        ) or configured_github_installation_id() or DEFAULT_GITHUB_APP_INSTALLATION_ID,
         help="GitHub App installation ID. Prefer the environment variable for automation.",
     )
     parser.add_argument(
@@ -194,8 +210,9 @@ def parse_args(argv: list[str]) -> ScanConfig:
     )
     parser.add_argument(
         "--store-country",
-        default=DEFAULT_STORE_COUNTRY,
-        help=f"Two-letter store country code for public lookups. Defaults to {DEFAULT_STORE_COUNTRY}.",
+        action="append",
+        default=[],
+        help=f"Two-letter store country code for public lookups. Repeat for multiple countries. Defaults to {DEFAULT_STORE_COUNTRY}.",
     )
     parser.add_argument(
         "--store-timeout",
@@ -233,15 +250,19 @@ def parse_args(argv: list[str]) -> ScanConfig:
     application_types = normalize_application_types(args.application_types)
     ado_org_pats = collect_ado_org_pats(args)
     target_filters = collect_target_filters(args)
-    validate_args(args, application_types, ado_org_pats)
+    github_urls = collect_github_urls(args)
+    validate_args(args, application_types, ado_org_pats, github_urls)
     token = provider_token(args)
     if args.provider == "azure-devops" and ado_org_pats:
         token = ""
     target_projects = provider_projects(args)
     target_project = target_projects[0] if len(target_projects) == 1 and not target_filters else None
     org = args.org or (ado_org_pats[0].org if len(ado_org_pats) == 1 else "")
+    if args.provider in {"github-enterprise", "mixed"}:
+        org = github_urls[0]
     base_url = normalize_github_api_url(args.base_url) if args.provider in {"github-enterprise", "mixed"} else args.base_url
 
+    store_countries = normalize_store_countries(args.store_country or [DEFAULT_STORE_COUNTRY])
     return ScanConfig(
         org=org,
         pat=token,
@@ -257,7 +278,8 @@ def parse_args(argv: list[str]) -> ScanConfig:
         branch_age_days=args.branch_age_days,
         activity_mode=args.activity_mode,
         store_lookup=args.store_lookup,
-        store_country=args.store_country.strip().upper(),
+        store_country=store_countries[0],
+        store_countries=store_countries,
         store_timeout_seconds=args.store_timeout,
         provider=args.provider,
         base_url=base_url,
@@ -269,6 +291,7 @@ def parse_args(argv: list[str]) -> ScanConfig:
         owner_user_login=args.owner_user_login,
         ado_org_pats=ado_org_pats,
         target_filters=target_filters or tuple(SourceTargetFilter("", project) for project in target_projects),
+        github_urls=github_urls,
         github_app_id=args.github_app_id,
         github_app_installation_id=args.github_app_installation_id,
         github_app_private_key=env_value(
@@ -285,6 +308,7 @@ def validate_args(
     args: argparse.Namespace,
     application_types: tuple[str, ...],
     ado_org_pats: tuple[AzureDevOpsOrgPat, ...],
+    github_urls: tuple[str, ...],
 ) -> None:
     project_values = tuple(args.project or ())
     repo_values = tuple(args.repo or ())
@@ -294,8 +318,8 @@ def validate_args(
         if ado_org_pats or args.ado_org_pat:
             raise SystemExit("--ado-org-pat only applies to Azure DevOps scans.")
     if args.provider in {"github-enterprise", "mixed"}:
-        if not args.org:
-            raise SystemExit("Missing GitHub owner. Set --org.")
+        if not github_urls:
+            raise SystemExit("Missing GitHub URL. Set --github-url.")
         try:
             app_credentials = GitHubAppCredentials.from_values(
                 args.github_app_id,
@@ -337,9 +361,10 @@ def validate_args(
         raise SystemExit("--timeout must be at least 1.")
     if args.branch_age_days < 1:
         raise SystemExit("--branch-age-days must be at least 1.")
-    store_country = args.store_country.strip()
-    if len(store_country) != 2 or not store_country.isalpha():
-        raise SystemExit("--store-country must be a two-letter country code.")
+    try:
+        normalize_store_countries(args.store_country or [DEFAULT_STORE_COUNTRY])
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     if args.store_timeout < 1:
         raise SystemExit("--store-timeout must be at least 1.")
     if args.store_lookup and not store_lookup_allowed(application_types):
@@ -354,6 +379,22 @@ def provider_projects(args: argparse.Namespace) -> tuple[str, ...]:
         if cleaned:
             deduped[cleaned.lower()] = cleaned
     return tuple(deduped.values())
+
+
+def collect_github_urls(args: argparse.Namespace) -> tuple[str, ...]:
+    if args.provider not in {"github-enterprise", "mixed"}:
+        return ()
+    values: list[object] = []
+    env_value = os.getenv("APPLICATION_INVENTORY_GITHUB_URLS") or os.getenv("APPSEC_INVENTORY_GITHUB_URLS") or ""
+    if env_value:
+        values.append(env_value)
+    values.extend(args.github_url or [])
+    if not values and args.org:
+        values.append(args.org)
+    try:
+        return parse_github_urls(values) or configured_github_owners()
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def provider_token(args: argparse.Namespace) -> str:
@@ -390,6 +431,13 @@ def collect_target_filters(args: argparse.Namespace) -> tuple[SourceTargetFilter
     target_filter_env_value = env_value("APPLICATION_INVENTORY_TARGET_FILTERS", "APPSEC_INVENTORY_TARGET_FILTERS")
     if target_filter_env_value:
         values.append(target_filter_env_value)
+    if args.provider in {"github-enterprise", "mixed"}:
+        github_repository_env_value = env_value(
+            "APPLICATION_INVENTORY_GITHUB_REPOSITORIES",
+            "APPSEC_INVENTORY_GITHUB_REPOSITORIES",
+        )
+        if github_repository_env_value:
+            values.append(github_repository_env_value)
     values.extend(args.target_filter or [])
     try:
         return parse_source_target_filter_values(values)

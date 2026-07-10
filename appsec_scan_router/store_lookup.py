@@ -33,16 +33,18 @@ STORE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-
 
 
 class StoreLookupClient:
-    def __init__(self, country: str, timeout_seconds: int) -> None:
+    def __init__(self, country: str | Iterable[str], timeout_seconds: int) -> None:
         if requests is None or HTTPAdapter is None or Retry is None:
             raise SystemExit(MISSING_REQUESTS_MESSAGE)
 
-        self.country = clean_value(country).upper() or "US"
+        values = [country] if isinstance(country, str) else list(country)
+        self.countries = tuple(dict.fromkeys(clean_value(value).upper() for value in values if clean_value(value))) or ("US",)
+        self.country = self.countries[0]
         self.timeout_seconds = timeout_seconds
         self._thread_local = threading.local()
         self._sessions: list[requests.Session] = []
         self._sessions_lock = threading.Lock()
-        self._cache: dict[tuple[str, str], StoreListing] = {}
+        self._cache: dict[tuple[str, str, str], StoreListing] = {}
         self._cache_lock = threading.Lock()
         self._retry = Retry(
             total=3,
@@ -64,7 +66,7 @@ class StoreLookupClient:
             session.headers.update(
                 {
                     "Accept": "application/json,text/html,application/xhtml+xml",
-                    "User-Agent": "application-inventory-service/1.6.6",
+                    "User-Agent": "application-inventory-service/1.6.7",
                 }
             )
             adapter = HTTPAdapter(max_retries=self._retry, pool_connections=8, pool_maxsize=8)
@@ -85,39 +87,42 @@ class StoreLookupClient:
         if not cleaned_identifier:
             return []
         return [
-            self.lookup_platform(platform, cleaned_identifier)
+            self.lookup_platform(platform, cleaned_identifier, country)
+            for country in self.countries
             for platform in target_store_platforms(categories)
         ]
 
-    def lookup_platform(self, platform: str, identifier: str) -> StoreListing:
-        cache_key = (platform, identifier)
+    def lookup_platform(self, platform: str, identifier: str, country: str | None = None) -> StoreListing:
+        selected_country = clean_value(country).upper() or self.country
+        cache_key = (platform, identifier, selected_country)
         with self._cache_lock:
             cached = self._cache.get(cache_key)
         if cached:
             return cached
 
-        handlers: dict[str, Callable[[str], StoreListing]] = {
+        handlers: dict[str, Callable[[str, str | None], StoreListing]] = {
             APPLE_PLATFORM: self.lookup_apple_app_store,
             GOOGLE_PLATFORM: self.lookup_google_play,
         }
         handler = handlers.get(platform)
         listing = (
-            handler(identifier)
+            handler(identifier, selected_country)
             if handler
-            else StoreListing(platform=platform, status="not_requested", identifier=identifier)
+            else StoreListing(platform=platform, status="not_requested", identifier=identifier, country=selected_country)
         )
 
         with self._cache_lock:
             self._cache[cache_key] = listing
         return listing
 
-    def lookup_apple_app_store(self, identifier: str) -> StoreListing:
+    def lookup_apple_app_store(self, identifier: str, country: str | None = None) -> StoreListing:
+        selected_country = clean_value(country).upper() or self.country
         try:
             response = self.session.get(
                 "https://itunes.apple.com/lookup",
                 params={
                     "bundleId": identifier,
-                    "country": self.country,
+                    "country": selected_country,
                     "entity": "software",
                     "limit": 1,
                 },
@@ -127,14 +132,14 @@ class StoreLookupClient:
             data = response.json()
         except requests.exceptions.SSLError as exc:
             LOGGER.debug("Apple App Store TLS lookup failed for %s: %s", identifier, exc)
-            return StoreListing(platform=APPLE_PLATFORM, status="tls_error", identifier=identifier, error=str(exc))
+            return StoreListing(platform=APPLE_PLATFORM, status="tls_error", identifier=identifier, error=str(exc), country=selected_country)
         except (requests.RequestException, ValueError) as exc:
             LOGGER.debug("Apple App Store lookup failed for %s: %s", identifier, exc)
-            return StoreListing(platform=APPLE_PLATFORM, status="error", identifier=identifier, error=str(exc))
+            return StoreListing(platform=APPLE_PLATFORM, status="error", identifier=identifier, error=str(exc), country=selected_country)
 
         results = data.get("results") if isinstance(data, dict) else None
         if not isinstance(results, list) or not results:
-            return StoreListing(platform=APPLE_PLATFORM, status="not_found", identifier=identifier)
+            return StoreListing(platform=APPLE_PLATFORM, status="not_found", identifier=identifier, country=selected_country)
 
         result = results[0] if isinstance(results[0], dict) else {}
         return StoreListing(
@@ -145,34 +150,41 @@ class StoreLookupClient:
             url=clean_value(result.get("trackViewUrl")),
             version=clean_value(result.get("version")),
             last_updated=clean_value(result.get("currentVersionReleaseDate") or result.get("releaseDate")),
+            country=selected_country,
         )
 
-    def lookup_google_play(self, identifier: str) -> StoreListing:
+    def lookup_google_play(self, identifier: str, country: str | None = None) -> StoreListing:
+        selected_country = clean_value(country).upper() or self.country
         try:
             response = self.session.get(
                 "https://play.google.com/store/apps/details",
                 params={
                     "id": identifier,
                     "hl": "en_US",
-                    "gl": self.country,
+                    "gl": selected_country,
                 },
                 timeout=self.timeout_seconds,
             )
             if response.status_code == 404:
-                return StoreListing(platform=GOOGLE_PLATFORM, status="not_found_publicly", identifier=identifier)
+                return StoreListing(
+                    platform=GOOGLE_PLATFORM,
+                    status="not_found_publicly",
+                    identifier=identifier,
+                    country=selected_country,
+                )
             response.raise_for_status()
         except requests.exceptions.SSLError as exc:
             LOGGER.debug("Google Play TLS lookup failed for %s: %s", identifier, exc)
-            return StoreListing(platform=GOOGLE_PLATFORM, status="tls_error", identifier=identifier, error=str(exc))
+            return StoreListing(platform=GOOGLE_PLATFORM, status="tls_error", identifier=identifier, error=str(exc), country=selected_country)
         except requests.RequestException as exc:
             LOGGER.debug("Google Play lookup failed for %s: %s", identifier, exc)
-            return StoreListing(platform=GOOGLE_PLATFORM, status="error", identifier=identifier, error=str(exc))
+            return StoreListing(platform=GOOGLE_PLATFORM, status="error", identifier=identifier, error=str(exc), country=selected_country)
 
         parser = MetaTagParser()
         parser.feed(response.text)
         raw_title = parser.meta.get("og:title") or parser.title
         name = normalize_google_play_title(raw_title)
-        url = parser.meta.get("og:url") or response.url or google_play_url(identifier, self.country)
+        url = parser.meta.get("og:url") or response.url or google_play_url(identifier, selected_country)
 
         if (
             not name
@@ -183,7 +195,8 @@ class StoreLookupClient:
                 platform=GOOGLE_PLATFORM,
                 status="not_found_publicly",
                 identifier=identifier,
-                url=google_play_url(identifier, self.country),
+                url=google_play_url(identifier, selected_country),
+                country=selected_country,
             )
 
         return StoreListing(
@@ -194,6 +207,7 @@ class StoreLookupClient:
             url=clean_value(url),
             version=extract_google_play_version(response.text),
             last_updated=extract_google_play_updated(response.text),
+            country=selected_country,
         )
 
 
@@ -305,13 +319,15 @@ def is_store_identifier_candidate(identifier: str) -> bool:
 
 
 def store_columns_from_listings(listings: Iterable[StoreListing]) -> dict[str, str]:
-    listing_by_platform = {listing.platform: listing for listing in listings}
-    apple = listing_by_platform.get(APPLE_PLATFORM) or StoreListing(platform=APPLE_PLATFORM, status="not_requested")
-    google = listing_by_platform.get(GOOGLE_PLATFORM) or StoreListing(platform=GOOGLE_PLATFORM, status="not_requested")
+    listing_by_platform: dict[str, list[StoreListing]] = {}
+    for listing in listings:
+        listing_by_platform.setdefault(listing.platform, []).append(listing)
+    apple = aggregate_platform_listings(APPLE_PLATFORM, listing_by_platform.get(APPLE_PLATFORM, []))
+    google = aggregate_platform_listings(GOOGLE_PLATFORM, listing_by_platform.get(GOOGLE_PLATFORM, []))
     found_platforms = [
-        display_name_for_platform(listing.platform)
+        f"{display_name_for_platform(listing.platform)} ({listing.country})" if listing.country else display_name_for_platform(listing.platform)
         for listing in (apple, google)
-        if listing.status == "found"
+        if listing.status in {"found", "partial_found"}
     ]
 
     columns = {
@@ -322,6 +338,29 @@ def store_columns_from_listings(listings: Iterable[StoreListing]) -> dict[str, s
     columns.update(listing_column_values(APPLE_PLATFORM, apple))
     columns.update(listing_column_values(GOOGLE_PLATFORM, google))
     return columns
+
+
+def aggregate_platform_listings(platform: str, listings: list[StoreListing]) -> StoreListing:
+    if not listings:
+        return StoreListing(platform=platform, status="not_requested")
+    found = [listing for listing in listings if listing.status == "found"]
+    representative = found[0] if found else listings[0]
+    status = "found" if len(found) == len(listings) else "partial_found" if found else representative.status
+    return StoreListing(
+        platform=platform,
+        status=status,
+        name=join_listing_values(listing.name for listing in found or listings),
+        identifier=join_listing_values(listing.identifier for listing in found or listings),
+        url=join_listing_values(listing.url for listing in found or listings),
+        version=join_listing_values(listing.version for listing in found or listings),
+        last_updated=join_listing_values(listing.last_updated for listing in found or listings),
+        error=representative.error,
+        country=", ".join(dict.fromkeys(listing.country for listing in listings if listing.country)),
+    )
+
+
+def join_listing_values(values: Iterable[str]) -> str:
+    return "; ".join(dict.fromkeys(value for value in (clean_value(item) for item in values) if value))
 
 
 def listing_column_values(platform: str, listing: StoreListing) -> dict[str, str]:

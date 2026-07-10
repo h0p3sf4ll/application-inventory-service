@@ -24,7 +24,7 @@ from .constants import (
     older_sheet_name,
 )
 from .detection import detect_inventory_repo
-from .github import GitHubAppCredentials, GitHubEnterpriseClient
+from .github import GitHubAppCredentials, GitHubEnterpriseClient, configured_github_owners, parse_github_urls
 from .metadata import extract_mobile_metadata
 from .models import (
     AzureDevOpsError,
@@ -77,6 +77,8 @@ def scan(
 ) -> list[dict[str, Any]]:
     if config.provider == "mixed":
         return scan_mixed(config, on_result=on_result)
+    if config.provider == "github-enterprise":
+        return scan_github_organizations(config, on_result=on_result)
     if config.provider == "azure-devops" and config.ado_org_pats:
         return scan_ado_organizations(config, on_result=on_result)
     return scan_single_org(config, on_result=on_result)
@@ -105,6 +107,32 @@ def scan_ado_organizations(
     return results
 
 
+def scan_github_organizations(
+    config: ScanConfig,
+    on_result: Callable[[dict[str, Any]], None] | None = None,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    start = time.monotonic()
+    owners = parse_github_urls(config.github_urls or (config.org,)) or configured_github_owners()
+    if not owners:
+        raise ValueError("Configure at least one GitHub organization in APPLICATION_INVENTORY_GITHUB_URLS or the scan configuration.")
+    for owner in owners:
+        owner_filters = target_filters_for_source(config.target_filters, owner)
+        if config.target_filters and not owner_filters:
+            LOGGER.info("Skipping GitHub owner without selected targets: %s", owner)
+            continue
+        LOGGER.info("Scanning GitHub owner: %s", owner)
+        owner_config = replace(config, org=owner, github_urls=(), target_filters=owner_filters)
+        results.extend(scan_single_org(owner_config, on_result=on_result))
+    results.sort(key=row_sort_key)
+    LOGGER.info(
+        "Finished multi-owner GitHub scan in %.1fs; found %s inventory branches",
+        time.monotonic() - start,
+        len(results),
+    )
+    return results
+
+
 def scan_mixed(
     config: ScanConfig,
     on_result: Callable[[dict[str, Any]], None] | None = None,
@@ -123,10 +151,12 @@ def scan_mixed(
     github_config = replace(
         config,
         provider="github-enterprise",
+        org="",
         ado_org_pats=(),
-        target_filters=target_filters_for_source(config.target_filters, config.org),
+        github_urls=config.github_urls or ((config.org,) if config.org else configured_github_owners()),
+        target_filters=config.target_filters,
     )
-    results.extend(scan_single_org(github_config, on_result=on_result))
+    results.extend(scan_github_organizations(github_config, on_result=on_result))
     results.sort(key=row_sort_key)
     LOGGER.info("Finished mixed-source scan in %.1fs; found %s inventory branches", time.monotonic() - start, len(results))
     return results
@@ -570,7 +600,8 @@ def log_detected_result(result: dict[str, Any]) -> None:
 def create_store_client(config: ScanConfig) -> StoreLookupClient | None:
     if not config.store_lookup:
         return None
-    return StoreLookupClient(config.store_country, config.store_timeout_seconds)
+    countries = config.store_countries or (config.store_country,)
+    return StoreLookupClient(countries, config.store_timeout_seconds)
 
 
 def branch_name_from_ref(ref_name: str) -> str:
@@ -861,6 +892,28 @@ def inventory_type_matches(inventory_types: Iterable[str], application_types: It
 def store_lookup_allowed(application_types: Iterable[str] | None) -> bool:
     normalized_application_types = normalize_application_types(application_types)
     return not normalized_application_types or "mobile_app" in normalized_application_types
+
+
+def normalize_store_countries(values: Any) -> tuple[str, ...]:
+    candidates: list[Any] = []
+    if isinstance(values, str):
+        candidates.extend(part for part in re.split(r"[;,\n]", values) if part.strip())
+    elif isinstance(values, Iterable):
+        candidates.extend(values)
+    else:
+        candidates.append(values)
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in candidates:
+        country = str(value or "").strip().upper()
+        if not country:
+            continue
+        if len(country) != 2 or not country.isalpha():
+            raise ValueError("Store countries must be two-letter country codes.")
+        if country not in seen:
+            result.append(country)
+            seen.add(country)
+    return tuple(result or ("US",))
 
 
 def log_scan_progress(

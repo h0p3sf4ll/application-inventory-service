@@ -8,12 +8,14 @@ const refreshButton = document.querySelector("#refreshScans");
 const resetDefaultsButton = document.querySelector("#resetDefaults");
 const loginGitHub = document.querySelector("#loginGitHub");
 const loginGitHubSso = document.querySelector("#loginGitHubSso");
+const loginGitHubEnterpriseSso = document.querySelector("#loginGitHubEnterpriseSso");
 const loginGoogleSso = document.querySelector("#loginGoogleSso");
 const loginTestSso = document.querySelector("#loginTestSso");
 const logoutGitHub = document.querySelector("#logoutGitHub");
 const authStatus = document.querySelector("#authStatus");
 const loginSummary = document.querySelector("#loginSummary");
-const orgRequirementBadge = document.querySelector("#orgRequirementBadge");
+const addGithubUrlButton = document.querySelector("#addGithubUrl");
+const githubUrlList = document.querySelector("#githubUrlList");
 const addAdoOrgPatButton = document.querySelector("#addAdoOrgPat");
 const adoOrgPatList = document.querySelector("#adoOrgPatList");
 const loadTargetsButton = document.querySelector("#loadTargets");
@@ -25,6 +27,7 @@ const targetFilterDefault = document.querySelector("#targetFilterDefault");
 const targetFilterSummary = document.querySelector("#targetFilterSummary");
 const targetSearch = document.querySelector("#targetSearch");
 const githubSsoStatus = document.querySelector("#githubSsoStatus");
+const githubEnterpriseSsoStatus = document.querySelector("#githubEnterpriseSsoStatus");
 const googleSsoStatus = document.querySelector("#googleSsoStatus");
 const testSsoStatus = document.querySelector("#testSsoStatus");
 const copyCommandButton = document.querySelector("#copyCommand");
@@ -33,10 +36,6 @@ const downloadLogsButton = document.querySelector("#downloadLogs");
 const activeStatus = document.querySelector("#activeStatus");
 const activeTitle = document.querySelector("#activeTitle");
 const detectedCount = document.querySelector("#detectedCount");
-const progressValue = document.querySelector("#progressValue");
-const progressFill = document.querySelector("#progressFill");
-const progressDetail = document.querySelector("#progressDetail");
-const etaValue = document.querySelector("#etaValue");
 const runtimeValue = document.querySelector("#runtimeValue");
 const commandLine = document.querySelector("#commandLine");
 const runList = document.querySelector("#runList");
@@ -60,6 +59,7 @@ const state = {
   timer: null,
   session: null,
   database: null,
+  githubUrls: [],
   adoOrgPats: [],
   sourceTargets: [],
   selectedTargets: [],
@@ -67,6 +67,8 @@ const state = {
 };
 
 const defaultValues = {
+  githubUrls: [],
+  githubRepositories: [],
   outPrefix: "application_inventory_service",
   applicationTypes: [],
   minConfidence: "medium",
@@ -77,7 +79,7 @@ const defaultValues = {
   contentWorkers: "16",
   maxCommitsPerRepo: "0",
   timeout: "30",
-  storeCountry: "US",
+  storeCountries: ["US"],
   storeTimeout: "15",
   storeLookup: false,
   postgresEnabled: true,
@@ -93,9 +95,7 @@ const defaultValues = {
 
 const persistedFields = [
   "provider",
-  "org",
-  "repo",
-  "baseUrl",
+  "githubUrls",
   "applicationTypes",
   "minConfidence",
   "activityMode",
@@ -106,7 +106,7 @@ const persistedFields = [
   "maxCommitsPerRepo",
   "timeout",
   "storeLookup",
-  "storeCountry",
+  "storeCountries",
   "storeTimeout",
   "postgresEnabled",
   "postgresHost",
@@ -119,6 +119,7 @@ const persistedFields = [
 ];
 
 document.addEventListener("DOMContentLoaded", async () => {
+  await loadBackendConfig();
   loadForm();
   syncProviderFields();
   syncDatabaseFields();
@@ -137,6 +138,18 @@ document.addEventListener("DOMContentLoaded", async () => {
   state.timer = window.setInterval(tick, 1000);
 });
 
+async function loadBackendConfig() {
+  try {
+    const response = await fetch("/api/config");
+    const data = await response.json();
+    if (response.ok && data.defaults) {
+      Object.assign(defaultValues, data.defaults);
+    }
+  } catch (error) {
+    return;
+  }
+}
+
 function bindEvents() {
   form.addEventListener("change", (event) => {
     if (sourceFieldChanged(event.target)) {
@@ -154,14 +167,17 @@ function bindEvents() {
   refreshButton.addEventListener("click", loadScans);
   resetDefaultsButton.addEventListener("click", resetDefaults);
   addAdoOrgPatButton.addEventListener("click", addAdoOrgPat);
+  addGithubUrlButton.addEventListener("click", addGithubUrl);
   loadTargetsButton.addEventListener("click", loadSourceTargets);
   selectAllTargetsButton.addEventListener("click", selectVisibleTargets);
   clearTargetFiltersButton.addEventListener("click", () => clearSelectedTargets());
   targetSearch.addEventListener("input", renderTargetFilters);
   form.elements.adoOrgName.addEventListener("keydown", handleAdoOrgPatKeydown);
   form.elements.adoOrgPat.addEventListener("keydown", handleAdoOrgPatKeydown);
+  form.elements.githubUrl.addEventListener("keydown", handleGithubUrlKeydown);
   logoutGitHub.addEventListener("click", logout);
   loginGitHubSso.addEventListener("click", handleSsoClick);
+  loginGitHubEnterpriseSso.addEventListener("click", handleSsoClick);
   loginGoogleSso.addEventListener("click", handleSsoClick);
   loginTestSso.addEventListener("click", handleSsoClick);
   copyCommandButton.addEventListener("click", copyCommand);
@@ -183,6 +199,9 @@ async function startScan() {
     return;
   }
   if (!ensureAdoOrgPats()) {
+    return;
+  }
+  if (!ensureGithubUrls()) {
     return;
   }
   if (!form.reportValidity()) {
@@ -261,8 +280,10 @@ async function logout() {
     state.scans = [];
     state.activeScan = null;
     state.logs = [];
+    state.githubUrls = [...defaultValues.githubUrls];
     state.adoOrgPats = [];
     clearDiscoveredTargets({silent: true});
+    syncGithubUrlInput();
     syncAdoOrgPatInput();
     renderAuth();
     renderAll();
@@ -379,10 +400,6 @@ function renderActiveScan() {
     activeStatus.className = "";
     activeTitle.textContent = "No scan selected";
     detectedCount.textContent = "0";
-    progressValue.textContent = "0%";
-    progressFill.style.width = "0%";
-    progressDetail.textContent = "No scan running";
-    etaValue.textContent = "Not started";
     runtimeValue.textContent = "0s";
     commandLine.textContent = "application-inventory-service";
     copyCommandButton.disabled = true;
@@ -394,10 +411,6 @@ function renderActiveScan() {
   activeStatus.className = `status-${scan.status}`;
   activeTitle.textContent = `${scan.org || "Unknown"} · ${scan.target || "all"} · ${providerLabel(scan.provider)} · ${applicationTypesLabel(scan.applicationTypes)}`;
   detectedCount.textContent = String(scan.detectedCount || 0);
-  progressValue.textContent = scanProgress(scan);
-  progressFill.style.width = `${scanPercent(scan)}%`;
-  progressDetail.textContent = scanProgressDetail(scan);
-  etaValue.textContent = scanEta(scan);
   runtimeValue.textContent = scanRuntime(scan);
   commandLine.textContent = scan.command || "application-inventory-service";
   copyCommandButton.disabled = !scan.command;
@@ -478,9 +491,30 @@ function renderDatabaseStatus() {
 }
 
 function renderLogs() {
-  logsElement.textContent = state.logs.join("\n");
+  const fragment = document.createDocumentFragment();
+  state.logs.forEach((line, index) => {
+    if (index > 0) {
+      fragment.append(document.createTextNode("\n"));
+    }
+    const element = document.createElement("span");
+    element.className = logTone(line);
+    element.textContent = line;
+    fragment.append(element);
+  });
+  logsElement.replaceChildren(fragment);
   logsElement.scrollTop = logsElement.scrollHeight;
   downloadLogsButton.disabled = state.logs.length === 0;
+}
+
+function logTone(line) {
+  const value = String(line || "").toLowerCase();
+  if (/\b(error|failed|failure|exception|traceback|fatal)\b|could not|unable to|missing .* configuration/.test(value)) {
+    return "log-error";
+  }
+  if (/\b(detected|confirmed|match)\b|found \d+ inventory/.test(value)) {
+    return "log-success";
+  }
+  return "";
 }
 
 async function checkDatabase() {
@@ -538,12 +572,11 @@ function formPayload() {
   const provider = data.get("provider") || "azure-devops";
   return {
     provider,
-    org: isGithubProvider(provider) ? value(data, "org") : "",
+    org: isGithubProvider(provider) ? state.githubUrls[0] || "" : "",
+    githubUrls: isGithubProvider(provider) ? state.githubUrls : [],
     adoOrgPats: isAzureProvider(provider) ? value(data, "adoOrgPats") : "",
     targetFilters: targetFilterPayload(),
     project: "",
-    repo: isGithubProvider(provider) ? value(data, "repo") : "",
-    baseUrl: isGithubProvider(provider) ? value(data, "baseUrl") : "",
     outPrefix: defaultValues.outPrefix,
     applicationTypes: checkedValues("applicationTypes"),
     minConfidence: value(data, "minConfidence") || defaultValues.minConfidence,
@@ -555,7 +588,7 @@ function formPayload() {
     maxCommitsPerRepo: numberValue(data, "maxCommitsPerRepo", Number(defaultValues.maxCommitsPerRepo)),
     timeout: numberValue(data, "timeout", Number(defaultValues.timeout)),
     storeLookup: data.has("storeLookup"),
-    storeCountry: value(data, "storeCountry") || defaultValues.storeCountry,
+    storeCountries: checkedValues("storeCountries").length ? checkedValues("storeCountries") : [...defaultValues.storeCountries],
     storeTimeout: numberValue(data, "storeTimeout", Number(defaultValues.storeTimeout)),
     postgresEnabled: data.has("postgresEnabled"),
     postgresHost: value(data, "postgresHost") || defaultValues.postgresHost,
@@ -591,18 +624,15 @@ function syncProviderFields() {
   document.querySelectorAll(".provider-github").forEach((node) => {
     node.classList.toggle("hidden", !isGithubProvider(provider));
   });
-  document.querySelectorAll(".provider-github-only").forEach((node) => {
-    node.classList.toggle("hidden", provider !== "github-enterprise");
-  });
-  form.querySelector('[name="baseUrl"]').required = isGithubProvider(provider);
-  form.querySelector('[name="org"]').required = isGithubProvider(provider);
-  document.querySelector("#orgFieldLabel").textContent = "GitHub owner";
-  orgRequirementBadge.textContent = provider === "mixed" ? "GitHub owner required" : "Required";
+  form.elements.githubUrl.required = false;
   document.querySelector("#adoOrgLabel").textContent = "Azure organizations and PATs";
   document.querySelector("#adoOrgRequirementBadge").textContent = "Required";
-  form.querySelector('[name="repo"]').required = false;
   targetFilterTitle.textContent = provider === "github-enterprise" ? "Repository filter" : provider === "mixed" ? "Project and repository filter" : "Project filter";
-  targetFilterDefault.textContent = provider === "github-enterprise" ? "Default: all repositories" : provider === "mixed" ? "Default: all selected sources" : "Default: all projects";
+  targetFilterDefault.textContent = provider === "github-enterprise"
+    ? (defaultValues.githubRepositories.length ? "Default: configured repositories" : "Default: all repositories")
+    : provider === "mixed"
+      ? "Default: all selected sources"
+      : "Default: all projects";
   loadTargetsButton.textContent = provider === "github-enterprise" ? "Load repositories" : provider === "mixed" ? "Load all targets" : "Load projects";
   targetSearch.placeholder = provider === "github-enterprise" ? "Filter repositories" : provider === "mixed" ? "Filter projects and repositories" : "Filter projects";
   syncGithubAppFields();
@@ -638,6 +668,75 @@ function syncMobileOptions() {
   if (!mobileApplies) {
     form.elements.storeLookup.checked = false;
   }
+}
+
+function addGithubUrl() {
+  commitPendingGithubUrl();
+}
+
+function ensureGithubUrls() {
+  const provider = new FormData(form).get("provider") || "azure-devops";
+  if (!isGithubProvider(provider) || state.githubUrls.length > 0) {
+    return true;
+  }
+  form.elements.githubUrl.focus();
+  notify("Add at least one GitHub URL.");
+  return false;
+}
+
+function commitPendingGithubUrl({silent = false} = {}) {
+  const url = form.elements.githubUrl.value.trim();
+  if (!url) {
+    return true;
+  }
+  if (state.githubUrls.some((entry) => entry.toLowerCase() === url.toLowerCase())) {
+    notify(`${url} is already added.`);
+    return false;
+  }
+  state.githubUrls.push(url);
+  form.elements.githubUrl.value = "";
+  clearDiscoveredTargets({silent: true});
+  syncGithubUrlInput();
+  if (!silent) {
+    notify(`${url} added.`);
+  }
+  return true;
+}
+
+function removeGithubUrl(url) {
+  state.githubUrls = state.githubUrls.filter((entry) => entry !== url);
+  clearDiscoveredTargets({silent: true});
+  syncGithubUrlInput();
+  notify(`${url} removed.`);
+}
+
+function handleGithubUrlKeydown(event) {
+  if (event.key !== "Enter") {
+    return;
+  }
+  event.preventDefault();
+  addGithubUrl();
+}
+
+function syncGithubUrlInput() {
+  form.elements.githubUrls.value = JSON.stringify(state.githubUrls);
+  renderGithubUrlList();
+}
+
+function renderGithubUrlList() {
+  if (!state.githubUrls.length) {
+    githubUrlList.innerHTML = '<div class="empty-inline">No GitHub URLs added</div>';
+    return;
+  }
+  githubUrlList.innerHTML = state.githubUrls.map((url) => `
+    <div class="github-url-row">
+      <span><strong>${escapeHtml(url)}</strong></span>
+      <button class="ghost small" type="button" data-remove-github-url="${escapeHtml(url)}">Remove</button>
+    </div>
+  `).join("");
+  githubUrlList.querySelectorAll("[data-remove-github-url]").forEach((button) => {
+    button.addEventListener("click", () => removeGithubUrl(button.dataset.removeGithubUrl || ""));
+  });
 }
 
 function addAdoOrgPat() {
@@ -739,7 +838,8 @@ async function loadSourceTargets() {
     });
     const data = await response.json();
     if (!response.ok) {
-      throw new Error(data.error || "Could not load targets.");
+      const providerErrors = Array.isArray(data.errors) ? data.errors.map((item) => item.message).filter(Boolean).join("; ") : "";
+      throw new Error(data.error || providerErrors || "Could not load targets.");
     }
     state.sourceTargets = Array.isArray(data.targets) ? data.targets : [];
     state.sourceTargetErrors = Array.isArray(data.errors) ? data.errors : [];
@@ -764,9 +864,9 @@ function sourcePayload() {
   const provider = data.get("provider") || "azure-devops";
   return {
     provider,
-    org: isGithubProvider(provider) ? value(data, "org") : "",
+    org: isGithubProvider(provider) ? state.githubUrls[0] || "" : "",
+    githubUrls: isGithubProvider(provider) ? state.githubUrls : [],
     adoOrgPats: isAzureProvider(provider) ? value(data, "adoOrgPats") : "",
-    baseUrl: isGithubProvider(provider) ? value(data, "baseUrl") : "",
     timeout: numberValue(data, "timeout", Number(defaultValues.timeout)),
   };
 }
@@ -949,7 +1049,7 @@ function sourceFieldChanged(target) {
   if (!target || !target.name) {
     return false;
   }
-  return ["provider", "org", "baseUrl", "repo"].includes(target.name);
+  return ["provider", "githubUrl"].includes(target.name);
 }
 
 function loadForm() {
@@ -957,6 +1057,10 @@ function loadForm() {
   applyDefaultValues();
   for (const name of persistedFields) {
     if (!(name in saved)) {
+      continue;
+    }
+    if (name === "githubUrls") {
+      state.githubUrls = Array.isArray(saved[name]) ? saved[name].map((item) => String(item || "").trim()).filter(Boolean) : [...defaultValues.githubUrls];
       continue;
     }
     const element = form.elements[name];
@@ -973,6 +1077,7 @@ function loadForm() {
       element.value = saved[name];
     }
   }
+  syncGithubUrlInput();
 }
 
 function saveForm() {
@@ -981,6 +1086,8 @@ function saveForm() {
   for (const name of persistedFields) {
     if (name === "provider") {
       saved[name] = data.get(name);
+    } else if (name === "githubUrls") {
+      saved[name] = [...state.githubUrls];
     } else if (name === "applicationTypes") {
       saved[name] = checkedValues(name);
     } else if (name === "storeLookup" || name === "postgresEnabled" || name === "verbose") {
@@ -993,12 +1100,14 @@ function saveForm() {
 }
 
 function resetDefaults() {
+  state.githubUrls = [...defaultValues.githubUrls];
   state.adoOrgPats = [];
   clearDiscoveredTargets({silent: true});
   applyDefaultValues();
   syncProviderFields();
   syncDatabaseFields();
   syncMobileOptions();
+  syncGithubUrlInput();
   syncAdoOrgPatInput();
   saveForm();
   notify("Scan defaults restored.");
@@ -1006,6 +1115,10 @@ function resetDefaults() {
 
 function applyDefaultValues() {
   for (const [name, defaultValue] of Object.entries(defaultValues)) {
+    if (name === "githubUrls") {
+      state.githubUrls = [...defaultValue];
+      continue;
+    }
     const element = form.elements[name];
     if (!element) {
       continue;
@@ -1062,6 +1175,7 @@ function renderAuth() {
   const loggedIn = Boolean(session.loggedIn);
   const providers = authProviders(session);
   const githubProvider = providers.find((provider) => provider.id === "github") || {};
+  const githubEnterpriseProvider = providers.find((provider) => provider.id === "github-enterprise") || {};
   const googleProvider = providers.find((provider) => provider.id === "google") || {};
   const testProvider = providers.find((provider) => provider.id === "test") || {};
   const githubEnabled = Boolean(githubProvider.enabled);
@@ -1079,6 +1193,7 @@ function renderAuth() {
   loginGitHub.href = githubEnabled ? githubProvider.startUrl || "/api/auth/github/start" : "#";
   logoutGitHub.classList.toggle("hidden", !loggedIn);
   renderSsoOption(loginGitHubSso, githubSsoStatus, githubProvider, "GitHub");
+  renderSsoOption(loginGitHubEnterpriseSso, githubEnterpriseSsoStatus, githubEnterpriseProvider, "GitHub Enterprise");
   renderSsoOption(loginGoogleSso, googleSsoStatus, googleProvider, "Google");
   renderSsoOption(loginTestSso, testSsoStatus, testProvider, "Test user");
 }
@@ -1109,6 +1224,12 @@ function authProviders(session) {
       label: "GitHub SSO",
       enabled: Boolean(session.githubLoginEnabled),
       startUrl: "/api/auth/github/start",
+    },
+    {
+      id: "github-enterprise",
+      label: "GitHub Enterprise",
+      enabled: Boolean(session.githubEnterpriseLoginEnabled),
+      startUrl: "/api/auth/github-enterprise/start",
     },
     {
       id: "google",
@@ -1199,77 +1320,6 @@ function scanRuntime(scan) {
   const minutes = Math.floor(total / 60);
   const seconds = total % 60;
   return minutes ? `${minutes}m ${seconds}s` : `${seconds}s`;
-}
-
-function scanProgress(scan) {
-  return `${scanPercent(scan)}%`;
-}
-
-function scanPercent(scan) {
-  const progress = scan.progress || {};
-  if (scan.status === "succeeded") {
-    return 100;
-  }
-  const percent = Number(progress.percent || 0);
-  if (!Number.isFinite(percent) || percent <= 0) {
-    return 0;
-  }
-  return Math.max(0, Math.min(100, Math.round(percent)));
-}
-
-function scanProgressDetail(scan) {
-  const progress = scan.progress || {};
-  if (scan.status === "succeeded") {
-    return "Scan complete";
-  }
-  if (scan.status === "failed") {
-    return "Scan failed";
-  }
-  if (scan.status === "stopped") {
-    return "Scan stopped";
-  }
-  const repoDone = Number(progress.repositoriesPrepared || 0);
-  const repoTotal = Number(progress.repositoriesTotal || 0);
-  const branchDone = Number(progress.branchesScanned || 0);
-  const branchTotal = Number(progress.branchesTotal || 0);
-  const repoText = repoTotal ? `${repoDone}/${repoTotal} repositories prepared` : "Preparing repositories";
-  const branchText = branchTotal ? `${branchDone}/${branchTotal} branches scanned` : "Branches pending";
-  return `${repoText} · ${branchText}`;
-}
-
-function scanEta(scan) {
-  if (scan.status === "succeeded") {
-    return "Done";
-  }
-  if (scan.status === "failed") {
-    return "Stopped";
-  }
-  if (scan.status === "stopped") {
-    return "Stopped";
-  }
-  if (scan.status !== "running") {
-    return "Not started";
-  }
-  const seconds = Number((scan.progress || {}).etaSeconds);
-  if (!Number.isFinite(seconds) || seconds <= 0) {
-    return "Estimating";
-  }
-  return `About ${durationText(seconds)}`;
-}
-
-function durationText(totalSeconds) {
-  const total = Math.max(1, Math.round(totalSeconds));
-  if (total < 60) {
-    return `${total}s`;
-  }
-  const minutes = Math.floor(total / 60);
-  const seconds = total % 60;
-  if (minutes < 60) {
-    return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
-  }
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
 }
 
 function providerLabel(provider) {

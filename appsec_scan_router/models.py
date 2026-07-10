@@ -51,6 +51,7 @@ class ScanConfig:
     store_lookup: bool = False
     store_country: str = DEFAULT_STORE_COUNTRY
     store_timeout_seconds: int = DEFAULT_STORE_TIMEOUT_SECONDS
+    store_countries: tuple[str, ...] = ()
     provider: str = "azure-devops"
     base_url: str = ""
     application_types: tuple[str, ...] = ()
@@ -61,6 +62,7 @@ class ScanConfig:
     owner_user_login: str = "anonymous"
     ado_org_pats: tuple[AzureDevOpsOrgPat, ...] = ()
     target_filters: tuple[SourceTargetFilter, ...] = ()
+    github_urls: tuple[str, ...] = ()
     github_app_id: str = ""
     github_app_installation_id: str = ""
     github_app_private_key: str = ""
@@ -108,6 +110,7 @@ class StoreListing:
     version: str = ""
     last_updated: str = ""
     error: str = ""
+    country: str = ""
 
 
 @dataclass(frozen=True)
