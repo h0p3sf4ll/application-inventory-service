@@ -6,11 +6,16 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-from .constants import CONTENT_FILE_SUFFIXES
+from .constants import CONTENT_FILE_EXTENSION_SUFFIXES, CONTENT_FILE_NAMES, IGNORED_CONTENT_DIRECTORIES
 
 
 def should_fetch_content(path: str) -> bool:
-    return path.lower().endswith(CONTENT_FILE_SUFFIXES)
+    normalized = path.replace("\\", "/").lower()
+    parts = normalized.strip("/").split("/")
+    if IGNORED_CONTENT_DIRECTORIES.intersection(parts[:-1]):
+        return False
+    filename = parts[-1]
+    return filename in CONTENT_FILE_NAMES or filename.endswith(CONTENT_FILE_EXTENSION_SUFFIXES)
 
 
 def normalize_path(path: str) -> str:

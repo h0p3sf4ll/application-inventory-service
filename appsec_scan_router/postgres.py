@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import logging
 import json
@@ -27,6 +28,8 @@ except ImportError:
 
 CONTROL_CHARACTER_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 SQL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+SCHEMA_READY_LOCK = threading.Lock()
+SCHEMA_READY: set[tuple[str, str, str]] = set()
 
 NORMALIZED_TABLES = (
     "scan_runs",
@@ -53,23 +56,25 @@ EXPORT_COLUMNS = (
     "source_url",
     "inventory_name",
     "inventory_version",
-    "inventory_types",
     "primary_language",
     "scanner_target",
     "semgrep_target",
     "sonarqube_project_key",
     "sonarqube_project_name",
-    "mobile_name",
-    "mobile_version",
-    "mobile_identifier",
-    "mobile_identifier_source",
-    "mobile_identifier_status",
     "branch_contributing_developers",
     "contributing_developers",
     "last_updated",
     "confidence",
     "score",
+    "scan_started_at",
+    "synced_at",
+    "inventory_types",
     "categories",
+    "mobile_name",
+    "mobile_version",
+    "mobile_identifier",
+    "mobile_identifier_source",
+    "mobile_identifier_status",
     "store_lookup_status",
     "store_validation_passed",
     "store_platforms",
@@ -87,8 +92,31 @@ EXPORT_COLUMNS = (
     "google_play_last_updated",
     "google_play_validation_passed",
     "google_play_lookup_status",
-    "scan_started_at",
-    "synced_at",
+)
+
+SEARCHABLE_EXPORT_COLUMNS = (
+    "provider",
+    "organization",
+    "owner_user_login",
+    "project",
+    "repo_name",
+    "branch_name",
+    "inventory_name",
+    "inventory_version",
+    "inventory_types",
+    "primary_language",
+    "scanner_target",
+    "branch_contributing_developers",
+    "confidence",
+    "categories",
+    "mobile_name",
+    "mobile_version",
+    "mobile_identifier",
+    "store_platforms",
+    "apple_app_store_name",
+    "apple_app_store_identifier",
+    "google_play_name",
+    "google_play_identifier",
 )
 
 
@@ -190,41 +218,70 @@ class PostgresInventoryWriter:
         self.scan_started_at = datetime.now(timezone.utc)
         self.scan_id = uuid.uuid4().hex
         self.connection: Any = None
+        self.lock = threading.RLock()
+        self.pending_rows = 0
+        self.last_commit_at = time.monotonic()
+        self.commit_rows = positive_int_env("APPLICATION_INVENTORY_POSTGRES_COMMIT_ROWS", 50)
+        self.commit_seconds = positive_float_env("APPLICATION_INVENTORY_POSTGRES_COMMIT_SECONDS", 2.0)
+        self.scan_run_written = False
 
     def __enter__(self) -> PostgresInventoryWriter:
         if psycopg is None or sql is None or Jsonb is None:
             raise SystemExit(MISSING_PSYCOPG_MESSAGE)
         if not self.dsn:
             raise ValueError("PostgreSQL DSN is required when database sync is enabled.")
-        self.connection = psycopg.connect(self.dsn, autocommit=True)
+        self.connection = psycopg.connect(self.dsn, autocommit=False)
         self.create_schema()
+        self.connection.commit()
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
-        self.close()
+        self.close(commit=exc_type is None)
 
-    def close(self) -> None:
-        if self.connection is not None:
-            self.connection.close()
-            self.connection = None
+    def close(self, commit: bool = True) -> None:
+        with self.lock:
+            if self.connection is not None:
+                if commit:
+                    self.prune_unreferenced_scan_runs()
+                    self.connection.commit()
+                else:
+                    self.connection.rollback()
+                self.connection.close()
+                self.connection = None
 
     def write_result(self, result: dict[str, Any]) -> None:
-        if self.connection is None:
-            raise RuntimeError("PostgresInventoryWriter must be opened before writing.")
-        self.write_flat_result(result)
-        self.write_normalized_result(result)
+        with self.lock:
+            if self.connection is None:
+                raise RuntimeError("PostgresInventoryWriter must be opened before writing.")
+            try:
+                self.write_flat_result(result)
+                self.write_normalized_result(result)
+                self.pending_rows += 1
+                now = time.monotonic()
+                if self.pending_rows >= self.commit_rows or now - self.last_commit_at >= self.commit_seconds:
+                    self.connection.commit()
+                    self.pending_rows = 0
+                    self.last_commit_at = now
+            except Exception:
+                self.connection.rollback()
+                self.pending_rows = 0
+                self.last_commit_at = time.monotonic()
+                self.scan_run_written = False
+                raise
 
     def create_schema(self) -> None:
         if self.connection is None:
             raise RuntimeError("PostgresInventoryWriter must be opened before creating schema.")
-        create_database_schema(self.connection, self.schema, self.table)
+        ensure_database_schema(self.connection, self.dsn, self.schema, self.table)
 
     def write_flat_result(self, result: dict[str, Any]) -> None:
         values = self.row_values(result)
         self.connection.execute(self.upsert_sql(), values)
 
     def write_normalized_result(self, result: dict[str, Any]) -> None:
-        self.upsert_scan_run(result)
+        if not self.scan_run_written:
+            self.upsert_scan_run(result)
+            self.scan_run_written = True
         repository_id = self.upsert_repository(result)
         branch_inventory_id = self.upsert_branch_inventory(repository_id, result)
         self.replace_value_set("inventory_types", "inventory_type", branch_inventory_id, semicolon_values(result.get("inventory_types")))
@@ -273,6 +330,8 @@ class PostgresInventoryWriter:
             sql.SQL(
                 """
                 INSERT INTO {table} (
+                    owner_user_id,
+                    owner_user_login,
                     provider,
                     organization,
                     project,
@@ -281,9 +340,10 @@ class PostgresInventoryWriter:
                     source_url,
                     synced_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, now())
-                ON CONFLICT (provider, organization, project, repo_name)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
+                ON CONFLICT (owner_user_id, provider, organization, project, repo_name)
                 DO UPDATE SET
+                    owner_user_login = EXCLUDED.owner_user_login,
                     web_url = EXCLUDED.web_url,
                     source_url = EXCLUDED.source_url,
                     synced_at = now()
@@ -291,6 +351,8 @@ class PostgresInventoryWriter:
                 """
             ).format(table=object_identifier(self.schema, "repositories")),
             (
+                self.owner_user_id,
+                self.owner_user_login,
                 text_value(result.get("provider") or self.provider),
                 text_value(result.get("organization") or self.organization),
                 text_value(result.get("project")),
@@ -407,29 +469,42 @@ class PostgresInventoryWriter:
         return int(row[0])
 
     def replace_value_set(self, table_name: str, column_name: str, branch_inventory_id: int, values: list[str]) -> None:
+        unique_values = sorted(set(values))
         self.connection.execute(
-            sql.SQL("DELETE FROM {table} WHERE branch_inventory_id = %s").format(table=object_identifier(self.schema, table_name)),
-            (branch_inventory_id,),
+            sql.SQL(
+                "DELETE FROM {table} WHERE branch_inventory_id = %s AND NOT ({column} = ANY(%s::text[]))"
+            ).format(
+                table=object_identifier(self.schema, table_name),
+                column=sql.Identifier(column_name),
+            ),
+            (branch_inventory_id, unique_values),
         )
-        for value in sorted(set(values)):
+        if unique_values:
             self.connection.execute(
-                sql.SQL("INSERT INTO {table} (branch_inventory_id, {column}) VALUES (%s, %s) ON CONFLICT DO NOTHING").format(
+                sql.SQL(
+                    "INSERT INTO {table} (branch_inventory_id, {column}) "
+                    "SELECT %s, value FROM unnest(%s::text[]) AS value ON CONFLICT DO NOTHING"
+                ).format(
                     table=object_identifier(self.schema, table_name),
                     column=sql.Identifier(column_name),
                 ),
-                (branch_inventory_id, value),
+                (branch_inventory_id, unique_values),
             )
 
     def replace_store_listings(self, branch_inventory_id: int, result: dict[str, Any]) -> None:
+        listings = store_listing_rows(result)
+        platforms = [listing["platform"] for listing in listings]
         self.connection.execute(
-            sql.SQL("DELETE FROM {table} WHERE branch_inventory_id = %s").format(table=object_identifier(self.schema, "store_listings")),
-            (branch_inventory_id,),
+            sql.SQL(
+                "DELETE FROM {table} WHERE branch_inventory_id = %s AND NOT (platform = ANY(%s::text[]))"
+            ).format(table=object_identifier(self.schema, "store_listings")),
+            (branch_inventory_id, platforms),
         )
-        for listing in store_listing_rows(result):
+        for listing in listings:
             self.connection.execute(
                 sql.SQL(
                     """
-                    INSERT INTO {table} (
+                    INSERT INTO {table} AS current_listing (
                         branch_inventory_id,
                         platform,
                         lookup_status,
@@ -450,6 +525,23 @@ class PostgresInventoryWriter:
                         app_url = EXCLUDED.app_url,
                         app_version = EXCLUDED.app_version,
                         last_updated = EXCLUDED.last_updated
+                    WHERE (
+                        current_listing.lookup_status,
+                        current_listing.validation_passed,
+                        current_listing.app_name,
+                        current_listing.app_identifier,
+                        current_listing.app_url,
+                        current_listing.app_version,
+                        current_listing.last_updated
+                    ) IS DISTINCT FROM (
+                        EXCLUDED.lookup_status,
+                        EXCLUDED.validation_passed,
+                        EXCLUDED.app_name,
+                        EXCLUDED.app_identifier,
+                        EXCLUDED.app_url,
+                        EXCLUDED.app_version,
+                        EXCLUDED.last_updated
+                    )
                     """
                 ).format(table=object_identifier(self.schema, "store_listings")),
                 (
@@ -465,6 +557,28 @@ class PostgresInventoryWriter:
                 ),
             )
 
+    def prune_unreferenced_scan_runs(self) -> None:
+        if self.connection is None:
+            return
+        self.connection.execute(
+            sql.SQL(
+                """
+                DELETE FROM {scan_runs} scan_run
+                WHERE scan_run.owner_user_id = %s
+                  AND scan_run.provider = %s
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM {branch_inventory} branch
+                      WHERE branch.scan_id = scan_run.scan_id
+                  )
+                """
+            ).format(
+                scan_runs=object_identifier(self.schema, "scan_runs"),
+                branch_inventory=object_identifier(self.schema, "branch_inventory"),
+            ),
+            (self.owner_user_id, self.provider),
+        )
+
     def upsert_sql(self) -> Any:
         table = object_identifier(self.schema, self.table)
         columns = POSTGRES_COLUMNS
@@ -478,7 +592,7 @@ class PostgresInventoryWriter:
             """
             INSERT INTO {table} ({columns})
             VALUES ({placeholders})
-            ON CONFLICT (provider, organization, project, repo_name, branch_name)
+            ON CONFLICT (owner_user_id, provider, organization, project, repo_name, branch_name)
             DO UPDATE SET {assignments}
             """
         ).format(
@@ -558,6 +672,19 @@ def create_database_schema(connection: Any, schema: str, flat_table: str) -> Non
     create_export_view(connection, valid_schema)
 
 
+def ensure_database_schema(connection: Any, dsn: str, schema: str, flat_table: str) -> None:
+    valid_schema = sql_name(schema or DEFAULT_POSTGRES_SCHEMA, "PostgreSQL schema")
+    valid_table = sql_name(flat_table or DEFAULT_POSTGRES_TABLE, "PostgreSQL table")
+    key = (hashlib.sha256(dsn.encode("utf-8")).hexdigest(), valid_schema, valid_table)
+    with SCHEMA_READY_LOCK:
+        if key in SCHEMA_READY:
+            return
+        create_database_schema(connection, valid_schema, valid_table)
+        if not connection.autocommit:
+            connection.commit()
+        SCHEMA_READY.add(key)
+
+
 def create_flat_table(connection: Any, schema: str, table: str) -> None:
     target = object_identifier(schema, table)
     index_prefix = index_name_prefix(f"{schema}_{table}")
@@ -616,7 +743,7 @@ def create_flat_table(connection: Any, schema: str, table: str) -> None:
                 detection_evidence jsonb,
                 scan_started_at timestamptz NOT NULL,
                 synced_at timestamptz NOT NULL DEFAULT now(),
-                PRIMARY KEY (provider, organization, project, repo_name, branch_name)
+                PRIMARY KEY (owner_user_id, provider, organization, project, repo_name, branch_name)
             )
             """
         ).format(table=target)
@@ -629,6 +756,12 @@ def create_flat_table(connection: Any, schema: str, table: str) -> None:
                 definition=sql.SQL(definition),
             )
         )
+    ensure_primary_key(
+        connection,
+        schema,
+        table,
+        ("owner_user_id", "provider", "organization", "project", "repo_name", "branch_name"),
+    )
     connection.execute(
         sql.SQL("CREATE INDEX IF NOT EXISTS {index} ON {table} USING GIN (inventory_types)").format(
             index=sql.Identifier(f"{index_prefix}_inventory_types_idx"),
@@ -676,6 +809,8 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
             """
             CREATE TABLE IF NOT EXISTS {table} (
                 repository_id bigserial PRIMARY KEY,
+                owner_user_id text NOT NULL DEFAULT 'anonymous',
+                owner_user_login text NOT NULL DEFAULT 'anonymous',
                 provider text NOT NULL,
                 organization text NOT NULL,
                 project text NOT NULL,
@@ -683,7 +818,7 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
                 web_url text,
                 source_url text,
                 synced_at timestamptz NOT NULL DEFAULT now(),
-                UNIQUE (provider, organization, project, repo_name)
+                UNIQUE (owner_user_id, provider, organization, project, repo_name)
             )
             """
         ).format(table=object_identifier(schema, "repositories"))
@@ -794,9 +929,10 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
             branch_inventory=object_identifier(schema, "branch_inventory"),
         )
     )
+    migrate_repository_scope(connection, schema)
     for table_name, column_name in (
+        ("repositories", "owner_user_id"),
         ("repositories", "provider"),
-        ("repositories", "organization"),
         ("branch_inventory", "owner_user_id"),
         ("branch_inventory", "last_updated"),
     ):
@@ -807,6 +943,183 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
                 column=sql.Identifier(column_name),
             )
         )
+
+
+def migrate_repository_scope(connection: Any, schema: str) -> None:
+    owner_scope_columns = ("owner_user_id", "provider", "organization", "project", "repo_name")
+    if any(
+        existing_columns == owner_scope_columns
+        for _, _, existing_columns in constraint_columns(connection, schema, "repositories", {"u"})
+    ):
+        return
+    repositories = object_identifier(schema, "repositories")
+    branch_inventory = object_identifier(schema, "branch_inventory")
+    connection.execute(
+        sql.SQL("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS owner_user_id text NOT NULL DEFAULT 'anonymous'").format(
+            table=repositories
+        )
+    )
+    connection.execute(
+        sql.SQL("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS owner_user_login text NOT NULL DEFAULT 'anonymous'").format(
+            table=repositories
+        )
+    )
+    drop_unique_constraint(
+        connection,
+        schema,
+        "repositories",
+        ("provider", "organization", "project", "repo_name"),
+    )
+    connection.execute(
+        sql.SQL(
+            """
+            WITH owners AS (
+                SELECT
+                    repository_id,
+                    min(owner_user_id) AS owner_user_id,
+                    min(owner_user_login) FILTER (WHERE owner_user_login <> '') AS owner_user_login
+                FROM {branch_inventory}
+                GROUP BY repository_id
+            )
+            UPDATE {repositories} repository
+            SET
+                owner_user_id = owners.owner_user_id,
+                owner_user_login = COALESCE(owners.owner_user_login, owners.owner_user_id)
+            FROM owners
+            WHERE owners.repository_id = repository.repository_id
+            """
+        ).format(repositories=repositories, branch_inventory=branch_inventory)
+    )
+    ensure_unique_constraint(
+        connection,
+        schema,
+        "repositories",
+        owner_scope_columns,
+    )
+    connection.execute(
+        sql.SQL(
+            """
+            INSERT INTO {repositories} (
+                owner_user_id,
+                owner_user_login,
+                provider,
+                organization,
+                project,
+                repo_name,
+                web_url,
+                source_url,
+                synced_at
+            )
+            SELECT DISTINCT
+                branch.owner_user_id,
+                branch.owner_user_login,
+                repository.provider,
+                repository.organization,
+                repository.project,
+                repository.repo_name,
+                repository.web_url,
+                repository.source_url,
+                repository.synced_at
+            FROM {branch_inventory} branch
+            JOIN {repositories} repository ON repository.repository_id = branch.repository_id
+            WHERE branch.owner_user_id <> repository.owner_user_id
+            ON CONFLICT (owner_user_id, provider, organization, project, repo_name)
+            DO UPDATE SET
+                owner_user_login = EXCLUDED.owner_user_login,
+                web_url = EXCLUDED.web_url,
+                source_url = EXCLUDED.source_url,
+                synced_at = EXCLUDED.synced_at
+            """
+        ).format(repositories=repositories, branch_inventory=branch_inventory)
+    )
+    connection.execute(
+        sql.SQL(
+            """
+            UPDATE {branch_inventory} branch
+            SET repository_id = owned.repository_id
+            FROM {repositories} original, {repositories} owned
+            WHERE original.repository_id = branch.repository_id
+              AND owned.owner_user_id = branch.owner_user_id
+              AND owned.provider = original.provider
+              AND owned.organization = original.organization
+              AND owned.project = original.project
+              AND owned.repo_name = original.repo_name
+              AND branch.repository_id <> owned.repository_id
+            """
+        ).format(repositories=repositories, branch_inventory=branch_inventory)
+    )
+
+
+def ensure_primary_key(connection: Any, schema: str, table: str, columns: tuple[str, ...]) -> None:
+    constraints = constraint_columns(connection, schema, table, {"p"})
+    if any(existing_columns == columns for _, _, existing_columns in constraints):
+        return
+    for name, _, _ in constraints:
+        connection.execute(
+            sql.SQL("ALTER TABLE {table} DROP CONSTRAINT {constraint}").format(
+                table=object_identifier(schema, table),
+                constraint=sql.Identifier(name),
+            )
+        )
+    connection.execute(
+        sql.SQL("ALTER TABLE {table} ADD CONSTRAINT {constraint} PRIMARY KEY ({columns})").format(
+            table=object_identifier(schema, table),
+            constraint=sql.Identifier(f"{table}_pkey"[:63]),
+            columns=sql.SQL(", ").join(sql.Identifier(column) for column in columns),
+        )
+    )
+
+
+def ensure_unique_constraint(connection: Any, schema: str, table: str, columns: tuple[str, ...]) -> None:
+    constraints = constraint_columns(connection, schema, table, {"u"})
+    if any(existing_columns == columns for _, _, existing_columns in constraints):
+        return
+    connection.execute(
+        sql.SQL("ALTER TABLE {table} ADD CONSTRAINT {constraint} UNIQUE ({columns})").format(
+            table=object_identifier(schema, table),
+            constraint=sql.Identifier(f"{table}_owner_scope_key"[:63]),
+            columns=sql.SQL(", ").join(sql.Identifier(column) for column in columns),
+        )
+    )
+
+
+def drop_unique_constraint(connection: Any, schema: str, table: str, columns: tuple[str, ...]) -> None:
+    for name, _, existing_columns in constraint_columns(connection, schema, table, {"u"}):
+        if existing_columns != columns:
+            continue
+        connection.execute(
+            sql.SQL("ALTER TABLE {table} DROP CONSTRAINT {constraint}").format(
+                table=object_identifier(schema, table),
+                constraint=sql.Identifier(name),
+            )
+        )
+
+
+def constraint_columns(
+    connection: Any,
+    schema: str,
+    table: str,
+    constraint_types: set[str],
+) -> list[tuple[str, str, tuple[str, ...]]]:
+    rows = connection.execute(
+        """
+        SELECT
+            constraint_record.conname,
+            constraint_record.contype,
+            array_agg(attribute.attname ORDER BY key_column.ordinality)
+        FROM pg_constraint constraint_record
+        CROSS JOIN LATERAL unnest(constraint_record.conkey)
+            WITH ORDINALITY AS key_column(attribute_number, ordinality)
+        JOIN pg_attribute attribute
+          ON attribute.attrelid = constraint_record.conrelid
+         AND attribute.attnum = key_column.attribute_number
+        WHERE constraint_record.conrelid = to_regclass(%s)
+          AND constraint_record.contype::text = ANY(%s::text[])
+        GROUP BY constraint_record.conname, constraint_record.contype
+        """,
+        (f"{schema}.{table}", list(constraint_types)),
+    ).fetchall()
+    return [(str(name), str(kind), tuple(columns)) for name, kind, columns in rows]
 
 
 def create_observability_table(connection: Any, schema: str) -> None:
@@ -943,7 +1256,7 @@ def database_status(dsn: str, schema: str = DEFAULT_POSTGRES_SCHEMA, table: str 
     try:
         resolved_schema, resolved_table = schema_table_parts(schema, table)
         with psycopg.connect(dsn, autocommit=True, connect_timeout=3) as connection:
-            create_database_schema(connection, resolved_schema, resolved_table)
+            ensure_database_schema(connection, dsn, resolved_schema, resolved_table)
             database = connection.execute("SELECT current_database()").fetchone()[0]
             branch_count = normalized_row_count(connection, resolved_schema, owner_user_id)
             flat_count = flat_row_count(connection, resolved_schema, resolved_table, owner_user_id)
@@ -968,28 +1281,92 @@ def export_inventory_rows(
     schema: str = DEFAULT_POSTGRES_SCHEMA,
     owner_user_id: str = "",
     limit: int = 50000,
+    query: str = "",
+    table: str = DEFAULT_POSTGRES_TABLE,
 ) -> list[dict[str, Any]]:
     if psycopg is None:
         raise RuntimeError(MISSING_PSYCOPG_MESSAGE)
     resolved_schema = sql_name(schema or DEFAULT_POSTGRES_SCHEMA, "PostgreSQL schema")
     with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as connection:
+        ensure_database_schema(connection, dsn, resolved_schema, table)
+        where_clause, parameters = inventory_search_filter(owner_user_id, query)
         rows = connection.execute(
             sql.SQL(
                 """
                 SELECT {columns}
                 FROM {view}
-                WHERE (%s = '' OR owner_user_id = %s)
+                WHERE {where_clause}
                 ORDER BY organization, project, repo_name, branch_name
                 LIMIT %s
                 """
             ).format(
                 columns=sql.SQL(", ").join(sql.Identifier(column) for column in EXPORT_COLUMNS),
                 view=object_identifier(resolved_schema, "inventory_export"),
+                where_clause=where_clause,
             ),
-            (owner_user_id, owner_user_id, limit),
+            (*parameters, bounded_limit(limit, 50000, 250000)),
         )
         columns = [column.name for column in rows.description]
         return [dict(zip(columns, row)) for row in rows.fetchall()]
+
+
+def search_inventory(
+    dsn: str,
+    schema: str = DEFAULT_POSTGRES_SCHEMA,
+    owner_user_id: str = "",
+    query: str = "",
+    limit: int = 100,
+    offset: int = 0,
+    table: str = DEFAULT_POSTGRES_TABLE,
+) -> dict[str, Any]:
+    if psycopg is None:
+        raise RuntimeError(MISSING_PSYCOPG_MESSAGE)
+    if not dsn:
+        raise ValueError("PostgreSQL DSN is required.")
+    resolved_schema = sql_name(schema or DEFAULT_POSTGRES_SCHEMA, "PostgreSQL schema")
+    resolved_limit = bounded_limit(limit, 100, 500)
+    resolved_offset = non_negative_int(offset)
+    resolved_query = normalize_search_query(query)
+    with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as connection:
+        ensure_database_schema(connection, dsn, resolved_schema, table)
+        where_clause, parameters = inventory_search_filter(owner_user_id, resolved_query)
+        total = int(
+            connection.execute(
+                sql.SQL("SELECT count(*) FROM {view} WHERE {where_clause}").format(
+                    view=object_identifier(resolved_schema, "inventory_export"),
+                    where_clause=where_clause,
+                ),
+                parameters,
+            ).fetchone()[0]
+        )
+        cursor = connection.execute(
+            sql.SQL(
+                """
+                SELECT {columns}
+                FROM {view}
+                WHERE {where_clause}
+                ORDER BY organization, project, repo_name, branch_name
+                LIMIT %s OFFSET %s
+                """
+            ).format(
+                columns=sql.SQL(", ").join(sql.Identifier(column) for column in EXPORT_COLUMNS),
+                view=object_identifier(resolved_schema, "inventory_export"),
+                where_clause=where_clause,
+            ),
+            (*parameters, resolved_limit, resolved_offset),
+        )
+        columns = [column.name for column in cursor.description]
+        rows = [
+            {column: json_cell(value) for column, value in zip(columns, row)}
+            for row in cursor.fetchall()
+        ]
+    return {
+        "query": resolved_query,
+        "rows": rows,
+        "total": total,
+        "limit": resolved_limit,
+        "offset": resolved_offset,
+    }
 
 
 def export_inventory_csv(
@@ -997,8 +1374,17 @@ def export_inventory_csv(
     schema: str = DEFAULT_POSTGRES_SCHEMA,
     owner_user_id: str = "",
     limit: int = 50000,
+    query: str = "",
+    table: str = DEFAULT_POSTGRES_TABLE,
 ) -> bytes:
-    rows = export_inventory_rows(dsn, schema=schema, owner_user_id=owner_user_id, limit=limit)
+    rows = export_inventory_rows(
+        dsn,
+        schema=schema,
+        owner_user_id=owner_user_id,
+        limit=limit,
+        query=query,
+        table=table,
+    )
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=list(EXPORT_COLUMNS), extrasaction="ignore")
     writer.writeheader()
@@ -1012,9 +1398,33 @@ def export_inventory_json(
     schema: str = DEFAULT_POSTGRES_SCHEMA,
     owner_user_id: str = "",
     limit: int = 50000,
+    query: str = "",
+    table: str = DEFAULT_POSTGRES_TABLE,
 ) -> bytes:
-    rows = export_inventory_rows(dsn, schema=schema, owner_user_id=owner_user_id, limit=limit)
+    rows = export_inventory_rows(
+        dsn,
+        schema=schema,
+        owner_user_id=owner_user_id,
+        limit=limit,
+        query=query,
+        table=table,
+    )
     return json.dumps(rows, default=export_cell, indent=2).encode("utf-8")
+
+
+def inventory_search_filter(owner_user_id: str, query: str) -> tuple[Any, list[Any]]:
+    clauses = [sql.SQL("(%s = '' OR owner_user_id = %s)")]
+    parameters: list[Any] = [text_value(owner_user_id), text_value(owner_user_id)]
+    search_expression = sql.SQL("concat_ws(' ', {values})").format(
+        values=sql.SQL(", ").join(
+            sql.SQL("COALESCE({column}::text, '')").format(column=sql.Identifier(column))
+            for column in SEARCHABLE_EXPORT_COLUMNS
+        )
+    )
+    for token in search_tokens(query):
+        clauses.append(sql.SQL("{search_expression} ILIKE %s").format(search_expression=search_expression))
+        parameters.append(f"%{token}%")
+    return sql.SQL(" AND ").join(clauses), parameters
 
 
 def normalized_row_count(connection: Any, schema: str, owner_user_id: str) -> int:
@@ -1049,7 +1459,7 @@ def observability_row_count(connection: Any, schema: str) -> int:
     )
 
 
-PRIMARY_KEY_COLUMNS = ("provider", "organization", "project", "repo_name", "branch_name")
+PRIMARY_KEY_COLUMNS = ("owner_user_id", "provider", "organization", "project", "repo_name", "branch_name")
 
 POSTGRES_COLUMNS = (
     "provider",
@@ -1065,23 +1475,26 @@ POSTGRES_COLUMNS = (
     "source_url",
     "inventory_name",
     "inventory_version",
-    "inventory_types",
     "primary_language",
     "scanner_target",
     "semgrep_target",
     "sonarqube_project_key",
     "sonarqube_project_name",
-    "mobile_name",
-    "mobile_version",
-    "mobile_identifier",
-    "mobile_identifier_source",
-    "mobile_identifier_status",
     "branch_contributing_developers",
     "contributing_developers",
     "last_updated",
     "confidence",
     "score",
+    "row_data",
+    "detection_evidence",
+    "scan_started_at",
+    "inventory_types",
     "categories",
+    "mobile_name",
+    "mobile_version",
+    "mobile_identifier",
+    "mobile_identifier_source",
+    "mobile_identifier_status",
     "store_lookup_status",
     "store_validation_passed",
     "store_platforms",
@@ -1099,9 +1512,6 @@ POSTGRES_COLUMNS = (
     "google_play_last_updated",
     "google_play_validation_passed",
     "google_play_lookup_status",
-    "row_data",
-    "detection_evidence",
-    "scan_started_at",
 )
 
 FLAT_TABLE_MIGRATIONS = (
@@ -1245,6 +1655,36 @@ def export_cell(value: Any) -> str:
     return text_value(value)
 
 
+def json_cell(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+def normalize_search_query(value: Any) -> str:
+    return " ".join(text_value(value).split())[:500]
+
+
+def search_tokens(value: Any) -> list[str]:
+    return normalize_search_query(value).split()[:12]
+
+
+def bounded_limit(value: Any, default: int, maximum: int) -> int:
+    try:
+        resolved = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(resolved, maximum))
+
+
+def non_negative_int(value: Any) -> int:
+    try:
+        resolved = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, resolved)
+
+
 def postgres_error_message(error: Exception) -> str:
     detail = str(error).lower()
     if "connection refused" in detail or "could not connect" in detail or "connection failed" in detail:
@@ -1256,3 +1696,19 @@ def postgres_error_message(error: Exception) -> str:
     if "library not loaded" in detail or "dyld" in detail:
         return "The local PostgreSQL installation cannot start because a required library is missing."
     return text_value(error)
+
+
+def positive_int_env(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, ""))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def positive_float_env(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, ""))
+    except ValueError:
+        return default
+    return value if value > 0 else default

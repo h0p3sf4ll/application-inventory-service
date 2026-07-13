@@ -11,7 +11,7 @@ The service is aligned to the OWASP Top 10 2025 risk model:
 | Broken Access Control | UI scan, report, database, and target-discovery APIs require a signed-in session. Reports and database exports are scoped by user. |
 | Security Misconfiguration | Production deployments should run behind HTTPS, disable test login, set secure cookies, and use the documented security headers. |
 | Software Supply Chain Failures | Runtime dependency floors are set to audited versions. CI runs Bandit and `pip-audit`. SBOM files are maintained in `docs/`. |
-| Cryptographic Failures | Saved provider tokens are encrypted with Fernet. Operators should supply `APPLICATION_INVENTORY_SERVICE_SECRET_KEY` from a secret manager. |
+| Cryptographic Failures | Saved provider tokens and scheduled scan definitions are encrypted with Fernet. Operators should supply `APPLICATION_INVENTORY_SERVICE_SECRET_KEY` from a secret manager. |
 | Injection | Database writes use psycopg parameters and identifiers. Shell execution is avoided for scans; child process commands are argument arrays. |
 | Insecure Design | The app minimizes repository access, avoids code execution, and emits scanner target manifests for downstream security tooling. |
 | Authentication Failures | GitHub and Google OAuth flows use high-entropy state values, session cookies are HttpOnly and SameSite, and CSRF tokens protect state-changing APIs. |
@@ -40,7 +40,7 @@ Use read-only Azure DevOps and GitHub tokens. Do not reuse personal administrati
 - Rotate provider tokens and OAuth client secrets on a defined cadence.
 - Do not pass provider tokens in command history. Prefer environment variables, secret manager injection, or encrypted UI token storage.
 - Treat any token pasted into chat, terminal output, logs, screenshots, or issue trackers as exposed and rotate it.
-- Use a stable Fernet key in production. If the key changes, saved UI provider tokens cannot be decrypted.
+- Use a stable Fernet key in production. If the key changes, saved UI provider tokens and schedules cannot be decrypted.
 
 ## HTTP Security
 

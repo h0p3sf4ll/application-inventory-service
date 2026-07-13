@@ -17,6 +17,7 @@ from .constants import (
     DEFAULT_OUT_PREFIX,
     DEFAULT_POSTGRES_TABLE,
     DEFAULT_POSTGRES_SCHEMA,
+    DEFAULT_SOURCE_WORKERS,
     DEFAULT_STORE_COUNTRY,
     DEFAULT_STORE_TIMEOUT_SECONDS,
     DEFAULT_TIMEOUT_SECONDS,
@@ -34,7 +35,7 @@ from .github import (
 from .models import AzureDevOpsOrgPat, ScanConfig, SourceTargetFilter
 from .observability import configure_logging as configure_observability_logging, log_github_app_context
 from .org_tokens import parse_ado_org_pat_values
-from .scanner import normalize_application_types, normalize_store_countries, scan_to_reports, store_lookup_allowed
+from .scanner import normalize_application_types, normalize_store_countries, scan_reports, store_lookup_allowed
 from .target_filters import parse_source_target_filter_values
 
 
@@ -145,6 +146,12 @@ def parse_args(argv: list[str]) -> ScanConfig:
             "Application type to include in reports. May be repeated. "
             f"Defaults to all types. Valid values: {', '.join(KNOWN_INVENTORY_TYPES)}."
         ),
+    )
+    parser.add_argument(
+        "--source-workers",
+        type=int,
+        default=DEFAULT_SOURCE_WORKERS,
+        help=f"Maximum concurrent organizations or GitHub owners. Defaults to {DEFAULT_SOURCE_WORKERS}.",
     )
     parser.add_argument(
         "--max-workers",
@@ -270,6 +277,7 @@ def parse_args(argv: list[str]) -> ScanConfig:
         out_dir=args.out_dir,
         out_prefix=args.out_prefix,
         max_workers=args.max_workers,
+        source_workers=args.source_workers,
         branch_workers=args.branch_workers,
         content_workers=args.content_workers,
         max_commits_per_repo=args.max_commits_per_repo,
@@ -349,6 +357,8 @@ def validate_args(
             raise SystemExit("Missing Azure DevOps organization. Set --org or pass --ado-org-pat ORG=PAT.")
         if not ado_org_pats and not provider_token(args):
             raise SystemExit(provider_token_message(args.provider))
+    if args.source_workers < 1:
+        raise SystemExit("--source-workers must be at least 1.")
     if args.max_workers < 1:
         raise SystemExit("--max-workers must be at least 1.")
     if args.branch_workers < 1:
@@ -473,8 +483,8 @@ def env_value(*names: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     config = parse_args(sys.argv[1:] if argv is None else argv)
-    results, xlsx_path, semgrep_path, sonarqube_path = scan_to_reports(config)
-    print(f"Done. Found {len(results)} inventory branches.")
+    result_count, xlsx_path, semgrep_path, sonarqube_path = scan_reports(config)
+    print(f"Done. Found {result_count} inventory branches.")
     print(f"XLSX:              {xlsx_path}")
     print(f"Semgrep targets:   {semgrep_path}")
     print(f"SonarQube targets: {sonarqube_path}")

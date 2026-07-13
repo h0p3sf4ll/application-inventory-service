@@ -7,94 +7,65 @@ import os
 import queue
 import re
 import secrets
-import subprocess
+import shutil
 import sys
-import threading
 import time
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .auth import (
     AuthManager,
     GitHubEnterpriseOAuthConfig,
-    GitHubOAuthConfig,
     GoogleOAuthConfig,
     SessionRecord,
     TestLoginConfig,
+    auth_state_dir,
     expired_session_cookie,
     session_cookie,
 )
-from .azure import AzureDevOpsClient
 from .constants import (
     APPLICATION_TYPE_LABELS,
     DEFAULT_OUT_PREFIX,
     DEFAULT_POSTGRES_DATABASE,
     DEFAULT_POSTGRES_HOST,
-    DEFAULT_POSTGRES_PASSWORD,
     DEFAULT_POSTGRES_PORT,
     DEFAULT_POSTGRES_SCHEMA,
     DEFAULT_POSTGRES_TABLE,
     DEFAULT_POSTGRES_USER,
+    DEFAULT_SOURCE_WORKERS,
     KNOWN_INVENTORY_TYPES,
 )
 from .github import (
-    GitHubAppCredentials,
-    GitHubEnterpriseClient,
-    configured_github_api_url,
     configured_github_app_id,
     configured_github_installation_id,
     configured_github_owners,
-    parse_github_urls,
 )
-from .models import AzureDevOpsError
-from .org_tokens import ado_org_pats_to_json, parse_ado_org_pat_values
 from .observability import configure_logging, log_github_app_context, observability_dsn
-from .postgres import database_status, export_inventory_csv, export_inventory_json
-from .scanner import normalize_application_types, normalize_store_countries, store_lookup_allowed
+from .postgres import database_status, export_inventory_csv, export_inventory_json, search_inventory
+from .runtime import REPORT_EXTENSIONS, SCAN_STATUSES_DONE, ScanManager, ScanRun
+from .scan_request import (
+    build_scan_command,
+    normalize_database_config,
+    normalize_scan_config,
+    redact_command,
+    scan_environment,
+)
+from .scheduling import ScanScheduler
+from .source_discovery import discover_source_targets
 from .target_filters import parse_source_target_filter_values, target_filter_value
 
 
 DEFAULT_UI_HOST = "127.0.0.1"
 DEFAULT_UI_PORT = 48731
-MAX_LOG_LINES = 5000
 DEFAULT_MAX_JSON_BODY_BYTES = 1_048_576
-REPORT_EXTENSIONS = frozenset({".csv", ".json", ".xlsx", ".txt"})
-SCAN_STATUSES_DONE = frozenset({"succeeded", "failed", "stopped"})
-BRANCH_PROGRESS_PATTERN = re.compile(r"Progress: (?P<branches>\d+)/(?P<branch_total>\d+) resolved branches scanned")
-REPO_PROGRESS_PATTERN = re.compile(
-    r"Progress: (?P<repos>\d+)/(?P<repo_total>\d+) repositories prepared; "
-    r"(?P<branches>\d+)/(?P<branch_total>\d+) resolved branches scanned"
-)
-TARGET_COUNT_PATTERN = re.compile(r"Scanning resolved default or fallback branches for (?P<repo_total>\d+) repositories")
-SCAN_PROGRESS_PATTERN = re.compile(r"SCAN_PROGRESS (?P<payload>\{.*\})")
 HOST_HEADER_RE = re.compile(r"^[A-Za-z0-9.:\-\[\]]+$")
-SAFE_CHILD_ENV_KEYS = (
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "TMPDIR",
-    "TEMP",
-    "TMP",
-    "LANG",
-    "LC_ALL",
-    "SSL_CERT_FILE",
-    "REQUESTS_CA_BUNDLE",
-    "CURL_CA_BUNDLE",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "no_proxy",
-)
 SECURITY_HEADER_VALUES = {
     "Content-Security-Policy": "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'",
     "Cross-Origin-Opener-Policy": "same-origin",
@@ -111,258 +82,16 @@ SECURITY_HEADER_VALUES = {
 LOGGER = logging.getLogger("appsec_scan_router")
 
 
-@dataclass
-class ScanRun:
-    id: str
-    config: dict[str, Any]
-    command: tuple[str, ...]
-    display_command: tuple[str, ...]
-    reports_dir: Path
-    status: str = "queued"
-    started_at: str = ""
-    ended_at: str = ""
-    exit_code: int | None = None
-    stop_requested: bool = False
-    process: subprocess.Popen[str] | None = None
-    logs: list[str] = field(default_factory=list)
-    listeners: list[queue.Queue[dict[str, Any] | None]] = field(default_factory=list)
-    lock: threading.RLock = field(default_factory=threading.RLock)
-
-    def append_log(self, line: str) -> None:
-        clean_line = line.rstrip("\n")
-        if not clean_line:
-            return
-        with self.lock:
-            self.logs.append(clean_line)
-            if len(self.logs) > MAX_LOG_LINES:
-                self.logs = self.logs[-MAX_LOG_LINES:]
-        self.publish("log", {"line": clean_line})
-
-    def set_status(self, status: str, exit_code: int | None = None) -> None:
-        with self.lock:
-            self.status = status
-            self.exit_code = exit_code
-            if status == "running" and not self.started_at:
-                self.started_at = utc_now()
-            if status in SCAN_STATUSES_DONE and not self.ended_at:
-                self.ended_at = utc_now()
-        self.publish("status", self.summary())
-
-    def publish(self, event: str, data: dict[str, Any]) -> None:
-        stale: list[queue.Queue[dict[str, Any] | None]] = []
-        with self.lock:
-            listeners = list(self.listeners)
-        payload = {"event": event, "data": data}
-        for listener in listeners:
-            if listener.full():
-                stale.append(listener)
-                continue
-            listener.put_nowait(payload)
-        if stale:
-            with self.lock:
-                self.listeners = [listener for listener in self.listeners if listener not in stale]
-
-    def add_listener(self) -> queue.Queue[dict[str, Any] | None]:
-        listener: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=250)
-        with self.lock:
-            self.listeners.append(listener)
-        return listener
-
-    def remove_listener(self, listener: queue.Queue[dict[str, Any] | None]) -> None:
-        with self.lock:
-            self.listeners = [candidate for candidate in self.listeners if candidate is not listener]
-
-    def close_listeners(self) -> None:
-        with self.lock:
-            listeners = list(self.listeners)
-            self.listeners.clear()
-        for listener in listeners:
-            listener.put(None)
-
-    def report_files(self) -> list[dict[str, Any]]:
-        if not self.reports_dir.exists():
-            return []
-        reports: list[dict[str, Any]] = []
-        for path in sorted(self.reports_dir.iterdir()):
-            if not path.is_file() or path.suffix.lower() not in REPORT_EXTENSIONS:
-                continue
-            stat = path.stat()
-            reports.append(
-                {
-                    "name": path.name,
-                    "size": stat.st_size,
-                    "updatedAt": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
-                    "url": f"/api/scans/{self.id}/reports/{path.name}",
-                }
-            )
-        return reports
-
-    def summary(self) -> dict[str, Any]:
-        with self.lock:
-            logs_tail = self.logs[-300:]
-            detected = sum(1 for line in self.logs if "DETECTED asset=" in line or "DETECTED app=" in line)
-            provider = str(self.config.get("provider", "azure-devops"))
-            target = scan_target_summary(self.config)
-            return {
-                "id": self.id,
-                "status": self.status,
-                "provider": provider,
-                "org": str(self.config.get("orgDisplay") or self.config.get("org", "")),
-                "target": target,
-                "outPrefix": str(self.config.get("outPrefix", DEFAULT_OUT_PREFIX)),
-                "applicationTypes": list(self.config.get("applicationTypes", [])),
-                "ownerUserId": str(self.config.get("ownerUserId", "anonymous")),
-                "ownerUserLogin": str(self.config.get("ownerUserLogin", "anonymous")),
-                "postgresEnabled": bool(self.config.get("postgresEnabled")),
-                "postgresSchema": str(self.config.get("postgresSchema", DEFAULT_POSTGRES_SCHEMA)),
-                "postgresTable": str(self.config.get("postgresTable", DEFAULT_POSTGRES_TABLE)),
-                "startedAt": self.started_at,
-                "endedAt": self.ended_at,
-                "exitCode": self.exit_code,
-                "detectedCount": detected,
-                "progress": scan_progress(self.logs, self.started_at, self.ended_at, self.status),
-                "reportsDir": str(self.reports_dir),
-                "command": " ".join(self.display_command),
-                "reports": self.report_files(),
-                "logsTail": logs_tail,
-            }
-
-
-class ScanManager:
-    def __init__(self, reports_root: Path) -> None:
-        self.reports_root = reports_root
-        self.reports_root.mkdir(parents=True, exist_ok=True)
-        self.scans: dict[str, ScanRun] = {}
-        self.lock = threading.RLock()
-
-    def list_scans(self, owner_user_id: str = "") -> list[dict[str, Any]]:
-        with self.lock:
-            runs = list(self.scans.values())
-        if owner_user_id:
-            runs = [run for run in runs if run_owner_id(run) == owner_user_id]
-        return [run.summary() for run in sorted(runs, key=lambda item: item.id, reverse=True)]
-
-    def get_scan(self, scan_id: str) -> ScanRun | None:
-        with self.lock:
-            return self.scans.get(scan_id)
-
-    def metrics(self) -> dict[str, int]:
-        with self.lock:
-            statuses = [run.status for run in self.scans.values()]
-        return {
-            "scansTotal": len(statuses),
-            "scansQueued": statuses.count("queued"),
-            "scansRunning": statuses.count("running"),
-            "scansSucceeded": statuses.count("succeeded"),
-            "scansFailed": statuses.count("failed"),
-            "scansStopped": statuses.count("stopped"),
-        }
-
-    def start_scan(self, config: dict[str, Any]) -> ScanRun:
-        normalized = normalize_scan_config(config)
-        scan_id = new_scan_id()
-        reports_dir = self.reports_root / scan_id
-        reports_dir.mkdir(parents=True, exist_ok=False)
-        command = tuple(build_scan_command(normalized, reports_dir))
-        display_command = tuple(redact_command(command))
-        run = ScanRun(
-            id=scan_id,
-            config=normalized,
-            command=command,
-            display_command=display_command,
-            reports_dir=reports_dir,
-        )
-        with self.lock:
-            self.scans[scan_id] = run
-        LOGGER.info(
-            "Scan queued scan_id=%s provider=%s",
-            scan_id,
-            normalized.get("provider", ""),
-            extra=scan_log_extra(run, "scan.queued"),
-        )
-        if normalized.get("provider") in {"github-enterprise", "mixed"}:
-            log_github_app_context(
-                normalized.get("githubAppId") or configured_github_app_id(),
-                normalized.get("githubAppInstallationId") or configured_github_installation_id(),
-                scan_id=scan_id,
-                owner_user_id=normalized.get("ownerUserId", ""),
-                owner_user_login=normalized.get("ownerUserLogin", ""),
-            )
-        thread = threading.Thread(target=self._run_scan, args=(run,), name=f"scan-{scan_id}", daemon=True)
-        thread.start()
-        return run
-
-    def stop_scan(self, scan_id: str) -> ScanRun | None:
-        run = self.get_scan(scan_id)
-        if not run:
-            return None
-        with run.lock:
-            process = run.process
-            running = run.status == "running"
-            run.stop_requested = True
-        if process and running and process.poll() is None:
-            run.append_log("Stop requested from UI.")
-            process.terminate()
-        return run
-
-    def _run_scan(self, run: ScanRun) -> None:
-        child_config = dict(run.config)
-        child_config["scanId"] = run.id
-        env = scan_environment(child_config)
-        run.set_status("running")
-        LOGGER.info("Scan started scan_id=%s", run.id, extra=scan_log_extra(run, "scan.started", status="running"))
-        run.append_log(f"Command: {' '.join(run.display_command)}")
-        try:
-            process = subprocess.Popen(
-                run.command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                env=env,
-            )
-            with run.lock:
-                run.process = process
-            if process.stdout:
-                for line in process.stdout:
-                    run.append_log(line)
-            exit_code = process.wait()
-        except FileNotFoundError as exc:
-            run.append_log(str(exc))
-            run.set_status("failed", 127)
-            LOGGER.error("Scan failed scan_id=%s", run.id, extra=scan_log_extra(run, "scan.failed", status="failed"))
-            run.close_listeners()
-            return
-        except Exception as exc:
-            run.append_log(str(exc))
-            run.set_status("failed", 1)
-            LOGGER.exception("Scan failed scan_id=%s", run.id, extra=scan_log_extra(run, "scan.failed", status="failed"))
-            run.close_listeners()
-            return
-
-        if run.stop_requested:
-            run.set_status("stopped", exit_code)
-        elif exit_code == 0:
-            run.set_status("succeeded", exit_code)
-        else:
-            run.set_status("failed", exit_code)
-        LOGGER.info(
-            "Scan completed scan_id=%s status=%s exit_code=%s",
-            run.id,
-            run.status,
-            exit_code,
-            extra=scan_log_extra(run, "scan.completed", status=run.status),
-        )
-        run.close_listeners()
-
-
 class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
     server_version = "ApplicationInventoryService"
     sys_version = ""
     manager: ScanManager
+    scheduler: ScanScheduler
     auth: AuthManager
     observability_dsn: str = ""
     observability_schema: str = DEFAULT_POSTGRES_SCHEMA
+    health_cache: dict[str, Any] | None = None
+    health_cache_at: float = 0.0
 
     def handle_one_request(self) -> None:
         started = time.monotonic()
@@ -410,12 +139,6 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         if path == "/api/session":
             self.send_json({"session": self.auth.status(self.current_session())})
             return
-        if path == "/api/auth/github/start":
-            self.handle_github_auth_start()
-            return
-        if path == "/api/auth/github/callback":
-            self.handle_github_auth_callback(parsed.query)
-            return
         if path == "/api/auth/github-enterprise/start":
             self.handle_github_enterprise_auth_start()
             return
@@ -437,6 +160,12 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                 return
             self.send_json({"scans": self.manager.list_scans(owner_scope(record))})
             return
+        if path == "/api/schedules":
+            record = self.require_session()
+            if not record:
+                return
+            self.send_json({"schedules": self.scheduler.list_schedules(owner_scope(record))})
+            return
         if path.startswith("/api/scans/"):
             self.handle_scan_get(path)
             return
@@ -446,6 +175,9 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/scans":
             self.handle_start_scan()
+            return
+        if path == "/api/schedules":
+            self.handle_create_schedule()
             return
         if path == "/api/auth/logout":
             self.handle_logout()
@@ -459,23 +191,24 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         if path == "/api/database/export":
             self.handle_database_export()
             return
+        if path == "/api/database/search":
+            self.handle_database_search()
+            return
         if path == "/api/source-targets":
             self.handle_source_targets()
             return
-        if path.startswith("/api/scans/") and path.endswith("/stop"):
-            record = self.current_session()
-            if not self.valid_csrf(record):
-                return
-            scan_id = path.removeprefix("/api/scans/").removesuffix("/stop").strip("/")
-            run = self.manager.get_scan(scan_id)
-            if not run:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if run_owner_id(run) != owner_scope(record):
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            run = self.manager.stop_scan(scan_id)
-            self.send_json({"scan": run.summary()})
+        if path.startswith("/api/scans/") and path.rsplit("/", 1)[-1] in {"pause", "resume", "stop"}:
+            self.handle_scan_action(path)
+            return
+        if path.startswith("/api/schedules/") and path.rsplit("/", 1)[-1] in {"enable", "disable", "run"}:
+            self.handle_schedule_action(path)
+            return
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def do_DELETE(self) -> None:
+        path = urlparse(self.path).path
+        if path.startswith("/api/schedules/"):
+            self.handle_delete_schedule(path)
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -483,7 +216,10 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         name = Path(unquote(path.removeprefix("/static/"))).name
         content_type = {
             ".css": "text/css; charset=utf-8",
+            ".jpg": "image/jpeg",
             ".js": "text/javascript; charset=utf-8",
+            ".png": "image/png",
+            ".svg": "image/svg+xml",
         }.get(Path(name).suffix, "application/octet-stream")
         self.send_static(name, content_type)
 
@@ -507,7 +243,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             self.send_json({"scan": run.summary()})
             return
         if len(parts) == 4 and parts[3] == "logs":
-            self.send_json({"logs": run.logs})
+            self.send_json({"logs": list(run.logs)})
             return
         if len(parts) == 4 and parts[3] == "events":
             self.stream_scan_events(run)
@@ -533,26 +269,84 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             return
         self.send_json({"scan": run.summary()}, HTTPStatus.CREATED)
 
-    def handle_github_auth_start(self) -> None:
+    def handle_scan_action(self, path: str) -> None:
+        record = self.current_session()
+        if not self.valid_csrf(record):
+            return
+        parts = [part for part in path.split("/") if part]
+        if len(parts) != 4:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        scan_id, action = parts[2], parts[3]
+        run = self.manager.get_scan(scan_id)
+        if not run or run_owner_id(run) != owner_scope(record):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        operation = {
+            "pause": self.manager.pause_scan,
+            "resume": self.manager.resume_scan,
+            "stop": self.manager.stop_scan,
+        }[action]
         try:
-            self.redirect(self.auth.github_oauth.authorization_url(self.redirect_uri("github")))
+            updated = operation(scan_id)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
+            return
+        self.send_json({"scan": updated.summary()})
+
+    def handle_create_schedule(self) -> None:
+        try:
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
+            payload = self.read_json()
+            scan_config = payload.get("scan")
+            if not isinstance(scan_config, dict):
+                raise ValueError("Schedule scan configuration is required.")
+            scan_config = dict(scan_config)
+            scan_config["ownerUserId"] = owner_scope(record)
+            scan_config["ownerUserLogin"] = owner_login(record)
+            scan_config = self.auth.apply_credentials(scan_config, record)
+            schedule = self.scheduler.create_schedule(
+                name=clean_text(payload.get("name")),
+                frequency=clean_text(payload.get("frequency")),
+                run_at=clean_text(payload.get("runAt")),
+                config=scan_config,
+                owner_user_id=owner_scope(record),
+                owner_user_login=owner_login(record),
+            )
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json({"schedule": schedule.summary()}, HTTPStatus.CREATED)
 
-    def handle_github_auth_callback(self, query: str) -> None:
-        params = parse_qs(query)
-        code = clean_text(first_query_value(params, "code"))
-        state = clean_text(first_query_value(params, "state"))
-        if not code or not state:
-            self.redirect("/?auth=failed&provider=github")
+    def handle_schedule_action(self, path: str) -> None:
+        record = self.current_session()
+        if not self.valid_csrf(record):
             return
-        try:
-            user = self.auth.github_oauth.complete(code, state, self.redirect_uri("github"))
-            record = self.auth.create_session(user)
-        except ValueError:
-            self.redirect("/?auth=failed&provider=github")
+        parts = [part for part in path.split("/") if part]
+        if len(parts) != 4:
+            self.send_error(HTTPStatus.NOT_FOUND)
             return
-        self.redirect("/?auth=success&provider=github", session_cookie(record.id, secure_cookie()))
+        schedule_id, action = parts[2], parts[3]
+        if action == "run":
+            schedule = self.scheduler.run_now(schedule_id, owner_scope(record))
+        else:
+            schedule = self.scheduler.set_enabled(schedule_id, owner_scope(record), action == "enable")
+        if not schedule:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        self.send_json({"schedule": schedule.summary()})
+
+    def handle_delete_schedule(self, path: str) -> None:
+        record = self.current_session()
+        if not self.valid_csrf(record):
+            return
+        parts = [part for part in path.split("/") if part]
+        if len(parts) != 3 or not self.scheduler.delete_schedule(parts[2], owner_scope(record)):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        self.send_json({"deleted": True})
 
     def handle_github_enterprise_auth_start(self) -> None:
         try:
@@ -646,13 +440,18 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         self.send_json({"database": status})
 
     def handle_health(self) -> None:
-        database = None
-        if self.observability_dsn:
-            database = database_status(
-                self.observability_dsn,
-                schema=self.observability_schema,
-                table=DEFAULT_POSTGRES_TABLE,
-            )
+        now = time.monotonic()
+        database = self.health_cache
+        if now - self.health_cache_at >= 10.0:
+            database = None
+            if self.observability_dsn:
+                database = database_status(
+                    self.observability_dsn,
+                    schema=self.observability_schema,
+                    table=DEFAULT_POSTGRES_TABLE,
+                )
+            type(self).health_cache = database
+            type(self).health_cache_at = now
         self.send_json(
             {
                 "status": "ok" if database is None or database.get("connected") else "degraded",
@@ -667,10 +466,12 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         )
 
     def handle_metrics(self) -> None:
+        metrics = self.manager.metrics()
+        metrics.update(self.scheduler.metrics())
         self.send_json(
             {
                 "service": "application-inventory-service",
-                "metrics": self.manager.metrics(),
+                "metrics": metrics,
                 "observability": {
                     "enabled": bool(self.observability_dsn),
                     "schema": self.observability_schema,
@@ -687,12 +488,25 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             payload = self.read_json()
             config = normalize_database_config(payload)
             export_format = clean_choice(payload.get("format"), {"csv", "json"}, "csv")
+            query = clean_text(payload.get("query"))
             if export_format == "json":
-                content = export_inventory_json(config["postgresDsn"], schema=config["postgresSchema"], owner_user_id=owner_scope(record))
+                content = export_inventory_json(
+                    config["postgresDsn"],
+                    schema=config["postgresSchema"],
+                    owner_user_id=owner_scope(record),
+                    query=query,
+                    table=config["postgresTable"],
+                )
                 filename = "application_inventory_database_export.json"
                 content_type = "application/json"
             else:
-                content = export_inventory_csv(config["postgresDsn"], schema=config["postgresSchema"], owner_user_id=owner_scope(record))
+                content = export_inventory_csv(
+                    config["postgresDsn"],
+                    schema=config["postgresSchema"],
+                    owner_user_id=owner_scope(record),
+                    query=query,
+                    table=config["postgresTable"],
+                )
                 filename = "application_inventory_database_export.csv"
                 content_type = "text/csv"
         except ValueError as exc:
@@ -707,6 +521,30 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             headers={"Content-Disposition": attachment_header(filename)},
         )
 
+    def handle_database_search(self) -> None:
+        try:
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
+            payload = self.read_json()
+            config = normalize_database_config(payload)
+            result = search_inventory(
+                config["postgresDsn"],
+                schema=config["postgresSchema"],
+                owner_user_id=owner_scope(record),
+                query=clean_text(payload.get("query")),
+                limit=positive_int(payload.get("limit"), 100),
+                offset=max(0, integer_value(payload.get("offset"), 0)),
+                table=config["postgresTable"],
+            )
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        except Exception as exc:
+            self.send_json({"error": database_export_error(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json({"search": result})
+
     def handle_source_targets(self) -> None:
         try:
             record = self.current_session()
@@ -717,13 +555,17 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
-        status = HTTPStatus.BAD_GATEWAY if targets.get("errors") else HTTPStatus.OK
+        if targets.get("errors") and targets.get("targets"):
+            status = HTTPStatus.MULTI_STATUS
+        elif targets.get("errors"):
+            status = HTTPStatus.BAD_GATEWAY
+        else:
+            status = HTTPStatus.OK
         self.send_json(targets, status)
 
     def send_static(self, name: str, content_type: str) -> None:
         try:
-            resource = files("appsec_scan_router").joinpath("ui_static").joinpath(name)
-            content = resource.read_bytes()
+            content = static_content(name)
         except FileNotFoundError:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
@@ -732,7 +574,10 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "private, max-age=300")
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
-        self.wfile.write(content)
+        try:
+            self.wfile.write(content)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def send_report(self, run: ScanRun, filename: str) -> None:
         clean_name = Path(unquote(filename)).name
@@ -745,14 +590,18 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         if not path.is_file() or path.suffix.lower() not in REPORT_EXTENSIONS:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        content = path.read_bytes()
+        content_length = path.stat().st_size
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", report_content_type(path))
         self.send_header("Content-Disposition", attachment_header(path.name))
         self.send_header("Cache-Control", "no-store, max-age=0")
-        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Content-Length", str(content_length))
         self.end_headers()
-        self.wfile.write(content)
+        try:
+            with path.open("rb") as report_file:
+                shutil.copyfileobj(report_file, self.wfile, length=1024 * 1024)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def stream_scan_events(self, run: ScanRun) -> None:
         listener = run.add_listener()
@@ -769,7 +618,12 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                 self.write_event("done", run.summary())
                 return
             while True:
-                item = listener.get(timeout=20)
+                try:
+                    item = listener.get(timeout=20)
+                except queue.Empty:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                    continue
                 if item is None:
                     self.write_event("done", run.summary())
                     return
@@ -811,7 +665,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         status: HTTPStatus = HTTPStatus.OK,
         headers: dict[str, str] | None = None,
     ) -> None:
-        content = json.dumps(payload, sort_keys=True).encode("utf-8")
+        content = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store, max-age=0")
@@ -819,7 +673,10 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
-        self.wfile.write(content)
+        try:
+            self.wfile.write(content)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def send_bytes(
         self,
@@ -835,7 +692,10 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
-        self.wfile.write(content)
+        try:
+            self.wfile.write(content)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -884,572 +744,33 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         return f"{base_url}/api/auth/{provider}/callback"
 
 
-def normalize_scan_config(config: dict[str, Any]) -> dict[str, Any]:
-    provider = clean_choice(config.get("provider"), {"azure-devops", "github-enterprise", "mixed"}, "azure-devops")
-    legacy_org = clean_text(config.get("org"))
-    github_urls = parse_github_urls(config.get("githubUrls"), default=legacy_org if provider in {"github-enterprise", "mixed"} else "")
-    if provider in {"github-enterprise", "mixed"} and not github_urls:
-        github_urls = configured_github_owners()
-    if provider in {"github-enterprise", "mixed"} and not github_urls:
-        raise ValueError("Configure at least one GitHub organization in the UI or APPLICATION_INVENTORY_GITHUB_URLS.")
-    org = github_urls[0] if provider in {"github-enterprise", "mixed"} else legacy_org
-    ado_org_pats = parse_ado_org_pat_values([config.get("adoOrgPats")])
-    target_filters = parse_source_target_filter_values([config.get("targetFilters")])
-    if provider in {"github-enterprise", "mixed"} and not target_filters:
-        target_filters = parse_source_target_filter_values(
-            [env_value("APPLICATION_INVENTORY_GITHUB_REPOSITORIES", "APPSEC_INVENTORY_GITHUB_REPOSITORIES")]
-        )
-    if provider == "azure-devops" and not ado_org_pats:
-        raise ValueError("Add at least one Azure organization and PAT.")
-    if provider == "mixed" and not ado_org_pats:
-        raise ValueError("Add at least one Azure organization and PAT for a mixed scan.")
-    base_url = configured_github_api_url()
-    if provider in {"github-enterprise", "mixed"} and not base_url:
-        raise ValueError("GitHub Enterprise API URL is required.")
-    github_app_id = configured_github_app_id() if provider in {"github-enterprise", "mixed"} else ""
-    github_app_installation_id = configured_github_installation_id() if provider in {"github-enterprise", "mixed"} else ""
-    github_app_private_key = clean_text(config.get("githubAppPrivateKey"))
-    github_app_private_key_file = clean_text(config.get("githubAppPrivateKeyFile"))
-    github_app_environment_names = (
-        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY",
-        "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY",
-        "GITHUB_APP_PRIVATE_KEY",
-        "GHE_APP_PRIVATE_KEY",
-        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
-        "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
-        "GITHUB_APP_PRIVATE_KEY_FILE",
-        "GHE_APP_PRIVATE_KEY_FILE",
-    )
-    app_configuration_supplied = any(
-        (github_app_private_key, github_app_private_key_file, *(env_value(name) for name in github_app_environment_names))
-    )
-    if provider in {"github-enterprise", "mixed"} and app_configuration_supplied:
-        try:
-            GitHubAppCredentials.from_values(
-                github_app_id,
-                github_app_installation_id,
-                github_app_private_key,
-                github_app_private_key_file,
-            )
-        except ValueError as exc:
-            raise ValueError(str(exc)) from exc
-    application_types = list(normalize_ui_application_types(config.get("applicationTypes")))
-    database_config = normalize_database_config(config)
-    store_countries = normalize_store_countries(config.get("storeCountries") or config.get("storeCountry") or "US")
-    normalized = {
-        "provider": provider,
-        "org": org,
-        "orgDisplay": mixed_org_summary(", ".join(github_urls), ado_org_pats)
-        if provider == "mixed"
-        else ", ".join(github_urls)
-        if provider == "github-enterprise"
-        else ado_org_summary(ado_org_pats)
-        if ado_org_pats
-        else org,
-        "githubUrls": list(github_urls),
-        "adoOrgPats": [{"org": item.org, "pat": item.pat} for item in ado_org_pats],
-        "targetFilters": [{"org": item.org, "project": item.project} for item in target_filters],
-        "project": clean_text(config.get("project")),
-        "repo": clean_text(config.get("repo")),
-        "baseUrl": base_url,
-        "token": clean_text(config.get("token")),
-        "githubAppId": github_app_id,
-        "githubAppInstallationId": github_app_installation_id,
-        "githubAppPrivateKey": github_app_private_key,
-        "githubAppPrivateKeyFile": github_app_private_key_file,
-        "outPrefix": DEFAULT_OUT_PREFIX,
-        "applicationTypes": application_types,
-        "ownerUserId": clean_text(config.get("ownerUserId")) or "anonymous",
-        "ownerUserLogin": clean_text(config.get("ownerUserLogin")) or "anonymous",
-        "saveToken": bool(config.get("saveToken")),
-        **database_config,
-        "minConfidence": clean_choice(config.get("minConfidence"), {"low", "medium", "high"}, "low"),
-        "activityMode": clean_choice(config.get("activityMode"), {"contributors", "latest"}, "contributors"),
-        "maxWorkers": positive_int(config.get("maxWorkers"), 8),
-        "branchWorkers": positive_int(config.get("branchWorkers"), 16),
-        "contentWorkers": positive_int(config.get("contentWorkers"), 16),
-        "maxCommitsPerRepo": nonnegative_int(config.get("maxCommitsPerRepo"), 0),
-        "timeout": positive_int(config.get("timeout"), 30),
-        "branchAgeDays": positive_int(config.get("branchAgeDays"), 90),
-        "storeLookup": bool(config.get("storeLookup")) and store_lookup_allowed(application_types),
-        "storeCountry": store_countries[0],
-        "storeCountries": list(store_countries),
-        "storeTimeout": positive_int(config.get("storeTimeout"), 15),
-        "verbose": bool(config.get("verbose")),
-    }
-    if normalized["project"] and normalized["repo"] and normalized["project"] != normalized["repo"]:
-        raise ValueError("Project and repository cannot be different values.")
-    return normalized
 
 
-def normalize_database_config(config: dict[str, Any]) -> dict[str, Any]:
-    normalized = {
-        "postgresEnabled": bool(config.get("postgresEnabled", True)),
-        "postgresDsn": clean_text(config.get("postgresDsn") or env_value("APPLICATION_INVENTORY_POSTGRES_DSN", "APPSEC_INVENTORY_POSTGRES_DSN")),
-        "postgresHost": clean_text(config.get("postgresHost") or env_value("APPLICATION_INVENTORY_POSTGRES_HOST", "APPSEC_INVENTORY_POSTGRES_HOST") or DEFAULT_POSTGRES_HOST),
-        "postgresPort": positive_int(config.get("postgresPort"), DEFAULT_POSTGRES_PORT),
-        "postgresDatabase": clean_text(config.get("postgresDatabase") or DEFAULT_POSTGRES_DATABASE),
-        "postgresUser": clean_text(config.get("postgresUser") or DEFAULT_POSTGRES_USER),
-        "postgresPassword": clean_text(config.get("postgresPassword") or env_value("APPLICATION_INVENTORY_POSTGRES_PASSWORD", "APPSEC_INVENTORY_POSTGRES_PASSWORD") or DEFAULT_POSTGRES_PASSWORD),
-        "postgresSchema": clean_text(config.get("postgresSchema") or env_value("APPLICATION_INVENTORY_POSTGRES_SCHEMA", "APPSEC_INVENTORY_POSTGRES_SCHEMA") or DEFAULT_POSTGRES_SCHEMA),
-        "postgresTable": clean_text(config.get("postgresTable") or DEFAULT_POSTGRES_TABLE),
-    }
-    if not normalized["postgresDsn"]:
-        normalized["postgresDsn"] = postgres_dsn_from_config(normalized)
-    return normalized
 
 
-def discover_source_targets(config: dict[str, Any]) -> dict[str, Any]:
-    provider = clean_choice(config.get("provider"), {"azure-devops", "github-enterprise", "mixed"}, "azure-devops")
-    timeout = positive_int(config.get("timeout"), 30)
-    if provider == "github-enterprise":
-        return discover_github_targets(config, timeout)
-    if provider == "mixed":
-        targets: list[dict[str, Any]] = []
-        errors: list[dict[str, str]] = []
-        for discover in (discover_azure_targets, discover_github_targets):
-            try:
-                response = discover(config, timeout)
-            except ValueError as exc:
-                errors.append({"org": clean_text(config.get("org")), "message": str(exc)})
-                continue
-            targets.extend(response.get("targets", []))
-            errors.extend(response.get("errors", []))
-        return {"provider": "mixed", "targets": sorted_targets(targets), "errors": errors}
-    return discover_azure_targets(config, timeout)
 
 
-def discover_azure_targets(config: dict[str, Any], timeout: int) -> dict[str, Any]:
-    org_pats = parse_ado_org_pat_values([config.get("adoOrgPats")])
-    if not org_pats:
-        raise ValueError("Add at least one Azure organization and PAT.")
-
-    targets: list[dict[str, Any]] = []
-    errors: list[dict[str, str]] = []
-    for org_pat in org_pats:
-        client = AzureDevOpsClient(org_pat.org, org_pat.pat, timeout)
-        try:
-            projects = client.list_projects()
-        except AzureDevOpsError as exc:
-            errors.append({"org": org_pat.org, "message": str(exc)})
-            continue
-        finally:
-            client.close()
-        for project in projects:
-            name = clean_text(project.get("name"))
-            if name:
-                targets.append(source_target("azure-devops", org_pat.org, name, "project"))
-
-    return {
-        "provider": "azure-devops",
-        "targets": sorted_targets(targets),
-        "errors": errors,
-    }
 
 
-def discover_github_targets(config: dict[str, Any], timeout: int) -> dict[str, Any]:
-    owners = parse_github_urls(config.get("githubUrls"), default=clean_text(config.get("org"))) or configured_github_owners()
-    if not owners:
-        raise ValueError("Configure at least one GitHub organization in the UI or APPLICATION_INVENTORY_GITHUB_URLS.")
-    base_url = configured_github_api_url()
-    token = discovery_token(config, "github-enterprise")
-    try:
-        app_credentials = GitHubAppCredentials.from_values(
-            config.get("githubAppId", ""),
-            config.get("githubAppInstallationId", ""),
-            config.get("githubAppPrivateKey", ""),
-            config.get("githubAppPrivateKeyFile", ""),
-        )
-    except ValueError as exc:
-        raise ValueError(str(exc)) from exc
-    if not token and not app_credentials:
-        raise ValueError("GitHub App credentials are required to load repositories.")
-
-    targets: list[dict[str, Any]] = []
-    errors: list[dict[str, str]] = []
-    for owner in owners:
-        try:
-            client_kwargs = {"app_credentials": app_credentials} if app_credentials and not token else {}
-            client = GitHubEnterpriseClient(base_url, owner, token, timeout, **client_kwargs)
-        except ValueError as exc:
-            errors.append({"org": owner, "message": str(exc)})
-            continue
-        try:
-            repos = client.list_repos("")
-        except AzureDevOpsError as exc:
-            errors.append({"org": owner, "message": str(exc)})
-            continue
-        finally:
-            client.close()
-        for repo in repos:
-            if repo.get("isDisabled"):
-                continue
-            name = clean_text(repo.get("name"))
-            full_name = clean_text(repo.get("fullName"))
-            if name:
-                targets.append(source_target("github-enterprise", owner, name, "repository", full_name or name))
-    return {
-        "provider": "github-enterprise",
-        "targets": sorted_targets(targets),
-        "errors": errors,
-    }
 
 
-def discovery_token(config: dict[str, Any], provider: str) -> str:
-    token = clean_text(config.get("token"))
-    if token:
-        return token
-    if provider == "github-enterprise":
-        return clean_text(os.getenv("GITHUB_TOKEN") or os.getenv("GHE_TOKEN"))
-    return clean_text(os.getenv("ADO_PAT"))
 
 
-def source_target(
-    provider: str,
-    org: str,
-    project: str,
-    kind: str,
-    display_name: str = "",
-) -> dict[str, str]:
-    label = display_name or f"{org} / {project}"
-    return {
-        "provider": provider,
-        "org": org,
-        "project": project,
-        "repo": project if provider == "github-enterprise" else "",
-        "kind": kind,
-        "name": project,
-        "label": label,
-    }
 
 
-def sorted_targets(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return sorted(
-        targets,
-        key=lambda target: (
-            clean_text(target.get("org")).lower(),
-            clean_text(target.get("project")).lower(),
-        ),
-    )
 
 
-def build_scan_command(config: dict[str, Any], reports_dir: Path) -> list[str]:
-    command = [
-        sys.executable,
-        "-m",
-        "application_inventory_service",
-        "--provider",
-        config["provider"],
-        "--out-dir",
-        str(reports_dir),
-        "--out-prefix",
-        config["outPrefix"],
-        "--min-confidence",
-        config["minConfidence"],
-        "--activity-mode",
-        config["activityMode"],
-        "--max-workers",
-        str(config["maxWorkers"]),
-        "--branch-workers",
-        str(config["branchWorkers"]),
-        "--content-workers",
-        str(config["contentWorkers"]),
-        "--max-commits-per-repo",
-        str(config["maxCommitsPerRepo"]),
-        "--timeout",
-        str(config["timeout"]),
-        "--branch-age-days",
-        str(config["branchAgeDays"]),
-        "--owner-user-id",
-        config["ownerUserId"],
-        "--owner-user-login",
-        config["ownerUserLogin"],
-        "--store-timeout",
-        str(config["storeTimeout"]),
-    ]
-    for country in config.get("storeCountries", [config["storeCountry"]]):
-        command.extend(["--store-country", country])
-    for application_type in config["applicationTypes"]:
-        command.extend(["--application-type", application_type])
-    if config["postgresEnabled"]:
-        command.extend(["--postgres-schema", config["postgresSchema"]])
-        command.extend(["--postgres-table", config["postgresTable"]])
-    target_filters = config.get("targetFilters") if isinstance(config.get("targetFilters"), list) else []
-    if target_filters:
-        for target_filter in target_filters:
-            value = target_filter_value(target_filter)
-            if value:
-                command.extend(["--target-filter", value])
-    if config["provider"] in {"github-enterprise", "mixed"}:
-        command.extend(["--base-url", config["baseUrl"]])
-        for github_url in config.get("githubUrls", []):
-            command.extend(["--github-url", github_url])
-    if config["provider"] in {"azure-devops", "mixed"}:
-        if config["provider"] == "azure-devops" and not config.get("adoOrgPats"):
-            command.extend(["--org", config["org"]])
-        if config["provider"] == "azure-devops" and config["project"] and not target_filters:
-            command.extend(["--project", config["project"]])
-    if config["storeLookup"]:
-        command.append("--store-lookup")
-    if config["verbose"]:
-        command.append("--verbose")
-    return command
 
 
-def scan_target_summary(config: dict[str, Any]) -> str:
-    target_filters = config.get("targetFilters") if isinstance(config.get("targetFilters"), list) else []
-    if target_filters:
-        if len(target_filters) == 1:
-            target = target_filters[0]
-            project = clean_text(target.get("project"))
-            org = clean_text(target.get("org"))
-            return f"{org}/{project}" if org else project
-        return f"{len(target_filters)} selected targets"
-    return str(config.get("repo") or config.get("project") or "all")
 
 
-def redact_command(command: tuple[str, ...] | list[str]) -> list[str]:
-    redacted: list[str] = []
-    skip_next = False
-    for index, part in enumerate(command):
-        if skip_next:
-            redacted.append("[redacted]")
-            skip_next = False
-            continue
-        redacted.append(part)
-        if part in {"--pat", "--postgres-dsn", "--ado-org-pat"} and index + 1 < len(command):
-            skip_next = True
-    return redacted
 
 
-def scan_environment(config: dict[str, Any]) -> dict[str, str]:
-    env = base_process_environment()
-    env["PYTHONUNBUFFERED"] = "1"
-    token = clean_text(config.get("token"))
-    ado_org_pats = config.get("adoOrgPats") if isinstance(config.get("adoOrgPats"), list) else []
-    provider = config.get("provider")
-    if provider in {"azure-devops", "mixed"} and ado_org_pats:
-        org_pats_json = ado_org_pats_to_json(ado_org_pats)
-        env["APPLICATION_INVENTORY_ADO_ORG_PATS"] = org_pats_json
-        env["APPSEC_INVENTORY_ADO_ORG_PATS"] = org_pats_json
-        env.pop("ADO_PAT", None)
-    elif provider == "azure-devops":
-        if token:
-            env["ADO_PAT"] = token
-        else:
-            inherit_secret(env, "ADO_PAT")
-    if provider in {"github-enterprise", "mixed"}:
-        if token:
-            env["GITHUB_TOKEN"] = token
-        else:
-            inherit_secret(env, "GITHUB_TOKEN")
-            inherit_secret(env, "GHE_TOKEN")
-        if not token:
-            set_github_app_environment(env, config)
-    postgres_dsn = clean_text(config.get("postgresDsn"))
-    if config.get("postgresEnabled") and postgres_dsn:
-        postgres_schema = clean_text(config.get("postgresSchema") or DEFAULT_POSTGRES_SCHEMA)
-        postgres_table = clean_text(config.get("postgresTable") or DEFAULT_POSTGRES_TABLE)
-        env["APPLICATION_INVENTORY_POSTGRES_DSN"] = postgres_dsn
-        env["APPLICATION_INVENTORY_POSTGRES_SCHEMA"] = postgres_schema
-        env["APPLICATION_INVENTORY_POSTGRES_TABLE"] = postgres_table
-        env["APPSEC_INVENTORY_POSTGRES_DSN"] = postgres_dsn
-        env["APPSEC_INVENTORY_POSTGRES_SCHEMA"] = postgres_schema
-        env["APPSEC_INVENTORY_POSTGRES_TABLE"] = postgres_table
-    else:
-        env.pop("APPLICATION_INVENTORY_POSTGRES_DSN", None)
-        env.pop("APPLICATION_INVENTORY_POSTGRES_SCHEMA", None)
-        env.pop("APPLICATION_INVENTORY_POSTGRES_TABLE", None)
-        env.pop("APPSEC_INVENTORY_POSTGRES_DSN", None)
-        env.pop("APPSEC_INVENTORY_POSTGRES_SCHEMA", None)
-        env.pop("APPSEC_INVENTORY_POSTGRES_TABLE", None)
-    owner_user_id = clean_text(config.get("ownerUserId") or "anonymous")
-    owner_user_login = clean_text(config.get("ownerUserLogin") or "anonymous")
-    scan_id = clean_text(config.get("scanId"))
-    provider = clean_text(config.get("provider"))
-    if scan_id:
-        env["APPLICATION_INVENTORY_SCAN_ID"] = scan_id
-    if provider:
-        env["APPLICATION_INVENTORY_PROVIDER"] = provider
-    env["APPLICATION_INVENTORY_OWNER_USER_ID"] = owner_user_id
-    env["APPLICATION_INVENTORY_OWNER_USER_LOGIN"] = owner_user_login
-    env["APPSEC_INVENTORY_OWNER_USER_ID"] = owner_user_id
-    env["APPSEC_INVENTORY_OWNER_USER_LOGIN"] = owner_user_login
-    return env
 
 
-def set_github_app_environment(env: dict[str, str], config: dict[str, Any]) -> None:
-    environment_names = (
-        "APPLICATION_INVENTORY_GITHUB_APP_ID",
-        "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID",
-        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY",
-        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
-        "APPSEC_INVENTORY_GITHUB_APP_ID",
-        "APPSEC_INVENTORY_GITHUB_APP_INSTALLATION_ID",
-        "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY",
-        "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
-        "GITHUB_APP_ID",
-        "GITHUB_APP_INSTALLATION_ID",
-        "GITHUB_APP_PRIVATE_KEY",
-        "GITHUB_APP_PRIVATE_KEY_FILE",
-        "GHE_APP_ID",
-        "GHE_APP_INSTALLATION_ID",
-        "GHE_APP_PRIVATE_KEY",
-        "GHE_APP_PRIVATE_KEY_FILE",
-    )
-    app_configuration_supplied = any(
-        (
-            clean_text(config.get("githubAppPrivateKey")),
-            clean_text(config.get("githubAppPrivateKeyFile")),
-            *(clean_text(os.getenv(name)) for name in environment_names if "PRIVATE_KEY" in name),
-        )
-    )
-    if not app_configuration_supplied:
-        return
-    values = {
-        "APPLICATION_INVENTORY_GITHUB_APP_ID": configured_github_app_id(),
-        "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID": configured_github_installation_id(),
-        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY": clean_text(config.get("githubAppPrivateKey")),
-        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE": clean_text(config.get("githubAppPrivateKeyFile")),
-    }
-    aliases = {
-        "APPLICATION_INVENTORY_GITHUB_APP_ID": (
-            "APPLICATION_INVENTORY_GITHUB_APP_ID",
-            "APPSEC_INVENTORY_GITHUB_APP_ID",
-            "GITHUB_APP_ID",
-            "GHE_APP_ID",
-        ),
-        "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID": (
-            "APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID",
-            "APPSEC_INVENTORY_GITHUB_APP_INSTALLATION_ID",
-            "GITHUB_APP_INSTALLATION_ID",
-            "GHE_APP_INSTALLATION_ID",
-        ),
-        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY": (
-            "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY",
-            "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY",
-            "GITHUB_APP_PRIVATE_KEY",
-            "GHE_APP_PRIVATE_KEY",
-        ),
-        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE": (
-            "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
-            "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
-            "GITHUB_APP_PRIVATE_KEY_FILE",
-            "GHE_APP_PRIVATE_KEY_FILE",
-        ),
-    }
-    for name, value in values.items():
-        if value:
-            env[name] = value
-            continue
-        inherited = next((clean_text(os.getenv(alias)) for alias in aliases[name] if clean_text(os.getenv(alias))), "")
-        if inherited:
-            env[name] = inherited
-
-
-def scan_progress(
-    logs: list[str],
-    started_at: str,
-    ended_at: str,
-    status: str,
-) -> dict[str, Any]:
-    repo_done = 0
-    repo_total = 0
-    branch_done = 0
-    branch_total = 0
-    for line in logs:
-        progress_match = SCAN_PROGRESS_PATTERN.search(line)
-        if progress_match:
-            try:
-                payload = json.loads(progress_match.group("payload"))
-            except ValueError:
-                payload = {}
-            repo_done = nonnegative_int(payload.get("repositoriesPrepared"), repo_done)
-            repo_total = nonnegative_int(payload.get("repositoriesTotal"), repo_total)
-            branch_done = nonnegative_int(payload.get("branchesScanned"), branch_done)
-            branch_total = nonnegative_int(payload.get("branchesTotal"), branch_total)
-            continue
-        target_match = TARGET_COUNT_PATTERN.search(line)
-        if target_match:
-            repo_total = int(target_match.group("repo_total"))
-        repo_match = REPO_PROGRESS_PATTERN.search(line)
-        if repo_match:
-            repo_done = int(repo_match.group("repos"))
-            repo_total = int(repo_match.group("repo_total"))
-            branch_done = int(repo_match.group("branches"))
-            branch_total = int(repo_match.group("branch_total"))
-            continue
-        branch_match = BRANCH_PROGRESS_PATTERN.search(line)
-        if branch_match:
-            branch_done = int(branch_match.group("branches"))
-            branch_total = int(branch_match.group("branch_total"))
-
-    if status in SCAN_STATUSES_DONE:
-        return {
-            "percent": 100 if status == "succeeded" else progress_percent(repo_done, repo_total, branch_done, branch_total),
-            "etaSeconds": 0,
-            "repositoriesPrepared": repo_done,
-            "repositoriesTotal": repo_total,
-            "branchesScanned": branch_done,
-            "branchesTotal": branch_total,
-        }
-
-    percent = progress_percent(repo_done, repo_total, branch_done, branch_total)
-    return {
-        "percent": percent,
-        "etaSeconds": estimated_remaining_seconds(started_at, percent),
-        "repositoriesPrepared": repo_done,
-        "repositoriesTotal": repo_total,
-        "branchesScanned": branch_done,
-        "branchesTotal": branch_total,
-    }
-
-
-def progress_percent(repo_done: int, repo_total: int, branch_done: int, branch_total: int) -> int:
-    if repo_total > 0:
-        repo_ratio = bounded_ratio(repo_done, repo_total)
-        branch_ratio = bounded_ratio(branch_done, branch_total) if branch_total > 0 else 0
-        if repo_done >= repo_total:
-            return min(99, round(40 + (branch_ratio * 59)))
-        return min(99, round((repo_ratio * 40) + (branch_ratio * 50)))
-    if branch_total > 0:
-        return min(99, round(bounded_ratio(branch_done, branch_total) * 99))
-    return 0
-
-
-def bounded_ratio(done: int, total: int) -> float:
-    if total <= 0:
-        return 0
-    return max(0, min(1, done / total))
-
-
-def estimated_remaining_seconds(started_at: str, percent: int) -> int | None:
-    started = parse_iso_datetime(started_at)
-    if started is None:
-        return None
-    elapsed = max(1, (datetime.now(timezone.utc) - started).total_seconds())
-    if percent <= 0 or percent >= 99:
-        return None
-    rate = percent / elapsed
-    if rate <= 0:
-        return None
-    return max(1, round((99 - percent) / rate))
-
-
-def parse_iso_datetime(value: str) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def default_ui_config(reports_root: Path) -> dict[str, Any]:
-    github_oauth_config = GitHubOAuthConfig.from_env()
     github_enterprise_oauth_config = GitHubEnterpriseOAuthConfig.from_env()
     google_oauth_config = GoogleOAuthConfig.from_env()
     test_login_config = TestLoginConfig.from_env()
@@ -1470,6 +791,7 @@ def default_ui_config(reports_root: Path) -> dict[str, Any]:
             "minConfidence": "medium",
             "activityMode": "contributors",
             "maxWorkers": 8,
+            "sourceWorkers": DEFAULT_SOURCE_WORKERS,
             "branchWorkers": 16,
             "contentWorkers": 16,
             "maxCommitsPerRepo": 0,
@@ -1487,17 +809,10 @@ def default_ui_config(reports_root: Path) -> dict[str, Any]:
             "postgresTable": DEFAULT_POSTGRES_TABLE,
         },
         "auth": {
-            "githubLoginEnabled": github_oauth_config.enabled,
             "githubEnterpriseLoginEnabled": github_enterprise_oauth_config.enabled,
             "googleLoginEnabled": google_oauth_config.enabled,
             "testLoginEnabled": test_login_config.enabled,
             "authProviders": [
-                {
-                    "id": "github",
-                    "label": "GitHub SSO",
-                    "enabled": github_oauth_config.enabled,
-                    "startUrl": "/api/auth/github/start",
-                },
                 {
                     "id": "github-enterprise",
                     "label": "GitHub Enterprise",
@@ -1521,6 +836,11 @@ def default_ui_config(reports_root: Path) -> dict[str, Any]:
         },
         "reportsRoot": str(reports_root),
     }
+
+
+@lru_cache(maxsize=32)
+def static_content(name: str) -> bytes:
+    return files("appsec_scan_router").joinpath("ui_static").joinpath(name).read_bytes()
 
 
 def report_content_type(path: Path) -> str:
@@ -1560,19 +880,8 @@ def max_json_body_bytes() -> int:
     )
 
 
-def base_process_environment() -> dict[str, str]:
-    env: dict[str, str] = {}
-    for key in SAFE_CHILD_ENV_KEYS:
-        value = os.getenv(key)
-        if value is not None:
-            env[key] = value
-    return env
 
 
-def inherit_secret(env: dict[str, str], name: str) -> None:
-    value = clean_text(os.getenv(name))
-    if value:
-        env[name] = value
 
 
 def security_headers() -> dict[str, str]:
@@ -1648,17 +957,8 @@ def scan_log_extra(run: ScanRun, event_type: str, status: str = "") -> dict[str,
     }
 
 
-def ado_org_summary(org_pats: tuple[Any, ...]) -> str:
-    if not org_pats:
-        return ""
-    if len(org_pats) == 1:
-        return org_pats[0].org
-    return f"{len(org_pats)} Azure DevOps organizations"
 
 
-def mixed_org_summary(github_owner: str, org_pats: tuple[Any, ...]) -> str:
-    ado_summary = ado_org_summary(org_pats)
-    return f"{github_owner} + {ado_summary}" if ado_summary else github_owner
 
 
 def clean_choice(value: Any, allowed: set[str], default: str) -> str:
@@ -1666,39 +966,10 @@ def clean_choice(value: Any, allowed: set[str], default: str) -> str:
     return text if text in allowed else default
 
 
-def safe_prefix(value: str) -> str:
-    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._-")
-    return text or DEFAULT_OUT_PREFIX
 
 
-def normalize_ui_application_types(value: Any) -> tuple[str, ...]:
-    if value is None:
-        return ()
-    if isinstance(value, str):
-        raw_values = [part.strip() for part in value.split(",")]
-    elif isinstance(value, (list, tuple, set)):
-        raw_values = [str(part).strip() for part in value]
-    else:
-        raw_values = []
-    return normalize_application_types(raw_values)
 
 
-def postgres_dsn_from_config(config: dict[str, Any]) -> str:
-    host = clean_text(config.get("postgresHost"))
-    database = clean_text(config.get("postgresDatabase"))
-    user = clean_text(config.get("postgresUser"))
-    password = clean_text(config.get("postgresPassword"))
-    port = positive_int(config.get("postgresPort"), DEFAULT_POSTGRES_PORT)
-    if not host:
-        raise ValueError("PostgreSQL host is required when database sync is enabled.")
-    if not database:
-        raise ValueError("PostgreSQL database is required when database sync is enabled.")
-    if not user:
-        raise ValueError("PostgreSQL user is required when database sync is enabled.")
-    auth = quote(user, safe="")
-    if password:
-        auth = f"{auth}:{quote(password, safe='')}"
-    return f"postgresql://{auth}@{host}:{port}/{quote(database, safe='')}"
 
 
 def positive_int(value: Any, default: int) -> int:
@@ -1709,12 +980,13 @@ def positive_int(value: Any, default: int) -> int:
     return number if number > 0 else default
 
 
-def nonnegative_int(value: Any, default: int) -> int:
+def integer_value(value: Any, default: int) -> int:
     try:
-        number = int(value)
+        return int(value)
     except (TypeError, ValueError):
         return default
-    return number if number >= 0 else default
+
+
 
 
 def utc_now() -> str:
@@ -1726,8 +998,22 @@ def secure_cookie() -> bool:
 
 
 def serve(host: str, port: int, reports_dir: Path) -> None:
-    manager = ScanManager(reports_dir.resolve())
+    manager = ScanManager(
+        reports_root=reports_dir.resolve(),
+        normalize_config=normalize_scan_config,
+        build_command=build_scan_command,
+        build_environment=scan_environment,
+        redact_command=redact_command,
+        max_concurrent_scans=positive_int(
+            env_value(
+                "APPLICATION_INVENTORY_SERVICE_MAX_CONCURRENT_SCANS",
+                "APPSEC_INVENTORY_SERVICE_MAX_CONCURRENT_SCANS",
+            ),
+            2,
+        ),
+    )
     auth = AuthManager(manager.reports_root)
+    scheduler = ScanScheduler(manager, auth_state_dir(manager.reports_root))
     observability_schema = env_value(
         "APPLICATION_INVENTORY_OBSERVABILITY_SCHEMA",
         "APPSEC_INVENTORY_OBSERVABILITY_SCHEMA",
@@ -1741,19 +1027,21 @@ def serve(host: str, port: int, reports_dir: Path) -> None:
         schema=observability_schema,
         source="ui",
     )
-    LOGGER.info("UI service started host=%s port=%s", host, port, extra={"event_type": "service.started"})
-    log_github_app_context(configured_github_app_id(), configured_github_installation_id())
     handler = type(
         "ConfiguredApplicationInventoryServiceHandler",
         (ApplicationInventoryServiceHandler,),
         {
             "manager": manager,
+            "scheduler": scheduler,
             "auth": auth,
             "observability_dsn": configured_observability_dsn,
             "observability_schema": observability_schema,
         },
     )
     server = ThreadingHTTPServer((host, port), handler)
+    scheduler.start()
+    LOGGER.info("UI service started host=%s port=%s", host, port, extra={"event_type": "service.started"})
+    log_github_app_context(configured_github_app_id(), configured_github_installation_id())
     print(f"Application Inventory Service UI listening on http://{host}:{port}")
     print(f"Reports root: {manager.reports_root}")
     try:
@@ -1762,6 +1050,8 @@ def serve(host: str, port: int, reports_dir: Path) -> None:
         print("Application Inventory Service UI stopped.")
     finally:
         server.server_close()
+        scheduler.close()
+        manager.close()
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

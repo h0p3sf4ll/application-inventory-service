@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
 import os
 import re
 import threading
 import time
+import weakref
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse, urlunparse
@@ -21,7 +24,7 @@ from .constants import (
     MISSING_REQUESTS_MESSAGE,
 )
 from .models import AzureDevOpsError
-from .azure import provider_connection_message
+from .azure import float_header, positive_float_env, positive_int_env, provider_connection_message, retry_after_seconds
 from .utils import clean_value
 
 try:
@@ -42,6 +45,23 @@ except ImportError:
 LOGGER = logging.getLogger("appsec_scan_router")
 GITHUB_DEPLOYMENT_ENVIRONMENTS = ("production", "prod", "preprod", "pre-prod")
 GITHUB_SUCCESSFUL_DEPLOYMENT_STATES = frozenset({"success"})
+DEFAULT_GITHUB_REQUESTS_PER_SECOND = 8.0
+DEFAULT_GITHUB_POOL_SIZE = 8
+DEFAULT_GITHUB_MAX_RETRIES = 5
+DEFAULT_GITHUB_RATE_LIMIT_RESERVE = 50
+
+
+@dataclass
+class GitHubAppTokenState:
+    token: str = ""
+    expires_at: float = 0.0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+_TOKEN_STATES: weakref.WeakValueDictionary[str, GitHubAppTokenState] = weakref.WeakValueDictionary()
+_TOKEN_STATES_LOCK = threading.Lock()
+_THROTTLES: weakref.WeakValueDictionary[str, GitHubThrottle] = weakref.WeakValueDictionary()
+_THROTTLES_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -115,9 +135,7 @@ class GitHubAppTokenProvider:
         self.base_url = base_url
         self.credentials = credentials
         self.timeout_seconds = timeout_seconds
-        self._token = ""
-        self._expires_at = 0.0
-        self._lock = threading.Lock()
+        self._state = shared_token_state(base_url, credentials)
         self._session = requests.Session()
         retry = Retry(
             total=3,
@@ -148,9 +166,9 @@ class GitHubAppTokenProvider:
         self._session.close()
 
     def token(self) -> str:
-        with self._lock:
-            if self._token and self._expires_at > time.time() + 60:
-                return self._token
+        with self._state.lock:
+            if self._state.token and self._state.expires_at > time.time() + 60:
+                return self._state.token
             return self._refresh()
 
     def _refresh(self) -> str:
@@ -174,8 +192,8 @@ class GitHubAppTokenProvider:
         if not token:
             raise AzureDevOpsError("GitHub Enterprise App did not return an installation access token.")
         expires_at = parse_github_expiry(data.get("expires_at")) if isinstance(data, dict) else 0.0
-        self._token = token
-        self._expires_at = expires_at or time.time() + 3600
+        self._state.token = token
+        self._state.expires_at = expires_at or time.time() + 3600
         return token
 
     def _app_jwt(self) -> str:
@@ -189,6 +207,67 @@ class GitHubAppTokenProvider:
         except Exception as exc:
             raise AzureDevOpsError("GitHub App private key could not sign the application JWT.") from exc
         return encoded.decode("ascii") if isinstance(encoded, bytes) else encoded
+
+
+def shared_token_state(base_url: str, credentials: GitHubAppCredentials) -> GitHubAppTokenState:
+    key_fingerprint = hashlib.sha256(credentials.private_key.encode()).hexdigest()[:16]
+    key = f"{base_url}:{credentials.app_id}:{credentials.installation_id}:{key_fingerprint}"
+    with _TOKEN_STATES_LOCK:
+        state = _TOKEN_STATES.get(key)
+        if state is None:
+            state = GitHubAppTokenState()
+            _TOKEN_STATES[key] = state
+        return state
+
+
+class GitHubThrottle:
+    def __init__(self, requests_per_second: float, rate_limit_reserve: int) -> None:
+        self.min_interval_seconds = 0.0 if requests_per_second <= 0 else 1.0 / requests_per_second
+        self.rate_limit_reserve = max(0, rate_limit_reserve)
+        self.lock = threading.Lock()
+        self.next_request_at = 0.0
+        self.block_until = 0.0
+
+    def wait(self) -> None:
+        sleep_seconds = 0.0
+        with self.lock:
+            now = time.monotonic()
+            scheduled_at = max(self.next_request_at, self.block_until)
+            if scheduled_at > now:
+                sleep_seconds = scheduled_at - now
+            self.next_request_at = max(scheduled_at, now) + self.min_interval_seconds
+        if sleep_seconds > 0:
+            time.sleep(sleep_seconds)
+
+    def observe(self, response: requests.Response) -> None:
+        retry_after = retry_after_seconds(response.headers.get("Retry-After"))
+        if retry_after > 0:
+            self.defer(retry_after)
+            LOGGER.info("GitHub requested %.2fs client backoff.", retry_after)
+            return
+
+        remaining = float_header(response.headers.get("X-RateLimit-Remaining"))
+        reset_at = float_header(response.headers.get("X-RateLimit-Reset"))
+        if remaining is not None and remaining <= self.rate_limit_reserve and reset_at:
+            self.defer(max(0.0, reset_at - time.time() + 1.0))
+            return
+        if response.status_code == 429:
+            self.defer(60.0)
+
+    def defer(self, seconds: float) -> None:
+        if seconds <= 0:
+            return
+        with self.lock:
+            self.block_until = max(self.block_until, time.monotonic() + seconds)
+
+
+def shared_github_throttle(scope: str, requests_per_second: float, rate_limit_reserve: int) -> GitHubThrottle:
+    with _THROTTLES_LOCK:
+        throttle = _THROTTLES.get(scope)
+        if throttle is None:
+            throttle = GitHubThrottle(requests_per_second, rate_limit_reserve)
+            _THROTTLES[scope] = throttle
+        return throttle
 
 
 class GitHubEnterpriseClient:
@@ -221,7 +300,7 @@ class GitHubEnterpriseClient:
             "User-Agent": "application-inventory-service/1.6.7",
         }
         self._retry = Retry(
-            total=5,
+            total=positive_int_env("APPLICATION_INVENTORY_GITHUB_MAX_RETRIES", DEFAULT_GITHUB_MAX_RETRIES),
             connect=0,
             read=3,
             other=0,
@@ -233,6 +312,22 @@ class GitHubEnterpriseClient:
         self._thread_local = threading.local()
         self._sessions: list[requests.Session] = []
         self._sessions_lock = threading.Lock()
+        throttle_scope = (
+            f"app:{self.app_credentials.installation_id}"
+            if self.app_credentials
+            else f"token:{hashlib.sha256(self._token.encode()).hexdigest()[:16]}"
+        )
+        self._throttle = shared_github_throttle(
+            f"{self.base_url}:{throttle_scope}",
+            positive_float_env(
+                "APPLICATION_INVENTORY_GITHUB_REQUESTS_PER_SECOND",
+                DEFAULT_GITHUB_REQUESTS_PER_SECOND,
+            ),
+            positive_int_env(
+                "APPLICATION_INVENTORY_GITHUB_RATE_LIMIT_RESERVE",
+                DEFAULT_GITHUB_RATE_LIMIT_RESERVE,
+            ),
+        )
 
     def close(self) -> None:
         if self._app_token_provider:
@@ -248,7 +343,13 @@ class GitHubEnterpriseClient:
         if session is None:
             session = requests.Session()
             session.headers.update(self._headers)
-            adapter = HTTPAdapter(max_retries=self._retry, pool_connections=8, pool_maxsize=8)
+            pool_size = positive_int_env("APPLICATION_INVENTORY_GITHUB_POOL_SIZE", DEFAULT_GITHUB_POOL_SIZE)
+            adapter = HTTPAdapter(
+                max_retries=self._retry,
+                pool_connections=pool_size,
+                pool_maxsize=pool_size,
+                pool_block=True,
+            )
             session.mount("https://", adapter)
             self._thread_local.session = session
             with self._sessions_lock:
@@ -260,12 +361,15 @@ class GitHubEnterpriseClient:
 
     def get(self, url: str, params: dict[str, Any] | None = None) -> Any:
         try:
-            return self.session.get(
+            self._throttle.wait()
+            response = self.session.get(
                 url,
                 params=params,
                 headers=self._authorization_headers(),
                 timeout=self.timeout_seconds,
             )
+            self._throttle.observe(response)
+            return response
         except requests.RequestException as exc:
             raise AzureDevOpsError(provider_connection_message("GitHub Enterprise", url, exc)) from exc
 
@@ -395,26 +499,16 @@ class GitHubEnterpriseClient:
         return clean_value(latest.get("state")).lower() in GITHUB_SUCCESSFUL_DEPLOYMENT_STATES
 
     def list_repo_items(self, project_name: str, repo_id: str, branch_name: str | None = None) -> list[dict[str, Any]]:
-        ref = quote(self.tree_ref_for_branch(repo_id, branch_name), safe="")
+        ref = quote(branch_name or "HEAD", safe="")
         data = self.get_json(f"/repos/{quote(repo_id, safe='/')}/git/trees/{ref}", {"recursive": "1"})
+        if isinstance(data, dict) and data.get("truncated"):
+            LOGGER.warning("GitHub returned a truncated repository tree for %s@%s", repo_id, branch_name or "HEAD")
         tree = data.get("tree") if isinstance(data, dict) else []
         return [
             {"path": f"/{item.get('path', '').lstrip('/')}"}
             for item in tree
             if isinstance(item, dict) and item.get("path")
         ]
-
-    def tree_ref_for_branch(self, repo_id: str, branch_name: str | None) -> str:
-        if not branch_name:
-            return "HEAD"
-        try:
-            branch = self.get_json(f"/repos/{quote(repo_id, safe='/')}/branches/{quote(branch_name, safe='')}")
-        except AzureDevOpsError as exc:
-            if exc.status_code == 404:
-                return branch_name
-            raise
-        commit = branch.get("commit") if isinstance(branch, dict) else {}
-        return clean_value(commit.get("sha")) or branch_name
 
     def list_commits(
         self,
@@ -424,12 +518,22 @@ class GitHubEnterpriseClient:
         page_size: int = DEFAULT_COMMIT_PAGE_SIZE,
         branch_name: str | None = None,
     ) -> list[dict[str, Any]]:
+        return list(self.iter_commits(project_name, repo_id, max_commits, page_size, branch_name))
+
+    def iter_commits(
+        self,
+        project_name: str,
+        repo_id: str,
+        max_commits: int = 0,
+        page_size: int = DEFAULT_COMMIT_PAGE_SIZE,
+        branch_name: str | None = None,
+    ) -> Iterator[dict[str, Any]]:
         per_page = max(1, min(page_size, 100))
         params: dict[str, Any] = {"per_page": per_page}
         if branch_name:
             params["sha"] = branch_name
 
-        commits: list[dict[str, Any]] = []
+        yielded = 0
         next_url = self._url(f"/repos/{quote(repo_id, safe='/')}/commits")
         request_params = params
 
@@ -440,13 +544,17 @@ class GitHubEnterpriseClient:
             if not isinstance(batch, list) or not batch:
                 break
 
-            commits.extend(github_commit_to_activity_commit(item) for item in batch if isinstance(item, dict))
-            if max_commits and len(commits) >= max_commits:
-                return commits[:max_commits]
+            for item in batch:
+                if not isinstance(item, dict):
+                    continue
+                yield github_commit_to_activity_commit(item)
+                yielded += 1
+                if max_commits and yielded >= max_commits:
+                    return
             next_url = response.links.get("next", {}).get("url", "")
             request_params = {}
 
-        return commits
+        return
 
     def fetch_file_content(
         self,

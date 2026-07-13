@@ -115,7 +115,6 @@ Store these in AWS Secrets Manager:
 | Secret | Purpose |
 | --- | --- |
 | `APPLICATION_INVENTORY_SERVICE_SECRET_KEY` | Fernet key for encrypted token storage |
-| `APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET` | GitHub OAuth secret |
 | `APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_SECRET` | GitHub Enterprise OAuth secret |
 | `APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET` | Google OAuth secret |
 | `APPLICATION_INVENTORY_POSTGRES_DSN` | PostgreSQL DSN |
@@ -166,10 +165,18 @@ Environment:
 | `APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS` | Approved GitHub Enterprise hostnames |
 | `APPLICATION_INVENTORY_SERVICE_ALLOW_INSECURE_PROVIDER_URLS` | `false` |
 | `APPLICATION_INVENTORY_SERVICE_MAX_JSON_BODY_BYTES` | `1048576` |
+| `APPLICATION_INVENTORY_SERVICE_MAX_CONCURRENT_SCANS` | `2` |
+| `APPLICATION_INVENTORY_GITHUB_REQUESTS_PER_SECOND` | `8` |
+| `APPLICATION_INVENTORY_GITHUB_RATE_LIMIT_RESERVE` | `50` |
+| `APPLICATION_INVENTORY_XLSX_CHECKPOINT_ROWS` | `500` |
+| `APPLICATION_INVENTORY_XLSX_MAX_CHECKPOINT_ROWS` | `5000` |
+| `APPLICATION_INVENTORY_XLSX_CHECKPOINT_SECONDS` | `30` |
+| `APPLICATION_INVENTORY_POSTGRES_COMMIT_ROWS` | `50` |
+| `APPLICATION_INVENTORY_POSTGRES_COMMIT_SECONDS` | `2` |
 | `APPLICATION_INVENTORY_POSTGRES_SCHEMA` | `application_inventory` |
 | `APPLICATION_INVENTORY_POSTGRES_TABLE` | `application_inventory_assets` |
 
-Mount EFS at `/reports`.
+Mount EFS at `/reports`. Reports, encrypted credentials, and encrypted schedules use this durable path. Keep `APPLICATION_INVENTORY_SERVICE_SECRET_KEY` stable across task replacements; changing it makes existing encrypted state unreadable.
 
 Runtime hardening:
 
@@ -198,8 +205,9 @@ Expected response:
 
 Configure OAuth apps with the public ALB or Route 53 hostname:
 
+Use [GitHub SSO](GITHUB_SSO.md) for the complete GitHub OAuth registration, secret, scope, proxy, and verification procedure.
+
 ```text
-https://inventory.example.com/api/auth/github/callback
 https://inventory.example.com/api/auth/github-enterprise/callback
 https://inventory.example.com/api/auth/google/callback
 ```
@@ -241,7 +249,9 @@ Avoid broad permissions. Scope secrets by ARN and environment.
 
 ## Scaling
 
-Start with one task. Increase desired count only when you have externalized shared state and are comfortable with multiple users starting scans concurrently.
+Start with one task. Active processes and event listeners are local to that task. Increase desired count only after introducing request affinity or external scan coordination. Use `APPLICATION_INVENTORY_SERVICE_MAX_CONCURRENT_SCANS` to bound interactive and scheduled subprocesses inside the task.
+
+Pause and resume use POSIX process-group signals and are supported by Fargate Linux. A task replacement terminates active or paused scans; persisted schedules reload in the replacement task.
 
 Recommended first production setting:
 

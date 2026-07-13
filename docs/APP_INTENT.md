@@ -37,6 +37,7 @@ The service reads provider metadata, repository trees, selected manifests, depen
 - Semgrep target lists.
 - SonarQube project metadata suggestions.
 - Normalized PostgreSQL tables for analytics and reporting.
+- Encrypted recurring scan definitions for repeatable inventory operations.
 
 ## Design Principles
 
@@ -44,4 +45,5 @@ The service reads provider metadata, repository trees, selected manifests, depen
 - No repository cloning.
 - Clear evidence fields for every detected inventory category.
 - Compatibility with CLI, UI, SDK, Docker, and automation workflows.
-- Defaults that work locally but can be hardened for AWS deployment.
+- Local defaults with documented hardened deployment settings for AWS and Azure.
+- Bounded concurrency and explicit backpressure at every network-intensive stage.

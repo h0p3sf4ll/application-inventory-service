@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Iterator
 from typing import Any
 
 from .constants import API_VERSION, DEFAULT_COMMIT_PAGE_SIZE, MISSING_REQUESTS_MESSAGE
@@ -233,13 +234,23 @@ class AzureDevOpsClient:
         page_size: int = DEFAULT_COMMIT_PAGE_SIZE,
         branch_name: str | None = None,
     ) -> list[dict[str, Any]]:
-        commits: list[dict[str, Any]] = []
+        return list(self.iter_commits(project_name, repo_id, max_commits, page_size, branch_name))
+
+    def iter_commits(
+        self,
+        project_name: str,
+        repo_id: str,
+        max_commits: int = 0,
+        page_size: int = DEFAULT_COMMIT_PAGE_SIZE,
+        branch_name: str | None = None,
+    ) -> Iterator[dict[str, Any]]:
         continuation: str | None = None
         skip = 0
+        yielded = 0
         seen_first_commit_ids: set[str] = set()
 
         while True:
-            remaining = max_commits - len(commits) if max_commits else page_size
+            remaining = max_commits - yielded if max_commits else page_size
             top = min(page_size, remaining) if max_commits else page_size
             if top <= 0:
                 break
@@ -264,9 +275,13 @@ class AzureDevOpsClient:
             if first_commit_id:
                 seen_first_commit_ids.add(first_commit_id)
 
-            commits.extend(batch)
-            if max_commits and len(commits) >= max_commits:
-                return commits[:max_commits]
+            for commit in batch:
+                if not isinstance(commit, dict):
+                    continue
+                yield commit
+                yielded += 1
+                if max_commits and yielded >= max_commits:
+                    return
 
             continuation = response.headers.get("x-ms-continuationtoken")
             if continuation:
@@ -275,7 +290,7 @@ class AzureDevOpsClient:
                 break
             skip += len(batch)
 
-        return commits
+        return
 
     def fetch_file_content(
         self,

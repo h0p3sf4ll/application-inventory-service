@@ -4,10 +4,10 @@ const appShell = document.querySelector("#appShell");
 const startScanButton = document.querySelector("#startScan");
 const startScanFormButton = document.querySelector("#startScanForm");
 const stopScanButton = document.querySelector("#stopScan");
+const pauseScanButton = document.querySelector("#pauseScan");
+const resumeScanButton = document.querySelector("#resumeScan");
 const refreshButton = document.querySelector("#refreshScans");
 const resetDefaultsButton = document.querySelector("#resetDefaults");
-const loginGitHub = document.querySelector("#loginGitHub");
-const loginGitHubSso = document.querySelector("#loginGitHubSso");
 const loginGitHubEnterpriseSso = document.querySelector("#loginGitHubEnterpriseSso");
 const loginGoogleSso = document.querySelector("#loginGoogleSso");
 const loginTestSso = document.querySelector("#loginTestSso");
@@ -26,7 +26,6 @@ const targetFilterTitle = document.querySelector("#targetFilterTitle");
 const targetFilterDefault = document.querySelector("#targetFilterDefault");
 const targetFilterSummary = document.querySelector("#targetFilterSummary");
 const targetSearch = document.querySelector("#targetSearch");
-const githubSsoStatus = document.querySelector("#githubSsoStatus");
 const githubEnterpriseSsoStatus = document.querySelector("#githubEnterpriseSsoStatus");
 const googleSsoStatus = document.querySelector("#googleSsoStatus");
 const testSsoStatus = document.querySelector("#testSsoStatus");
@@ -49,7 +48,21 @@ const checkDatabaseButton = document.querySelector("#checkDatabase");
 const exportDatabaseCsvButton = document.querySelector("#exportDatabaseCsv");
 const exportDatabaseJsonButton = document.querySelector("#exportDatabaseJson");
 const databaseStatus = document.querySelector("#databaseStatus");
+const databaseSearchQuery = document.querySelector("#databaseSearchQuery");
+const searchDatabaseButton = document.querySelector("#searchDatabase");
+const clearDatabaseSearchButton = document.querySelector("#clearDatabaseSearch");
+const databaseResultSummary = document.querySelector("#databaseResultSummary");
+const databaseResultRows = document.querySelector("#databaseResultRows");
+const databasePreviousButton = document.querySelector("#databasePrevious");
+const databaseNextButton = document.querySelector("#databaseNext");
+const databasePageSummary = document.querySelector("#databasePageSummary");
 const tabButtons = document.querySelectorAll("[data-view]");
+const createScheduleButton = document.querySelector("#createSchedule");
+const scheduleName = document.querySelector("#scheduleName");
+const scheduleFrequency = document.querySelector("#scheduleFrequency");
+const scheduleRunAt = document.querySelector("#scheduleRunAt");
+const scheduleCount = document.querySelector("#scheduleCount");
+const scheduleList = document.querySelector("#scheduleList");
 
 const state = {
   scans: [],
@@ -59,11 +72,14 @@ const state = {
   timer: null,
   session: null,
   database: null,
+  databaseSearch: {query: "", rows: [], total: 0, limit: 100, offset: 0, loaded: false},
   githubUrls: [],
   adoOrgPats: [],
   sourceTargets: [],
   selectedTargets: [],
   sourceTargetErrors: [],
+  schedules: [],
+  pollTicks: 0,
 };
 
 const defaultValues = {
@@ -74,6 +90,7 @@ const defaultValues = {
   minConfidence: "medium",
   activityMode: "contributors",
   branchAgeDays: "90",
+  sourceWorkers: "2",
   maxWorkers: "8",
   branchWorkers: "16",
   contentWorkers: "16",
@@ -100,6 +117,7 @@ const persistedFields = [
   "minConfidence",
   "activityMode",
   "branchAgeDays",
+  "sourceWorkers",
   "maxWorkers",
   "branchWorkers",
   "contentWorkers",
@@ -126,12 +144,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   syncMobileOptions();
   syncAdoOrgPatInput();
   syncTargetFilterInput();
+  setDefaultScheduleTime();
   bindEvents();
   renderShell();
   await loadSession();
   showAuthResult();
   if (isLoggedIn()) {
-    await loadScans();
+    await Promise.all([loadScans(), loadSchedules()]);
   } else {
     renderAll();
   }
@@ -164,7 +183,10 @@ function bindEvents() {
   startScanButton.addEventListener("click", startScan);
   startScanFormButton.addEventListener("click", startScan);
   stopScanButton.addEventListener("click", stopScan);
-  refreshButton.addEventListener("click", loadScans);
+  pauseScanButton.addEventListener("click", () => controlScan("pause"));
+  resumeScanButton.addEventListener("click", () => controlScan("resume"));
+  refreshButton.addEventListener("click", refreshData);
+  createScheduleButton.addEventListener("click", createSchedule);
   resetDefaultsButton.addEventListener("click", resetDefaults);
   addAdoOrgPatButton.addEventListener("click", addAdoOrgPat);
   addGithubUrlButton.addEventListener("click", addGithubUrl);
@@ -176,7 +198,6 @@ function bindEvents() {
   form.elements.adoOrgPat.addEventListener("keydown", handleAdoOrgPatKeydown);
   form.elements.githubUrl.addEventListener("keydown", handleGithubUrlKeydown);
   logoutGitHub.addEventListener("click", logout);
-  loginGitHubSso.addEventListener("click", handleSsoClick);
   loginGitHubEnterpriseSso.addEventListener("click", handleSsoClick);
   loginGoogleSso.addEventListener("click", handleSsoClick);
   loginTestSso.addEventListener("click", handleSsoClick);
@@ -187,6 +208,25 @@ function bindEvents() {
   });
   downloadLogsButton.addEventListener("click", downloadLogs);
   checkDatabaseButton.addEventListener("click", checkDatabase);
+  searchDatabaseButton.addEventListener("click", () => searchDatabase(0, databaseSearchQuery.value));
+  clearDatabaseSearchButton.addEventListener("click", () => {
+    databaseSearchQuery.value = "";
+    searchDatabase(0, "");
+  });
+  databaseSearchQuery.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      searchDatabase(0, databaseSearchQuery.value);
+    }
+  });
+  databasePreviousButton.addEventListener("click", () => {
+    const search = state.databaseSearch;
+    searchDatabase(Math.max(0, search.offset - search.limit), search.query);
+  });
+  databaseNextButton.addEventListener("click", () => {
+    const search = state.databaseSearch;
+    searchDatabase(search.offset + search.limit, search.query);
+  });
   exportDatabaseCsvButton.addEventListener("click", () => exportDatabase("csv"));
   exportDatabaseJsonButton.addEventListener("click", () => exportDatabase("json"));
   tabButtons.forEach((button) => {
@@ -219,7 +259,7 @@ async function startScan() {
     if (!response.ok) {
       throw new Error(data.error || "Scan could not be started.");
     }
-    state.activeScan = data.scan;
+    state.activeScan = stampScan(data.scan);
     state.logs = data.scan.logsTail || [];
     await loadScans(data.scan.id);
     listenToScan(data.scan.id);
@@ -234,23 +274,28 @@ async function startScan() {
 }
 
 async function stopScan() {
+  await controlScan("stop");
+}
+
+async function controlScan(action) {
   if (!state.activeScan) {
     return;
   }
   try {
-    const response = await fetch(`/api/scans/${state.activeScan.id}/stop`, {
+    const response = await fetch(`/api/scans/${state.activeScan.id}/${action}`, {
       method: "POST",
       headers: authHeaders(false),
     });
     const data = await response.json();
     if (!response.ok) {
-      throw new Error(data.error || "Stop failed.");
+      throw new Error(data.error || `${capitalize(action)} failed.`);
     }
-    state.activeScan = data.scan;
-    renderActiveScan();
-    notify("Stop requested.");
+    state.activeScan = stampScan(data.scan);
+    mergeScan(state.activeScan);
+    renderAll();
+    notify(action === "stop" ? "Stop requested." : `Scan ${action}d.`);
   } catch (error) {
-    notify(error.message || "Stop failed.");
+    notify(error.message || `${capitalize(action)} failed.`);
   }
 }
 
@@ -280,6 +325,9 @@ async function logout() {
     state.scans = [];
     state.activeScan = null;
     state.logs = [];
+    state.database = null;
+    state.databaseSearch = {query: "", rows: [], total: 0, limit: 100, offset: 0, loaded: false};
+    databaseSearchQuery.value = "";
     state.githubUrls = [...defaultValues.githubUrls];
     state.adoOrgPats = [];
     clearDiscoveredTargets({silent: true});
@@ -304,7 +352,7 @@ async function loadScans(preferredId = "") {
   try {
     const response = await fetch("/api/scans");
     const data = await response.json();
-    state.scans = data.scans || [];
+    state.scans = (data.scans || []).map(stampScan);
     if (preferredId) {
       const selected = state.scans.find((scan) => scan.id === preferredId);
       if (selected) {
@@ -328,10 +376,10 @@ async function selectScan(scan, connect = true) {
   try {
     const response = await fetch(`/api/scans/${scan.id}`);
     const data = await response.json();
-    state.activeScan = data.scan || scan;
+    state.activeScan = stampScan(data.scan || scan);
     state.logs = state.activeScan.logsTail || [];
     renderAll();
-    if (connect && state.activeScan.status === "running") {
+    if (connect && ["running", "paused"].includes(state.activeScan.status)) {
       listenToScan(state.activeScan.id);
     } else if (connect) {
       closeEventSource();
@@ -346,7 +394,7 @@ function listenToScan(scanId) {
   const source = new EventSource(`/api/scans/${scanId}/events`);
   state.eventSource = source;
   source.addEventListener("status", (event) => {
-    state.activeScan = JSON.parse(event.data);
+    state.activeScan = stampScan(JSON.parse(event.data));
     mergeScan(state.activeScan);
     renderAll();
   });
@@ -354,14 +402,16 @@ function listenToScan(scanId) {
     const data = JSON.parse(event.data);
     if (data.line) {
       state.logs.push(data.line);
-      if (state.logs.length > 1200) {
+      if (state.logs.length > 1300) {
         state.logs = state.logs.slice(-1200);
+        renderLogs();
+      } else {
+        appendLogLine(data.line);
       }
-      renderLogs();
     }
   });
   source.addEventListener("done", async (event) => {
-    state.activeScan = JSON.parse(event.data);
+    state.activeScan = stampScan(JSON.parse(event.data));
     mergeScan(state.activeScan);
     closeEventSource();
     await loadScans(state.activeScan.id);
@@ -377,6 +427,7 @@ function closeEventSource() {
 }
 
 function mergeScan(scan) {
+  stampScan(scan);
   const index = state.scans.findIndex((candidate) => candidate.id === scan.id);
   if (index >= 0) {
     state.scans.splice(index, 1, scan);
@@ -385,11 +436,24 @@ function mergeScan(scan) {
   }
 }
 
+function stampScan(scan) {
+  if (scan) {
+    scan.observedAt = Date.now();
+  }
+  return scan;
+}
+
+async function refreshData() {
+  await Promise.all([loadScans(), loadSchedules()]);
+}
+
 function renderAll() {
   renderActiveScan();
   renderRuns();
   renderReports();
+  renderSchedules();
   renderDatabaseStatus();
+  renderDatabaseResults();
   renderLogs();
 }
 
@@ -403,6 +467,10 @@ function renderActiveScan() {
     runtimeValue.textContent = "0s";
     commandLine.textContent = "application-inventory-service";
     copyCommandButton.disabled = true;
+    pauseScanButton.disabled = true;
+    resumeScanButton.disabled = true;
+    resumeScanButton.classList.add("hidden");
+    pauseScanButton.classList.remove("hidden");
     stopScanButton.disabled = true;
     downloadLogsButton.disabled = true;
     return;
@@ -414,7 +482,12 @@ function renderActiveScan() {
   runtimeValue.textContent = scanRuntime(scan);
   commandLine.textContent = scan.command || "application-inventory-service";
   copyCommandButton.disabled = !scan.command;
-  stopScanButton.disabled = scan.status !== "running";
+  const paused = scan.status === "paused";
+  pauseScanButton.classList.toggle("hidden", paused);
+  pauseScanButton.disabled = scan.status !== "running";
+  resumeScanButton.classList.toggle("hidden", !paused);
+  resumeScanButton.disabled = !paused;
+  stopScanButton.disabled = !["queued", "running", "paused"].includes(scan.status);
   downloadLogsButton.disabled = state.logs.length === 0;
 }
 
@@ -469,6 +542,134 @@ function renderReports() {
   `).join("");
 }
 
+async function loadSchedules() {
+  if (!isLoggedIn()) {
+    state.schedules = [];
+    renderSchedules();
+    return;
+  }
+  try {
+    const response = await fetch("/api/schedules");
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Could not load schedules.");
+    }
+    state.schedules = data.schedules || [];
+    renderSchedules();
+  } catch (error) {
+    notify(error.message || "Could not load schedules.");
+  }
+}
+
+async function createSchedule() {
+  if (!commitPendingAdoOrgPat({silent: true}) || !ensureAdoOrgPats() || !ensureGithubUrls()) {
+    return;
+  }
+  if (!form.reportValidity()) {
+    setActiveView("setupView");
+    return;
+  }
+  const name = scheduleName.value.trim();
+  const localRunAt = scheduleRunAt.value;
+  if (!name) {
+    scheduleName.focus();
+    notify("Enter a schedule name.");
+    return;
+  }
+  if (!localRunAt) {
+    scheduleRunAt.focus();
+    notify("Choose the first run time.");
+    return;
+  }
+  const runAt = new Date(localRunAt);
+  if (!Number.isFinite(runAt.getTime()) || runAt.getTime() < Date.now() - 5000) {
+    scheduleRunAt.focus();
+    notify("Choose a future run time.");
+    return;
+  }
+  createScheduleButton.disabled = true;
+  try {
+    const response = await fetch("/api/schedules", {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify({
+        name,
+        frequency: scheduleFrequency.value,
+        runAt: runAt.toISOString(),
+        scan: formPayload(),
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Schedule could not be created.");
+    }
+    scheduleName.value = "";
+    setDefaultScheduleTime();
+    await loadSchedules();
+    notify("Schedule created.");
+  } catch (error) {
+    notify(error.message || "Schedule could not be created.");
+  } finally {
+    createScheduleButton.disabled = false;
+  }
+}
+
+function renderSchedules() {
+  scheduleCount.textContent = String(state.schedules.length);
+  if (!state.schedules.length) {
+    scheduleList.innerHTML = '<div class="empty-state">No schedules</div>';
+    return;
+  }
+  scheduleList.innerHTML = state.schedules.map((schedule) => `
+    <article class="schedule-item">
+      <div class="schedule-item-heading">
+        <span>
+          <strong>${escapeHtml(schedule.name)}</strong>
+          <small>${escapeHtml(providerLabel(schedule.provider))} · ${escapeHtml(schedule.org || "All sources")} · ${escapeHtml(schedule.target || "all")}</small>
+        </span>
+        <span class="status-chip ${schedule.enabled ? "status-running" : "status-idle"}">${schedule.enabled ? "Enabled" : "Disabled"}</span>
+      </div>
+      <dl class="schedule-meta">
+        <div><dt>Frequency</dt><dd>${escapeHtml(capitalize(schedule.frequency))}</dd></div>
+        <div><dt>Next run</dt><dd>${escapeHtml(schedule.enabled ? formatDate(schedule.nextRunAt) : "Not scheduled")}</dd></div>
+        <div><dt>Last run</dt><dd>${escapeHtml(formatDate(schedule.lastRunAt) || "Never")}</dd></div>
+      </dl>
+      ${schedule.lastError ? `<p class="schedule-error">${escapeHtml(schedule.lastError)}</p>` : ""}
+      <div class="schedule-actions">
+        <button class="ghost small" type="button" data-schedule-action="run" data-schedule-id="${escapeHtml(schedule.id)}">Run now</button>
+        <button class="ghost small" type="button" data-schedule-action="${schedule.enabled ? "disable" : "enable"}" data-schedule-id="${escapeHtml(schedule.id)}">${schedule.enabled ? "Disable" : "Enable"}</button>
+        <button class="danger small" type="button" data-schedule-action="delete" data-schedule-id="${escapeHtml(schedule.id)}">Delete</button>
+      </div>
+    </article>
+  `).join("");
+  scheduleList.querySelectorAll("[data-schedule-action]").forEach((button) => {
+    button.addEventListener("click", () => updateSchedule(button.dataset.scheduleId, button.dataset.scheduleAction));
+  });
+}
+
+async function updateSchedule(scheduleId, action) {
+  const method = action === "delete" ? "DELETE" : "POST";
+  const path = action === "delete" ? `/api/schedules/${scheduleId}` : `/api/schedules/${scheduleId}/${action}`;
+  try {
+    const response = await fetch(path, {method, headers: authHeaders(false)});
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Schedule update failed.");
+    }
+    await Promise.all([loadSchedules(), action === "run" ? loadScans() : Promise.resolve()]);
+    notify(action === "run" ? "Scheduled scan queued." : `Schedule ${action}d.`);
+  } catch (error) {
+    notify(error.message || "Schedule update failed.");
+  }
+}
+
+function setDefaultScheduleTime() {
+  const date = new Date(Date.now() + 60 * 60 * 1000);
+  date.setMinutes(0, 0, 0);
+  const offset = date.getTimezoneOffset() * 60 * 1000;
+  scheduleRunAt.value = new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
 function renderDatabaseStatus() {
   const database = state.database;
   if (!database) {
@@ -490,6 +691,51 @@ function renderDatabaseStatus() {
   `;
 }
 
+function renderDatabaseResults() {
+  const search = state.databaseSearch;
+  if (!search.loaded) {
+    databaseResultSummary.textContent = "Search to view inventory records";
+    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="11">No search has been run.</td></tr>';
+    databasePageSummary.textContent = "Page 1";
+    databasePreviousButton.disabled = true;
+    databaseNextButton.disabled = true;
+    return;
+  }
+  const start = search.total ? search.offset + 1 : 0;
+  const end = Math.min(search.offset + search.rows.length, search.total);
+  const filterLabel = search.query ? ` matching "${search.query}"` : "";
+  databaseResultSummary.textContent = `Showing ${start}-${end} of ${search.total}${filterLabel}`;
+  if (!search.rows.length) {
+    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="11">No inventory records match this search.</td></tr>';
+  } else {
+    databaseResultRows.innerHTML = search.rows.map((row) => `
+      <tr>
+        <td>${databaseCell(providerLabel(row.provider))}</td>
+        <td>${databaseCell(row.organization)}</td>
+        <td>${databaseCell(row.project)}</td>
+        <td>${databaseCell(row.repo_name)}</td>
+        <td>${databaseCell(row.branch_name)}</td>
+        <td>${databaseCell(row.inventory_name || row.mobile_name)}</td>
+        <td>${databaseCell(row.inventory_version || row.mobile_version)}</td>
+        <td>${databaseCell(row.primary_language)}</td>
+        <td>${databaseCell(formatDate(row.branch_last_updated || row.last_updated))}</td>
+        <td>${databaseCell(row.confidence)}</td>
+        <td>${databaseCell(row.inventory_types)}</td>
+      </tr>
+    `).join("");
+  }
+  const page = search.total ? Math.floor(search.offset / search.limit) + 1 : 1;
+  const pages = Math.max(1, Math.ceil(search.total / search.limit));
+  databasePageSummary.textContent = `Page ${page} of ${pages}`;
+  databasePreviousButton.disabled = search.offset <= 0;
+  databaseNextButton.disabled = search.offset + search.rows.length >= search.total;
+}
+
+function databaseCell(value) {
+  const text = String(value || "").trim();
+  return escapeHtml(text || "Not detected");
+}
+
 function renderLogs() {
   const fragment = document.createDocumentFragment();
   state.logs.forEach((line, index) => {
@@ -504,6 +750,18 @@ function renderLogs() {
   logsElement.replaceChildren(fragment);
   logsElement.scrollTop = logsElement.scrollHeight;
   downloadLogsButton.disabled = state.logs.length === 0;
+}
+
+function appendLogLine(line) {
+  if (logsElement.childNodes.length) {
+    logsElement.append(document.createTextNode("\n"));
+  }
+  const element = document.createElement("span");
+  element.className = logTone(line);
+  element.textContent = line;
+  logsElement.append(element);
+  logsElement.scrollTop = logsElement.scrollHeight;
+  downloadLogsButton.disabled = false;
 }
 
 function logTone(line) {
@@ -541,13 +799,35 @@ async function checkDatabase() {
   }
 }
 
+async function searchDatabase(offset = 0, query = "") {
+  setDatabaseBusy(true);
+  try {
+    const response = await fetch("/api/database/search", {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify({...databasePayload(), query, offset, limit: state.databaseSearch.limit}),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Database search failed.");
+    }
+    state.databaseSearch = {...data.search, loaded: true};
+    databaseSearchQuery.value = data.search.query || "";
+    renderDatabaseResults();
+  } catch (error) {
+    notify(error.message || "Database search failed.");
+  } finally {
+    setDatabaseBusy(false);
+  }
+}
+
 async function exportDatabase(format) {
   setDatabaseBusy(true);
   try {
     const response = await fetch("/api/database/export", {
       method: "POST",
       headers: authHeaders(true),
-      body: JSON.stringify({...databasePayload(), format}),
+      body: JSON.stringify({...databasePayload(), format, query: state.databaseSearch.query}),
     });
     const contentType = response.headers.get("Content-Type") || "";
     if (!response.ok) {
@@ -582,6 +862,7 @@ function formPayload() {
     minConfidence: value(data, "minConfidence") || defaultValues.minConfidence,
     activityMode: value(data, "activityMode") || defaultValues.activityMode,
     branchAgeDays: numberValue(data, "branchAgeDays", Number(defaultValues.branchAgeDays)),
+    sourceWorkers: numberValue(data, "sourceWorkers", Number(defaultValues.sourceWorkers)),
     maxWorkers: numberValue(data, "maxWorkers", Number(defaultValues.maxWorkers)),
     branchWorkers: numberValue(data, "branchWorkers", Number(defaultValues.branchWorkers)),
     contentWorkers: numberValue(data, "contentWorkers", Number(defaultValues.contentWorkers)),
@@ -868,6 +1149,7 @@ function sourcePayload() {
     githubUrls: isGithubProvider(provider) ? state.githubUrls : [],
     adoOrgPats: isAzureProvider(provider) ? value(data, "adoOrgPats") : "",
     timeout: numberValue(data, "timeout", Number(defaultValues.timeout)),
+    sourceWorkers: numberValue(data, "sourceWorkers", Number(defaultValues.sourceWorkers)),
   };
 }
 
@@ -1166,19 +1448,25 @@ function setBusy(isBusy) {
 
 function setDatabaseBusy(isBusy) {
   checkDatabaseButton.disabled = isBusy;
+  searchDatabaseButton.disabled = isBusy;
+  clearDatabaseSearchButton.disabled = isBusy;
   exportDatabaseCsvButton.disabled = isBusy;
   exportDatabaseJsonButton.disabled = isBusy;
+  if (isBusy) {
+    databasePreviousButton.disabled = true;
+    databaseNextButton.disabled = true;
+  } else {
+    renderDatabaseResults();
+  }
 }
 
 function renderAuth() {
   const session = state.session || {};
   const loggedIn = Boolean(session.loggedIn);
   const providers = authProviders(session);
-  const githubProvider = providers.find((provider) => provider.id === "github") || {};
   const githubEnterpriseProvider = providers.find((provider) => provider.id === "github-enterprise") || {};
   const googleProvider = providers.find((provider) => provider.id === "google") || {};
   const testProvider = providers.find((provider) => provider.id === "test") || {};
-  const githubEnabled = Boolean(githubProvider.enabled);
   const enabledCount = providers.filter((provider) => provider.enabled).length;
   renderShell();
   authStatus.textContent = loggedIn
@@ -1189,10 +1477,7 @@ function renderAuth() {
   loginSummary.textContent = enabledCount
     ? "Choose an enabled sign-in option."
     : "No sign-in options are configured for this instance.";
-  loginGitHub.classList.toggle("hidden", loggedIn || !githubEnabled);
-  loginGitHub.href = githubEnabled ? githubProvider.startUrl || "/api/auth/github/start" : "#";
   logoutGitHub.classList.toggle("hidden", !loggedIn);
-  renderSsoOption(loginGitHubSso, githubSsoStatus, githubProvider, "GitHub");
   renderSsoOption(loginGitHubEnterpriseSso, githubEnterpriseSsoStatus, githubEnterpriseProvider, "GitHub Enterprise");
   renderSsoOption(loginGoogleSso, googleSsoStatus, googleProvider, "Google");
   renderSsoOption(loginTestSso, testSsoStatus, testProvider, "Test user");
@@ -1219,12 +1504,6 @@ function authProviders(session) {
     return session.authProviders;
   }
   return [
-    {
-      id: "github",
-      label: "GitHub SSO",
-      enabled: Boolean(session.githubLoginEnabled),
-      startUrl: "/api/auth/github/start",
-    },
     {
       id: "github-enterprise",
       label: "GitHub Enterprise",
@@ -1301,13 +1580,21 @@ function tick() {
   if (state.activeScan) {
     runtimeValue.textContent = scanRuntime(state.activeScan);
   }
-  const running = state.scans.some((scan) => scan.status === "running");
-  if (running) {
-    loadScans();
+  state.pollTicks += 1;
+  if (state.pollTicks >= 30 && !document.hidden) {
+    state.pollTicks = 0;
+    refreshData();
   }
 }
 
 function scanRuntime(scan) {
+  if (Number.isFinite(Number(scan.activeSeconds))) {
+    let seconds = Number(scan.activeSeconds);
+    if (scan.status === "running" && scan.observedAt) {
+      seconds += Math.max(0, Math.floor((Date.now() - scan.observedAt) / 1000));
+    }
+    return formatDuration(seconds);
+  }
   if (!scan.startedAt) {
     return "0s";
   }
@@ -1317,8 +1604,17 @@ function scanRuntime(scan) {
     return "0s";
   }
   const total = Math.max(0, Math.floor((end - start) / 1000));
-  const minutes = Math.floor(total / 60);
+  return formatDuration(total);
+}
+
+function formatDuration(value) {
+  const total = Math.max(0, Math.floor(Number(value) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
   const seconds = total % 60;
+  if (hours) {
+    return `${hours}h ${minutes}m`;
+  }
   return minutes ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 

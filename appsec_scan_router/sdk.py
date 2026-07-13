@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import ScanConfig
-from .scanner import scan, scan_to_reports
+from .scanner import scan, scan_reports, scan_to_reports
 
 
 class ApplicationInventoryService:
@@ -17,6 +17,9 @@ class ApplicationInventoryService:
 
     def scan_to_reports(self) -> tuple[list[dict[str, Any]], Path, Path, Path]:
         return scan_to_reports(self.config)
+
+    def scan_reports(self) -> tuple[int, Path, Path, Path]:
+        return scan_reports(self.config)
 
 
 AppSecInventoryService = ApplicationInventoryService

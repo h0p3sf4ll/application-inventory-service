@@ -10,6 +10,7 @@ from .constants import (
     DEFAULT_BRANCH_WORKERS,
     DEFAULT_POSTGRES_SCHEMA,
     DEFAULT_POSTGRES_TABLE,
+    DEFAULT_SOURCE_WORKERS,
     DEFAULT_STORE_COUNTRY,
     DEFAULT_STORE_TIMEOUT_SECONDS,
 )
@@ -67,6 +68,7 @@ class ScanConfig:
     github_app_installation_id: str = ""
     github_app_private_key: str = ""
     github_app_private_key_file: str = ""
+    source_workers: int = DEFAULT_SOURCE_WORKERS
 
 
 @dataclass(frozen=True)

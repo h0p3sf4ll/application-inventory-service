@@ -5,6 +5,7 @@ DEFAULT_GITHUB_APP_INSTALLATION_ID = ""
 DEFAULT_GITHUB_API_URL = "https://api.github.com"
 DEFAULT_GITHUB_OWNER = ""
 DEFAULT_MAX_WORKERS = 8
+DEFAULT_SOURCE_WORKERS = 2
 DEFAULT_BRANCH_WORKERS = 16
 DEFAULT_CONTENT_WORKERS = 16
 DEFAULT_COMMIT_PAGE_SIZE = 1000
@@ -130,9 +131,6 @@ STORE_FIELDNAMES = (
 
 CONTENT_FILES_TO_FETCH: tuple[str, ...] = (
     "package.json",
-    "package-lock.json",
-    "pnpm-lock.yaml",
-    "yarn.lock",
     "app.json",
     "expo.json",
     "app.config.js",
@@ -141,7 +139,6 @@ CONTENT_FILES_TO_FETCH: tuple[str, ...] = (
     "pyproject.toml",
     "requirements.txt",
     "Pipfile",
-    "poetry.lock",
     "requirements.in",
     "requirements-dev.txt",
     "requirements-prod.txt",
@@ -151,9 +148,6 @@ CONTENT_FILES_TO_FETCH: tuple[str, ...] = (
     "environment.yaml",
     "pom.xml",
     "go.mod",
-    "Cargo.toml",
-    "composer.json",
-    "Gemfile",
     "AndroidManifest.xml",
     "Info.plist",
     "InfoPlist.strings",
@@ -167,7 +161,6 @@ CONTENT_FILES_TO_FETCH: tuple[str, ...] = (
     "azure-pipeline.yml",
     ".csproj",
     ".props",
-    "Podfile",
     "capacitor.config.ts",
     "capacitor.config.json",
     "ionic.config.json",
@@ -189,8 +182,25 @@ CONTENT_FILES_TO_FETCH: tuple[str, ...] = (
 )
 
 CONTENT_FILE_SUFFIXES = tuple(name.lower() for name in CONTENT_FILES_TO_FETCH)
+CONTENT_FILE_NAMES = frozenset(name for name in CONTENT_FILE_SUFFIXES if not name.startswith("."))
+CONTENT_FILE_EXTENSION_SUFFIXES = tuple(name for name in CONTENT_FILE_SUFFIXES if name.startswith("."))
 
-INVENTORY_FIELDNAMES = (
+IGNORED_CONTENT_DIRECTORIES = frozenset(
+    {
+        ".gradle",
+        ".terraform",
+        ".venv",
+        "__pycache__",
+        "coverage",
+        "deriveddata",
+        "dist",
+        "node_modules",
+        "pods",
+        "venv",
+    }
+)
+
+CORE_INVENTORY_FIELDNAMES = (
     "provider",
     "organization",
     "project",
@@ -202,27 +212,39 @@ INVENTORY_FIELDNAMES = (
     "source_url",
     "inventory_name",
     "inventory_version",
-    "inventory_types",
     "primary_language",
     "scanner_target",
     "semgrep_target",
     "sonarqube_project_key",
     "sonarqube_project_name",
-    "mobile_name",
-    "mobile_version",
-    "mobile_identifier",
-    "mobile_identifier_source",
-    "mobile_identifier_status",
     "branch_contributing_developers",
     "contributing_developers",
     "last_updated",
     "confidence",
     "score",
+    "detection_evidence",
+)
+
+APPLICATION_CLASSIFICATION_FIELDNAMES = (
+    "inventory_types",
     "categories",
     *TYPE_FIELDNAMES,
     *CATEGORY_FIELDNAMES,
+)
+
+MOBILE_FIELDNAMES = (
+    "mobile_name",
+    "mobile_version",
+    "mobile_identifier",
+    "mobile_identifier_source",
+    "mobile_identifier_status",
     *STORE_FIELDNAMES,
-    "detection_evidence",
+)
+
+INVENTORY_FIELDNAMES = (
+    *CORE_INVENTORY_FIELDNAMES,
+    *APPLICATION_CLASSIFICATION_FIELDNAMES,
+    *MOBILE_FIELDNAMES,
 )
 
 SONARQUBE_FIELDNAMES = (

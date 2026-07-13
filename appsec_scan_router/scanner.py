@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Iterable
@@ -45,7 +46,36 @@ from .utils import clean_value, clean_version, confidence_rank, load_json_object
 LOGGER = logging.getLogger("appsec_scan_router")
 
 
+class BoundedExecutor:
+    def __init__(self, executor: ThreadPoolExecutor, max_in_flight: int) -> None:
+        self.executor = executor
+        self.slots = threading.BoundedSemaphore(max(1, max_in_flight))
+
+    def submit(self, function: Callable[..., Any], *args: Any, **kwargs: Any) -> Future[Any]:
+        self.slots.acquire()
+        try:
+            future = self.executor.submit(function, *args, **kwargs)
+        except Exception:
+            self.slots.release()
+            raise
+        future.add_done_callback(lambda completed: self.slots.release())
+        return future
+
+
 def scan_to_reports(config: ScanConfig) -> tuple[list[dict[str, Any]], Path, Path, Path]:
+    results, _, xlsx_path, semgrep_path, sonarqube_path = write_scan_reports(config, retain_results=True)
+    return results, xlsx_path, semgrep_path, sonarqube_path
+
+
+def scan_reports(config: ScanConfig) -> tuple[int, Path, Path, Path]:
+    _, result_count, xlsx_path, semgrep_path, sonarqube_path = write_scan_reports(config, retain_results=False)
+    return result_count, xlsx_path, semgrep_path, sonarqube_path
+
+
+def write_scan_reports(
+    config: ScanConfig,
+    retain_results: bool,
+) -> tuple[list[dict[str, Any]], int, Path, Path, Path]:
     with ExitStack() as stack:
         writer = stack.enter_context(
             StreamingReportWriter(
@@ -62,83 +92,99 @@ def scan_to_reports(config: ScanConfig) -> tuple[list[dict[str, Any]], Path, Pat
         if postgres_writer:
             LOGGER.info("Streaming PostgreSQL updates to schema %s and table %s", config.postgres_schema, config.postgres_table)
 
+        result_count = 0
+
         def write_result(result: dict[str, Any]) -> None:
+            nonlocal result_count
+            result_count += 1
             writer.write_result(result)
             if postgres_writer:
                 postgres_writer.write_result(result)
 
-        results = scan(config, on_result=write_result)
-        return results, writer.xlsx_path, writer.semgrep_targets_path, writer.sonarqube_projects_path
+        results = scan(config, on_result=write_result, retain_results=retain_results)
+        return results, result_count, writer.xlsx_path, writer.semgrep_targets_path, writer.sonarqube_projects_path
 
 
 def scan(
     config: ScanConfig,
     on_result: Callable[[dict[str, Any]], None] | None = None,
+    retain_results: bool = True,
 ) -> list[dict[str, Any]]:
     if config.provider == "mixed":
-        return scan_mixed(config, on_result=on_result)
+        return scan_mixed(config, on_result=on_result, retain_results=retain_results)
     if config.provider == "github-enterprise":
-        return scan_github_organizations(config, on_result=on_result)
+        return scan_github_organizations(config, on_result=on_result, retain_results=retain_results)
     if config.provider == "azure-devops" and config.ado_org_pats:
-        return scan_ado_organizations(config, on_result=on_result)
-    return scan_single_org(config, on_result=on_result)
+        return scan_ado_organizations(config, on_result=on_result, retain_results=retain_results)
+    if retain_results:
+        return scan_single_org(config, on_result=on_result)
+    return scan_single_org(config, on_result=on_result, retain_results=retain_results)
 
 
 def scan_ado_organizations(
     config: ScanConfig,
     on_result: Callable[[dict[str, Any]], None] | None = None,
+    retain_results: bool = True,
 ) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
     start = time.monotonic()
+    org_configs: list[ScanConfig] = []
     for org_pat in config.ado_org_pats:
         org_filters = target_filters_for_source(config.target_filters, org_pat.org)
         if config.target_filters and not org_filters:
             LOGGER.info("Skipping Azure DevOps organization without selected targets: %s", org_pat.org)
             continue
         LOGGER.info("Scanning Azure DevOps organization: %s", org_pat.org)
-        org_config = replace(config, org=org_pat.org, pat=org_pat.pat, ado_org_pats=(), target_filters=org_filters)
-        results.extend(scan_single_org(org_config, on_result=on_result))
+        org_configs.append(replace(config, org=org_pat.org, pat=org_pat.pat, ado_org_pats=(), target_filters=org_filters))
+    results = scan_source_configs(org_configs, on_result, retain_results)
     results.sort(key=row_sort_key)
-    LOGGER.info(
-        "Finished multi-organization Azure DevOps scan in %.1fs; found %s inventory branches",
-        time.monotonic() - start,
-        len(results),
-    )
+    if retain_results:
+        LOGGER.info(
+            "Finished multi-organization Azure DevOps scan in %.1fs; found %s inventory branches",
+            time.monotonic() - start,
+            len(results),
+        )
+    else:
+        LOGGER.info("Finished streaming multi-organization Azure DevOps scan in %.1fs", time.monotonic() - start)
     return results
 
 
 def scan_github_organizations(
     config: ScanConfig,
     on_result: Callable[[dict[str, Any]], None] | None = None,
+    retain_results: bool = True,
 ) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
     start = time.monotonic()
     owners = parse_github_urls(config.github_urls or (config.org,)) or configured_github_owners()
     if not owners:
         raise ValueError("Configure at least one GitHub organization in APPLICATION_INVENTORY_GITHUB_URLS or the scan configuration.")
+    owner_configs: list[ScanConfig] = []
     for owner in owners:
         owner_filters = target_filters_for_source(config.target_filters, owner)
         if config.target_filters and not owner_filters:
             LOGGER.info("Skipping GitHub owner without selected targets: %s", owner)
             continue
         LOGGER.info("Scanning GitHub owner: %s", owner)
-        owner_config = replace(config, org=owner, github_urls=(), target_filters=owner_filters)
-        results.extend(scan_single_org(owner_config, on_result=on_result))
+        owner_configs.append(replace(config, org=owner, github_urls=(), target_filters=owner_filters))
+    results = scan_source_configs(owner_configs, on_result, retain_results)
     results.sort(key=row_sort_key)
-    LOGGER.info(
-        "Finished multi-owner GitHub scan in %.1fs; found %s inventory branches",
-        time.monotonic() - start,
-        len(results),
-    )
+    if retain_results:
+        LOGGER.info(
+            "Finished multi-owner GitHub scan in %.1fs; found %s inventory branches",
+            time.monotonic() - start,
+            len(results),
+        )
+    else:
+        LOGGER.info("Finished streaming multi-owner GitHub scan in %.1fs", time.monotonic() - start)
     return results
 
 
 def scan_mixed(
     config: ScanConfig,
     on_result: Callable[[dict[str, Any]], None] | None = None,
+    retain_results: bool = True,
 ) -> list[dict[str, Any]]:
     start = time.monotonic()
-    results: list[dict[str, Any]] = []
+    callback = synchronized_callback(on_result)
     ado_config = replace(
         config,
         provider="azure-devops",
@@ -147,7 +193,6 @@ def scan_mixed(
         project=None,
         base_url="",
     )
-    results.extend(scan_ado_organizations(ado_config, on_result=on_result))
     github_config = replace(
         config,
         provider="github-enterprise",
@@ -156,26 +201,82 @@ def scan_mixed(
         github_urls=config.github_urls or ((config.org,) if config.org else configured_github_owners()),
         target_filters=config.target_filters,
     )
-    results.extend(scan_github_organizations(github_config, on_result=on_result))
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = (
+            executor.submit(scan_ado_organizations, ado_config, callback, retain_results),
+            executor.submit(scan_github_organizations, github_config, callback, retain_results),
+        )
+        results = [row for future in futures for row in future.result()]
     results.sort(key=row_sort_key)
-    LOGGER.info("Finished mixed-source scan in %.1fs; found %s inventory branches", time.monotonic() - start, len(results))
+    if retain_results:
+        LOGGER.info("Finished mixed-source scan in %.1fs; found %s inventory branches", time.monotonic() - start, len(results))
+    else:
+        LOGGER.info("Finished streaming mixed-source scan in %.1fs", time.monotonic() - start)
     return results
+
+
+def scan_source_configs(
+    configs: list[ScanConfig],
+    on_result: Callable[[dict[str, Any]], None] | None,
+    retain_results: bool = True,
+) -> list[dict[str, Any]]:
+    if not configs:
+        return []
+    callback = synchronized_callback(on_result)
+    workers = max(1, min(configs[0].source_workers, len(configs)))
+
+    def run_source(config: ScanConfig) -> list[dict[str, Any]]:
+        if retain_results:
+            return scan_single_org(config, on_result=callback)
+        return scan_single_org(config, on_result=callback, retain_results=False)
+
+    if workers == 1:
+        return [row for config in configs for row in run_source(config)]
+    results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(run_source, config) for config in configs]
+        for future in as_completed(futures):
+            results.extend(future.result())
+    return results
+
+
+def synchronized_callback(
+    callback: Callable[[dict[str, Any]], None] | None,
+) -> Callable[[dict[str, Any]], None] | None:
+    if callback is None:
+        return None
+    lock = threading.Lock()
+
+    def invoke(result: dict[str, Any]) -> None:
+        with lock:
+            callback(result)
+
+    return invoke
 
 
 def scan_single_org(
     config: ScanConfig,
     on_result: Callable[[dict[str, Any]], None] | None = None,
+    retain_results: bool = True,
 ) -> list[dict[str, Any]]:
     start = time.monotonic()
     client = create_source_client(config)
     store_client = create_store_client(config)
     try:
-        targets = collect_targets(client, config.project, config.target_filters)
+        targets = collect_targets(client, config.project, config.target_filters, config.max_workers)
         LOGGER.info("Scanning resolved default or fallback branches for %s repositories", len(targets))
         if config.application_types:
             LOGGER.info("Filtering inventory to application types: %s", ", ".join(config.application_types))
 
-        results: list[dict[str, Any]] = []
+        results: list[dict[str, Any]] | None = [] if retain_results else None
+        detected_count = 0
+
+        def consume_result(result: dict[str, Any]) -> None:
+            nonlocal detected_count
+            detected_count += 1
+            if on_result:
+                on_result(result)
+
         repo_workers = max(1, min(config.max_workers, len(targets) or 1))
         branch_workers = max(1, config.branch_workers)
         content_workers = max(1, config.content_workers)
@@ -186,6 +287,7 @@ def scan_single_org(
             ThreadPoolExecutor(max_workers=branch_workers) as branch_executor,
             ThreadPoolExecutor(max_workers=content_workers) as content_executor,
         ):
+            bounded_content_executor = BoundedExecutor(content_executor, content_workers * 4)
             completed_branch_lists = iter_completed_branch_target_lists(
                 repo_executor=repo_executor,
                 client=client,
@@ -210,7 +312,7 @@ def scan_single_org(
                         completed_branches += drain_branch_scans(
                             pending_branch_scans=pending_branch_scans,
                             results=results,
-                            on_result=on_result,
+                            on_result=consume_result,
                             block=True,
                         )
 
@@ -219,7 +321,7 @@ def scan_single_org(
                             scan_branch_target,
                             client,
                             branch_target,
-                            content_executor,
+                            bounded_content_executor,
                             min_rank,
                             config.max_commits_per_repo,
                             config.branch_age_days,
@@ -233,7 +335,7 @@ def scan_single_org(
                 completed_branches += drain_branch_scans(
                     pending_branch_scans=pending_branch_scans,
                     results=results,
-                    on_result=on_result,
+                    on_result=consume_result,
                     block=False,
                 )
                 log_scan_progress(repo_index, len(targets), completed_branches, submitted_branches)
@@ -251,16 +353,17 @@ def scan_single_org(
                 completed_branches += drain_branch_scans(
                     pending_branch_scans=pending_branch_scans,
                     results=results,
-                    on_result=on_result,
+                    on_result=consume_result,
                     block=True,
                 )
                 log_scan_progress(len(targets), len(targets), completed_branches, submitted_branches)
                 if completed_branches % 100 == 0:
                     LOGGER.info("Progress: %s/%s resolved branches scanned", completed_branches, submitted_branches)
 
-        results.sort(key=row_sort_key)
-        LOGGER.info("Finished in %.1fs; found %s inventory branches", time.monotonic() - start, len(results))
-        return results
+        if results is not None:
+            results.sort(key=row_sort_key)
+        LOGGER.info("Finished in %.1fs; found %s inventory branches", time.monotonic() - start, detected_count)
+        return results or []
     finally:
         client.close()
         if store_client:
@@ -287,7 +390,7 @@ def create_source_client(config: ScanConfig) -> AzureDevOpsClient | GitHubEnterp
 
 def drain_branch_scans(
     pending_branch_scans: set[Future[dict[str, Any] | None]],
-    results: list[dict[str, Any]],
+    results: list[dict[str, Any]] | None,
     on_result: Callable[[dict[str, Any]], None] | None,
     block: bool,
 ) -> int:
@@ -304,7 +407,7 @@ def drain_branch_scans(
 
     for future in done:
         result = handle_branch_scan_future(future, on_result)
-        if result:
+        if result and results is not None:
             results.append(result)
 
     return len(done)
@@ -330,7 +433,7 @@ def handle_branch_scan_future(
 def scan_branch_target(
     client: AzureDevOpsClient,
     target: BranchScanTarget,
-    content_executor: ThreadPoolExecutor,
+    content_executor: BoundedExecutor,
     min_confidence_rank: int,
     max_commits_per_repo: int,
     branch_age_days: int,
@@ -360,7 +463,7 @@ def scan_branch_target(
 def scan_repo(
     client: AzureDevOpsClient,
     target: RepoScanTarget,
-    content_executor: ThreadPoolExecutor,
+    content_executor: BoundedExecutor,
     min_confidence_rank: int,
     max_commits_per_repo: int,
     branch_age_days: int,
@@ -437,7 +540,7 @@ def scan_branch(
     client: AzureDevOpsClient,
     target: RepoScanTarget,
     branch_name: str,
-    content_executor: ThreadPoolExecutor,
+    content_executor: BoundedExecutor,
     min_confidence_rank: int,
     max_commits_per_repo: int,
     branch_age_days: int,
@@ -1093,7 +1196,8 @@ def fetch_repo_activity(
 ) -> RepoActivityMetadata:
     try:
         commit_limit = 1 if activity_mode == "latest" else max_commits
-        commits = client.list_commits(
+        commit_reader = getattr(client, "iter_commits", client.list_commits)
+        commits = commit_reader(
             project_name=project_name,
             repo_id=repo_id,
             max_commits=commit_limit,
@@ -1115,7 +1219,7 @@ def fetch_contents(
     repo_id: str,
     branch_name: str,
     paths: list[str],
-    executor: ThreadPoolExecutor,
+    executor: BoundedExecutor,
 ) -> dict[str, str]:
     if not paths:
         return {}
@@ -1137,33 +1241,40 @@ def collect_targets(
     client: AzureDevOpsClient | GitHubEnterpriseClient,
     project_name: str | None,
     target_filters: Iterable[SourceTargetFilter] = (),
+    max_workers: int = 1,
 ) -> list[RepoScanTarget]:
     organization = source_organization(client)
     provider = source_provider(client)
     project_names = selected_project_names(organization, project_name, target_filters)
     projects = [{"name": name} for name in project_names] if project_names else client.list_projects()
-    targets: list[RepoScanTarget] = []
-    seen_repo_ids: set[str] = set()
-
-    for project in projects:
+    def repositories(project: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
         name = project.get("name")
         if not name:
-            continue
-
+            return "", []
         LOGGER.info("Listing repositories in project: %s", name)
         try:
-            repos = client.list_repos(name)
+            return name, client.list_repos(name)
         except Exception as exc:
             LOGGER.warning("Failed to list repos for %s: %s", name, exc)
-            continue
+            return name, []
 
+    workers = max(1, min(max_workers, len(projects) or 1))
+    if workers == 1:
+        project_repositories = [repositories(project) for project in projects]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            project_repositories = list(executor.map(repositories, projects))
+
+    targets: list[RepoScanTarget] = []
+    seen_repo_ids: set[str] = set()
+    for name, repos in project_repositories:
         for repo in repos:
             repo_id = repo.get("id")
             if not repo_id or repo_id in seen_repo_ids:
                 continue
             seen_repo_ids.add(repo_id)
             targets.append(RepoScanTarget(project_name=name, repo=repo, organization=organization, provider=provider))
-
+    targets.sort(key=lambda target: (target.project_name.lower(), str(target.repo.get("name", "")).lower()))
     return targets
 
 

@@ -10,6 +10,7 @@ import appsec_scan_router as scanner
 import appsec_scan_router.azure as azure_module
 import appsec_scan_router.github as github_module
 import appsec_scan_router.scanner as scanner_module
+import appsec_scan_router.source_discovery as source_discovery_module
 import appsec_scan_router.ui as ui_module
 import application_inventory_service
 import ado_mobile_scanner
@@ -25,7 +26,13 @@ from appsec_scan_router.auth import (
     session_cookie,
 )
 from appsec_scan_router.github import GitHubAppCredentials, GitHubAppTokenProvider, normalize_github_api_url
-from appsec_scan_router.postgres import POSTGRES_COLUMNS, sanitize_observability_message
+from appsec_scan_router.postgres import (
+    POSTGRES_COLUMNS,
+    PRIMARY_KEY_COLUMNS,
+    normalize_search_query,
+    sanitize_observability_message,
+    search_tokens,
+)
 from appsec_scan_router.ui import default_ui_config
 from openpyxl import load_workbook
 
@@ -54,6 +61,7 @@ class PublicApiTests(unittest.TestCase):
         self.assertTrue(callable(scanner.export_inventory_csv))
         self.assertTrue(callable(scanner.export_inventory_json))
         self.assertTrue(callable(scanner.export_inventory_rows))
+        self.assertTrue(callable(scanner.search_inventory))
         self.assertIn("mobile_app", scanner.KNOWN_INVENTORY_TYPES)
         self.assertEqual(scanner.APPLICATION_TYPE_LABELS["ai_enabled"], "AI-enabled")
         self.assertIn("ml_enabled", scanner.KNOWN_INVENTORY_TYPES)
@@ -95,6 +103,24 @@ class PublicApiTests(unittest.TestCase):
         before = time.monotonic()
         throttle.observe(Response())
         self.assertGreaterEqual(throttle.block_until, before + 1.9)
+
+    def test_github_throttle_reserves_the_remaining_request_budget(self):
+        class Response:
+            headers = {
+                "X-RateLimit-Remaining": "25",
+                "X-RateLimit-Reset": str(time.time() + 60),
+            }
+            status_code = 200
+
+        throttle = github_module.GitHubThrottle(requests_per_second=0, rate_limit_reserve=50)
+        before = time.monotonic()
+        throttle.observe(Response())
+        self.assertGreaterEqual(throttle.block_until, before + 59)
+
+    def test_content_selection_excludes_dependency_artifacts(self):
+        self.assertTrue(scanner.should_fetch_content("/services/api/package.json"))
+        self.assertFalse(scanner.should_fetch_content("/services/api/node_modules/pkg/package.json"))
+        self.assertFalse(scanner.should_fetch_content("/services/api/package-lock.json"))
 
 
 class AuthTests(unittest.TestCase):
@@ -198,12 +224,13 @@ class AuthTests(unittest.TestCase):
 
         self.assertFalse(config.enabled)
 
-    def test_auth_status_lists_github_and_google_sso(self):
+    def test_auth_status_lists_enterprise_and_google_sso(self):
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
             "os.environ",
             {
-                "APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_ID": "github-client",
-                "APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET": "github-secret",
+                "APPLICATION_INVENTORY_SERVICE_GHE_BASE_URL": "https://github.enterprise.example",
+                "APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_ID": "github-client",
+                "APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_SECRET": "github-secret",
                 "APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_ID": "google-client",
                 "APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET": "google-secret",
                 "APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED": "true",
@@ -214,11 +241,9 @@ class AuthTests(unittest.TestCase):
             status = manager.status(None)
 
         providers = {provider["id"]: provider for provider in status["authProviders"]}
-        self.assertTrue(status["githubLoginEnabled"])
+        self.assertTrue(status["githubEnterpriseLoginEnabled"])
         self.assertTrue(status["googleLoginEnabled"])
         self.assertTrue(status["testLoginEnabled"])
-        self.assertEqual(providers["github"]["startUrl"], "/api/auth/github/start")
-        self.assertFalse(status["githubEnterpriseLoginEnabled"])
         self.assertEqual(providers["github-enterprise"]["startUrl"], "/api/auth/github-enterprise/start")
         self.assertEqual(providers["google"]["startUrl"], "/api/auth/google/start")
         self.assertEqual(providers["test"]["startUrl"], "/api/auth/test/start")
@@ -229,7 +254,7 @@ class AuthTests(unittest.TestCase):
 
         provider_ids = [provider["id"] for provider in config["auth"]["authProviders"]]
         application_type_ids = [choice["value"] for choice in config["defaults"]["applicationTypeChoices"]]
-        self.assertEqual(provider_ids, ["github", "github-enterprise", "google", "test"])
+        self.assertEqual(provider_ids, ["github-enterprise", "google", "test"])
         self.assertIn("googleLoginEnabled", config["auth"])
         self.assertTrue(config["auth"]["testLoginEnabled"])
         self.assertIn("ml_enabled", application_type_ids)
@@ -493,6 +518,17 @@ class ProviderClientTests(unittest.TestCase):
             scanner.normalize_github_api_url("https://github.fabrikam.example"),
             "https://github.fabrikam.example/api/v3",
         )
+
+    def test_github_tree_scan_uses_the_branch_ref_directly(self):
+        client = object.__new__(github_module.GitHubEnterpriseClient)
+        client.get_json = Mock(return_value={"tree": [{"path": "package.json", "type": "blob"}]})
+
+        items = client.list_repo_items("owner", "owner/repo", "release/prod")
+
+        self.assertEqual(items, [{"path": "/package.json"}])
+        path, params = client.get_json.call_args.args
+        self.assertEqual(path, "/repos/owner/repo/git/trees/release%2Fprod")
+        self.assertEqual(params, {"recursive": "1"})
         self.assertEqual(
             scanner.normalize_github_api_url("https://github.fabrikam.example/api/v3"),
             "https://github.fabrikam.example/api/v3",
@@ -801,6 +837,13 @@ class UiServiceTests(unittest.TestCase):
         self.assertNotIn("DEFAULT_GITHUB_APP_ID", javascript)
         self.assertNotIn('"githubAppPrivateKey"', javascript.split("const persistedFields", 1)[1].split("];", 1)[0])
         self.assertNotIn("syncCredentialFields", javascript)
+        self.assertNotIn('id="loginGitHubSso"', html)
+        self.assertNotIn("/api/auth/github/start", html)
+        self.assertNotIn("loginGitHubSso", javascript)
+        self.assertIn('id="loginGitHubEnterpriseSso"', html)
+        self.assertIn('".png": "image/png"', (Path(__file__).parents[1] / "appsec_scan_router" / "ui.py").read_text(encoding="utf-8"))
+        self.assertIn('".jpg": "image/jpeg"', (Path(__file__).parents[1] / "appsec_scan_router" / "ui.py").read_text(encoding="utf-8"))
+        self.assertIn('".svg": "image/svg+xml"', (Path(__file__).parents[1] / "appsec_scan_router" / "ui.py").read_text(encoding="utf-8"))
 
     def test_normalize_scan_config_requires_org(self):
         with self.assertRaises(ValueError):
@@ -1140,7 +1183,7 @@ class UiServiceTests(unittest.TestCase):
             "os.environ",
             {
                 "AWS_SECRET_ACCESS_KEY": "aws-secret",
-                "APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET": "oauth-secret",
+                "APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_SECRET": "oauth-secret",
                 "ADO_PAT": "environment-token",
             },
             clear=False,
@@ -1150,7 +1193,7 @@ class UiServiceTests(unittest.TestCase):
         self.assertNotIn("ADO_PAT", env)
         self.assertIn("FabrikamCloud", env["APPLICATION_INVENTORY_ADO_ORG_PATS"])
         self.assertNotIn("AWS_SECRET_ACCESS_KEY", env)
-        self.assertNotIn("APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET", env)
+        self.assertNotIn("APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_SECRET", env)
 
     def test_multi_ado_org_pats_are_passed_through_environment(self):
         config = scanner.normalize_scan_config(
@@ -1197,6 +1240,23 @@ class UiServiceTests(unittest.TestCase):
 
         self.assertFalse(status["connected"])
         self.assertEqual(status["status"], "missing_dsn")
+
+    def test_postgres_inventory_key_is_user_scoped(self):
+        self.assertEqual(
+            PRIMARY_KEY_COLUMNS,
+            ("owner_user_id", "provider", "organization", "project", "repo_name", "branch_name"),
+        )
+
+    def test_database_search_normalizes_and_bounds_terms(self):
+        query = "  mobile\n app   " + " ".join(f"term-{index}" for index in range(20))
+
+        normalized = normalize_search_query(query)
+        tokens = search_tokens(query)
+
+        self.assertFalse(normalized.startswith(" "))
+        self.assertNotIn("\n", normalized)
+        self.assertEqual(tokens[:2], ["mobile", "app"])
+        self.assertEqual(len(tokens), 12)
 
     def test_build_scan_command_for_azure_devops(self):
         config = scanner.normalize_scan_config(
@@ -1261,7 +1321,7 @@ class UiServiceTests(unittest.TestCase):
             def close(self):
                 return None
 
-        with patch.object(ui_module, "AzureDevOpsClient", FakeAzureClient):
+        with patch.object(source_discovery_module, "AzureDevOpsClient", FakeAzureClient):
             data = ui_module.discover_source_targets(
                 {
                     "provider": "azure-devops",
@@ -1295,7 +1355,7 @@ class UiServiceTests(unittest.TestCase):
                 return None
 
         with (
-            patch.object(ui_module, "GitHubEnterpriseClient", FakeGitHubClient),
+            patch.object(source_discovery_module, "GitHubEnterpriseClient", FakeGitHubClient),
             patch.dict("os.environ", {"APPLICATION_INVENTORY_GITHUB_API_URL": "https://github.fabrikam.example/api/v3"}, clear=False),
         ):
             data = ui_module.discover_source_targets(
@@ -1364,32 +1424,6 @@ class UiServiceTests(unittest.TestCase):
                 "FabrikamCloud",
             ],
         )
-
-    def test_scan_progress_estimates_from_progress_logs(self):
-        started_at = (datetime.now(timezone.utc) - timedelta(seconds=100)).isoformat()
-        progress = scanner.scan_progress(
-            [
-                "Scanning resolved default or fallback branches for 100 repositories",
-                'SCAN_PROGRESS {"repositoriesPrepared":50,"repositoriesTotal":100,"branchesScanned":25,"branchesTotal":50}',
-            ],
-            started_at,
-            "",
-            "running",
-        )
-
-        self.assertEqual(progress["percent"], 45)
-        self.assertEqual(progress["repositoriesPrepared"], 50)
-        self.assertEqual(progress["repositoriesTotal"], 100)
-        self.assertEqual(progress["branchesScanned"], 25)
-        self.assertEqual(progress["branchesTotal"], 50)
-        self.assertGreater(progress["etaSeconds"], 0)
-
-    def test_scan_progress_marks_success_complete(self):
-        progress = scanner.scan_progress([], "", datetime.now(timezone.utc).isoformat(), "succeeded")
-
-        self.assertEqual(progress["percent"], 100)
-        self.assertEqual(progress["etaSeconds"], 0)
-
 
 class DetectionTests(unittest.TestCase):
     def test_detects_react_native_android_repo(self):
@@ -2048,6 +2082,38 @@ class OutputTests(unittest.TestCase):
                 "Alice Adams <alice@example.com>; Bob Brown <bob@example.com>",
             )
 
+    def test_cli_report_path_streams_without_retaining_result_rows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = scanner.ScanConfig(
+                org="FabrikamCloud",
+                pat="token",
+                project=None,
+                out_dir=Path(tmpdir),
+                out_prefix="scan",
+                max_workers=1,
+                content_workers=1,
+                max_commits_per_repo=1,
+                timeout_seconds=30,
+                min_confidence="medium",
+            )
+            rows = [self.sample_result(), self.sample_result()]
+
+            def fake_scan(scan_config, on_result=None, retain_results=True):
+                self.assertFalse(retain_results)
+                for row in rows:
+                    on_result(row)
+                return []
+
+            with patch.object(scanner_module, "scan", side_effect=fake_scan):
+                result_count, xlsx_path, _, _ = scanner.scan_reports(config)
+
+            workbook = load_workbook(xlsx_path)
+            max_row = workbook[scanner.ACTIVE_SHEET_NAME].max_row
+            workbook.close()
+
+        self.assertEqual(result_count, 2)
+        self.assertEqual(max_row, 3)
+
     def test_streaming_report_writer_flushes_rows_as_they_are_written(self):
         result = self.sample_result()
 
@@ -2066,6 +2132,24 @@ class OutputTests(unittest.TestCase):
 
             workbook = load_workbook(writer.xlsx_path)
             self.assertEqual(workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "mobile_name", 2), "Agsnap")
+
+    def test_workbook_checkpoints_expand_to_avoid_repeated_full_serialization(self):
+        settings = {
+            "APPLICATION_INVENTORY_XLSX_CHECKPOINT_ROWS": "10",
+            "APPLICATION_INVENTORY_XLSX_MAX_CHECKPOINT_ROWS": "40",
+            "APPLICATION_INVENTORY_XLSX_CHECKPOINT_SECONDS": "3600",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict("os.environ", settings):
+            with scanner.StreamingReportWriter(Path(tmpdir), "scan") as writer:
+                with (
+                    patch.object(writer, "_save_workbook") as save_workbook,
+                    patch.object(writer, "_append_workbook_row"),
+                    patch.object(writer, "flush"),
+                ):
+                    for _ in range(100):
+                        writer.write_result({})
+
+                self.assertEqual(save_workbook.call_count, 4)
 
     def test_streaming_report_writer_removes_illegal_workbook_characters(self):
         result = self.sample_result()

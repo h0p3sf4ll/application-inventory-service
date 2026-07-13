@@ -73,6 +73,14 @@ APPLICATION_INVENTORY_SERVICE_GHE_BASE_URL=https://github.enterprise.example
 APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS=github.example.com
 APPLICATION_INVENTORY_SERVICE_ALLOW_INSECURE_PROVIDER_URLS=false
 APPLICATION_INVENTORY_SERVICE_MAX_JSON_BODY_BYTES=1048576
+APPLICATION_INVENTORY_SERVICE_MAX_CONCURRENT_SCANS=2
+APPLICATION_INVENTORY_GITHUB_REQUESTS_PER_SECOND=8
+APPLICATION_INVENTORY_GITHUB_RATE_LIMIT_RESERVE=50
+APPLICATION_INVENTORY_XLSX_CHECKPOINT_ROWS=500
+APPLICATION_INVENTORY_XLSX_MAX_CHECKPOINT_ROWS=5000
+APPLICATION_INVENTORY_XLSX_CHECKPOINT_SECONDS=30
+APPLICATION_INVENTORY_POSTGRES_COMMIT_ROWS=50
+APPLICATION_INVENTORY_POSTGRES_COMMIT_SECONDS=2
 APPLICATION_INVENTORY_POSTGRES_SCHEMA=application_inventory
 APPLICATION_INVENTORY_POSTGRES_TABLE=application_inventory_assets
 APPLICATION_INVENTORY_OBSERVABILITY_DSN=postgresql://user:password@host:5432/postgres
@@ -83,7 +91,6 @@ Store these in Key Vault:
 
 ```text
 APPLICATION_INVENTORY_SERVICE_SECRET_KEY
-APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET
 APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_SECRET
 APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET
 APPLICATION_INVENTORY_POSTGRES_DSN
@@ -350,8 +357,6 @@ template:
           secretRef: app-fernet-key
         - name: APPLICATION_INVENTORY_POSTGRES_DSN
           secretRef: postgres-dsn
-        - name: APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET
-          secretRef: github-client-secret
         - name: APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_SECRET
           secretRef: github-enterprise-client-secret
         - name: APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET
@@ -397,10 +402,11 @@ az containerapp update \
 Bind a custom domain to the Container App and use a managed or uploaded certificate. Configure OAuth callback URLs with the same public hostname:
 
 ```text
-https://inventory.example.com/api/auth/github/callback
 https://inventory.example.com/api/auth/github-enterprise/callback
 https://inventory.example.com/api/auth/google/callback
 ```
+
+Use [GitHub SSO](GITHUB_SSO.md) for the complete GitHub OAuth registration, secret, scope, proxy, and verification procedure.
 
 Use Container Apps IP restrictions, Azure Front Door, Application Gateway, WAF, private ingress, or identity-aware access when the UI should not be publicly reachable.
 
@@ -487,7 +493,9 @@ Backup:
 
 Scaling:
 
-- Start with one replica because UI scan state is held in process memory.
+- Start with one replica because active scan processes and event listeners are held in process memory. Azure Files preserves reports, encrypted credentials, and encrypted schedules across revisions.
+- Keep `APPLICATION_INVENTORY_SERVICE_SECRET_KEY` stable across revisions or existing encrypted state becomes unreadable.
+- Pause and resume use Linux process-group signals. Revision replacement terminates active or paused scans; schedules reload on the replacement replica.
 - Scale vertically first for large organizations.
 - Increase scan worker settings cautiously to avoid provider throttling.
 - For horizontal scale, move active scan coordination to a durable queue and worker service.

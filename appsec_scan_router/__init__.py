@@ -9,6 +9,7 @@ from .azure import AzureDevOpsClient
 from .cli import configure_logging, main, parse_args
 from .constants import (
     APPLICATION_TYPE_LABELS,
+    APPLICATION_CLASSIFICATION_FIELDNAMES,
     CATEGORY_FIELDNAMES,
     ACTIVE_SHEET_NAME,
     CONTENT_FILES_TO_FETCH,
@@ -31,6 +32,7 @@ from .constants import (
     DEFAULT_POSTGRES_SCHEMA,
     DEFAULT_POSTGRES_TABLE,
     DEFAULT_POSTGRES_USER,
+    DEFAULT_SOURCE_WORKERS,
     DEFAULT_STORE_COUNTRY,
     DEFAULT_STORE_TIMEOUT_SECONDS,
     DEFAULT_TIMEOUT_SECONDS,
@@ -39,6 +41,7 @@ from .constants import (
     KNOWN_INVENTORY_TYPES,
     OLDER_SHEET_NAME,
     INVENTORY_FIELDNAMES,
+    MOBILE_FIELDNAMES,
     SONARQUBE_FIELDNAMES,
     STORE_FIELDNAMES,
     TYPE_FIELDNAMES,
@@ -103,6 +106,7 @@ from .postgres import (
     export_inventory_csv,
     export_inventory_json,
     export_inventory_rows,
+    search_inventory,
 )
 from .reports import (
     WORKBOOK_COLUMN_WIDTHS,
@@ -148,6 +152,7 @@ from .scanner import (
     scan_branch,
     scan_branch_target,
     scan_mixed,
+    scan_reports,
     scan_repo,
     scan_to_reports,
     select_fallback_branch_name,
@@ -159,6 +164,7 @@ from .scanner import (
     type_columns,
 )
 from .sdk import ApplicationInventoryService, AppSecInventoryService, AppSecScanRouter
+from .scheduling import ScanSchedule, ScanScheduler
 from .store_lookup import (
     APPLE_DISPLAY_NAME,
     APPLE_PLATFORM,
@@ -213,11 +219,10 @@ from .ui import (
     ScanRun,
     build_scan_command,
     normalize_scan_config,
-    postgres_dsn_from_config,
     redact_command,
     scan_environment,
-    scan_progress,
 )
+from .scan_request import postgres_dsn_from_config
 
 __all__ = [
     "AzureDevOpsClient",
@@ -225,6 +230,7 @@ __all__ = [
     "AzureDevOpsOrgPat",
     "ACTIVE_SHEET_NAME",
     "APPLICATION_TYPE_LABELS",
+    "APPLICATION_CLASSIFICATION_FIELDNAMES",
     "CATEGORY_FIELDNAMES",
     "CONTENT_FILES_TO_FETCH",
     "CONTENT_FILE_SUFFIXES",
@@ -246,6 +252,7 @@ __all__ = [
     "DEFAULT_POSTGRES_SCHEMA",
     "DEFAULT_POSTGRES_TABLE",
     "DEFAULT_POSTGRES_USER",
+    "DEFAULT_SOURCE_WORKERS",
     "DEFAULT_STORE_COUNTRY",
     "DEFAULT_STORE_TIMEOUT_SECONDS",
     "DEFAULT_TIMEOUT_SECONDS",
@@ -263,6 +270,7 @@ __all__ = [
     "MetaTagParser",
     "OLDER_SHEET_NAME",
     "INVENTORY_FIELDNAMES",
+    "MOBILE_FIELDNAMES",
     "SONARQUBE_FIELDNAMES",
     "RepoActivityMetadata",
     "RepoScanTarget",
@@ -276,6 +284,8 @@ __all__ = [
     "SourceTargetFilter",
     "ScanManager",
     "ScanRun",
+    "ScanSchedule",
+    "ScanScheduler",
     "StoreListing",
     "StoreLookupClient",
     "StreamingReportWriter",
@@ -396,8 +406,9 @@ __all__ = [
     "scan_branch",
     "scan_branch_target",
     "scan_mixed",
+    "scan_reports",
+    "search_inventory",
     "scan_environment",
-    "scan_progress",
     "scan_repo",
     "scan_to_reports",
     "scanner_target_ref",

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import csv
+import os
 import re
+import threading
+import time
 from pathlib import Path
 from typing import TextIO
 
@@ -103,7 +106,13 @@ class StreamingReportWriter:
         self._workbook: Workbook | None = None
         self._sheets: dict[str, Worksheet] = {}
         self._row_count = 0
-        self._xlsx_save_interval = 25
+        self._last_xlsx_save_at = time.monotonic()
+        self._xlsx_checkpoint_rows = positive_int_env("APPLICATION_INVENTORY_XLSX_CHECKPOINT_ROWS", 500)
+        self._xlsx_max_checkpoint_rows = positive_int_env("APPLICATION_INVENTORY_XLSX_MAX_CHECKPOINT_ROWS", 5000)
+        self._xlsx_save_seconds = positive_float_env("APPLICATION_INVENTORY_XLSX_CHECKPOINT_SECONDS", 30.0)
+        self._last_xlsx_checkpoint_row = 0
+        self._next_xlsx_checkpoint_row = self._xlsx_checkpoint_rows
+        self._lock = threading.RLock()
 
     def __enter__(self) -> StreamingReportWriter:
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -123,37 +132,54 @@ class StreamingReportWriter:
         self.close()
 
     def write_result(self, result: dict[str, object]) -> None:
-        if self._sonarqube_projects_writer is None:
-            raise RuntimeError("StreamingReportWriter must be opened before writing.")
-
-        self._sonarqube_projects_writer.writerow(sonarqube_project_row(result))
-        if self._semgrep_targets_file and result.get("semgrep_target"):
-            self._semgrep_targets_file.write(f"{result.get('semgrep_target')}\n")
-        self._row_count += 1
-        self._append_workbook_row(result)
-        if self._row_count % self._xlsx_save_interval == 0:
-            self._save_workbook()
-        self.flush()
+        with self._lock:
+            if self._sonarqube_projects_writer is None:
+                raise RuntimeError("StreamingReportWriter must be opened before writing.")
+            self._sonarqube_projects_writer.writerow(sonarqube_project_row(result))
+            if self._semgrep_targets_file and result.get("semgrep_target"):
+                self._semgrep_targets_file.write(f"{result.get('semgrep_target')}\n")
+            self._row_count += 1
+            self._append_workbook_row(result)
+            now = time.monotonic()
+            rows_since_checkpoint = self._row_count - self._last_xlsx_checkpoint_row
+            row_checkpoint_due = self._row_count >= self._next_xlsx_checkpoint_row
+            time_checkpoint_due = (
+                rows_since_checkpoint >= self._xlsx_checkpoint_rows
+                and now - self._last_xlsx_save_at >= self._xlsx_save_seconds
+            )
+            if row_checkpoint_due or time_checkpoint_due:
+                self._save_workbook()
+                self._last_xlsx_save_at = now
+                self._last_xlsx_checkpoint_row = self._row_count
+                next_interval = min(
+                    self._xlsx_max_checkpoint_rows,
+                    max(self._xlsx_checkpoint_rows, self._row_count),
+                )
+                self._next_xlsx_checkpoint_row = self._row_count + next_interval
+            self.flush()
 
     def flush(self) -> None:
-        if self._semgrep_targets_file:
-            self._semgrep_targets_file.flush()
-        if self._sonarqube_projects_file:
-            self._sonarqube_projects_file.flush()
+        with self._lock:
+            if self._semgrep_targets_file:
+                self._semgrep_targets_file.flush()
+            if self._sonarqube_projects_file:
+                self._sonarqube_projects_file.flush()
 
     def close(self) -> None:
-        self._save_workbook()
-        if self._semgrep_targets_file:
-            self._semgrep_targets_file.close()
-            self._semgrep_targets_file = None
-        if self._sonarqube_projects_file:
-            self._sonarqube_projects_file.close()
-            self._sonarqube_projects_file = None
-        self._sonarqube_projects_writer = None
-        if self._workbook:
-            self._workbook.close()
-            self._workbook = None
-            self._sheets = {}
+        with self._lock:
+            self._save_workbook()
+            self.flush()
+            if self._semgrep_targets_file:
+                self._semgrep_targets_file.close()
+                self._semgrep_targets_file = None
+            if self._sonarqube_projects_file:
+                self._sonarqube_projects_file.close()
+                self._sonarqube_projects_file = None
+            self._sonarqube_projects_writer = None
+            if self._workbook:
+                self._workbook.close()
+                self._workbook = None
+                self._sheets = {}
 
     def _create_workbook(self) -> None:
         self._workbook = Workbook()
@@ -183,7 +209,9 @@ class StreamingReportWriter:
             return
         for sheet in self._sheets.values():
             sheet.auto_filter.ref = sheet.dimensions
-        self._workbook.save(self.xlsx_path)
+        temporary_path = self.xlsx_path.with_suffix(f"{self.xlsx_path.suffix}.tmp")
+        self._workbook.save(temporary_path)
+        os.replace(temporary_path, self.xlsx_path)
 
     @staticmethod
     def _apply_column_widths(sheet: Worksheet) -> None:
@@ -228,3 +256,19 @@ def application_type_label(application_types: tuple[str, ...] = ()) -> str:
 def safe_file_part(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
     return cleaned.strip("._-").lower()
+
+
+def positive_int_env(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, ""))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def positive_float_env(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, ""))
+    except ValueError:
+        return default
+    return value if value > 0 else default

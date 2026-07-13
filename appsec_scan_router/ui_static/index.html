@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Application Inventory Service</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=4">
   </head>
   <body class="login-mode">
     <main class="login-shell" id="loginPage">
@@ -22,18 +22,9 @@
           <p id="loginSummary">Choose an enabled sign-in option.</p>
         </div>
         <div class="sso-list" aria-label="Sign-in options">
-          <a class="sso-option disabled" id="loginGitHubSso" href="#" aria-disabled="true">
-            <span class="sso-mark github-mark">
-              <img src="/static/github-mark.svg" alt="" aria-hidden="true">
-            </span>
-            <span>
-              <strong>GitHub SSO</strong>
-              <small id="githubSsoStatus">Checking configuration</small>
-            </span>
-          </a>
           <a class="sso-option disabled" id="loginGitHubEnterpriseSso" href="#" aria-disabled="true">
             <span class="sso-mark github-mark">
-              <img src="/static/github-mark.svg" alt="" aria-hidden="true">
+              <img src="/static/github-mark.png" alt="" aria-hidden="true">
             </span>
             <span>
               <strong>GitHub Enterprise</strong>
@@ -42,7 +33,7 @@
           </a>
           <a class="sso-option disabled" id="loginGoogleSso" href="#" aria-disabled="true">
             <span class="sso-mark google-mark">
-              <img src="/static/google-g.svg" alt="" aria-hidden="true">
+              <img src="/static/google-g.png" alt="" aria-hidden="true">
             </span>
             <span>
               <strong>Google SSO</strong>
@@ -51,7 +42,7 @@
           </a>
           <a class="sso-option disabled" id="loginTestSso" href="#" aria-disabled="true">
             <span class="sso-mark test-mark">
-              <img src="/static/test-user.svg" alt="" aria-hidden="true">
+              <img src="/static/test-user.png" alt="" aria-hidden="true">
             </span>
             <span>
               <strong>Test user</strong>
@@ -72,7 +63,6 @@
         <div class="topbar-actions">
           <div class="auth-card" id="authPanel">
             <span id="authStatus">Checking sign-in</span>
-            <a class="ghost small hidden" id="loginGitHub" href="/api/auth/github/start">Sign in with GitHub</a>
             <button class="ghost small hidden" id="logoutGitHub" type="button">Sign out</button>
           </div>
           <button class="ghost" id="refreshScans" type="button">Refresh</button>
@@ -83,6 +73,7 @@
       <nav class="app-nav" aria-label="Application pages" role="tablist">
         <button class="tab-button active" type="button" data-view="setupView" role="tab" aria-controls="setupView" aria-selected="true">Scan setup</button>
         <button class="tab-button" type="button" data-view="runsView" role="tab" aria-controls="runsView" aria-selected="false">Runs</button>
+        <button class="tab-button" type="button" data-view="schedulesView" role="tab" aria-controls="schedulesView" aria-selected="false">Schedules</button>
         <button class="tab-button" type="button" data-view="reportsView" role="tab" aria-controls="reportsView" aria-selected="false">Reports</button>
         <button class="tab-button" type="button" data-view="databaseView" role="tab" aria-controls="databaseView" aria-selected="false">Database</button>
       </nav>
@@ -291,6 +282,13 @@
             </label>
             <label>
               <span class="label-line">
+                <span>Source workers</span>
+                <span class="default-badge">Default: 2</span>
+              </span>
+              <input name="sourceWorkers" type="number" min="1" value="2">
+            </label>
+            <label>
+              <span class="label-line">
                 <span>Repo workers</span>
                 <span class="default-badge">Default: 8</span>
               </span>
@@ -445,12 +443,64 @@
 
             <div class="database-actions">
               <button class="ghost" id="checkDatabase" type="button">Check database</button>
-              <button class="ghost" id="exportDatabaseCsv" type="button">Export CSV</button>
-              <button class="ghost" id="exportDatabaseJson" type="button">Export JSON</button>
             </div>
             <div class="database-status" id="databaseStatus">
               <strong>Not checked</strong>
               <span>Schema: application_inventory</span>
+            </div>
+
+            <div class="database-browser">
+              <div class="section-heading database-browser-heading">
+                <div>
+                  <h3>Inventory records</h3>
+                  <p>Search and export records owned by your signed-in account.</p>
+                </div>
+                <span class="default-badge">Private to your account</span>
+              </div>
+              <div class="database-search-controls">
+                <label class="database-search-field" for="databaseSearchQuery">
+                  <span>Search inventory</span>
+                  <input id="databaseSearchQuery" type="search" maxlength="500" placeholder="Repository, application, branch, type, developer, or identifier">
+                </label>
+                <button class="primary" id="searchDatabase" type="button">Search</button>
+                <button class="ghost" id="clearDatabaseSearch" type="button">Clear</button>
+              </div>
+              <div class="database-results-toolbar">
+                <strong id="databaseResultSummary" aria-live="polite">Search to view inventory records</strong>
+                <div class="database-export-actions">
+                  <button class="ghost" id="exportDatabaseCsv" type="button">Export CSV</button>
+                  <button class="ghost" id="exportDatabaseJson" type="button">Export JSON</button>
+                </div>
+              </div>
+              <div class="database-table-wrap">
+                <table class="database-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Source</th>
+                      <th scope="col">Organization</th>
+                      <th scope="col">Project</th>
+                      <th scope="col">Repository</th>
+                      <th scope="col">Branch</th>
+                      <th scope="col">Application</th>
+                      <th scope="col">Version</th>
+                      <th scope="col">Language</th>
+                      <th scope="col">Updated</th>
+                      <th scope="col">Confidence</th>
+                      <th scope="col">Application types</th>
+                    </tr>
+                  </thead>
+                  <tbody id="databaseResultRows">
+                    <tr>
+                      <td class="database-empty-row" colspan="11">No search has been run.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="database-pagination">
+                <button class="ghost" id="databasePrevious" type="button" disabled>Previous</button>
+                <span id="databasePageSummary">Page 1</span>
+                <button class="ghost" id="databaseNext" type="button" disabled>Next</button>
+              </div>
             </div>
           </section>
         </form>
@@ -479,6 +529,8 @@
                 </div>
                 <div class="run-actions">
                   <button class="ghost" id="copyCommand" type="button" disabled>Copy command</button>
+                  <button class="ghost" id="pauseScan" type="button" disabled>Pause</button>
+                  <button class="primary hidden" id="resumeScan" type="button" disabled>Resume</button>
                   <button class="danger" id="stopScan" type="button" disabled>Stop</button>
                 </div>
               </div>
@@ -507,6 +559,49 @@
             </div>
           </section>
 
+          <section class="tab-view hidden" id="schedulesView" role="tabpanel" hidden>
+            <div class="schedule-grid">
+              <section class="panel form-panel">
+                <div class="section-heading">
+                  <h2>Schedule a scan</h2>
+                  <span class="default-badge">Uses current Scan setup</span>
+                </div>
+                <div class="schedule-form">
+                  <label>
+                    <span class="label-line">
+                      <span>Schedule name</span>
+                      <span class="field-badge required">Required</span>
+                    </span>
+                    <input id="scheduleName" maxlength="120" placeholder="Weekly application inventory">
+                  </label>
+                  <label>
+                    <span>Frequency</span>
+                    <select id="scheduleFrequency">
+                      <option value="once">Once</option>
+                      <option value="daily">Daily</option>
+                      <option value="weekly" selected>Weekly</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span class="label-line">
+                      <span>First run</span>
+                      <span class="field-badge required">Required</span>
+                    </span>
+                    <input id="scheduleRunAt" type="datetime-local">
+                  </label>
+                  <button class="primary" id="createSchedule" type="button">Create schedule</button>
+                </div>
+              </section>
+              <section class="panel runs-panel">
+                <div class="section-heading">
+                  <h2>Schedules</h2>
+                  <span id="scheduleCount">0</span>
+                </div>
+                <div class="schedule-list" id="scheduleList"></div>
+              </section>
+            </div>
+          </section>
+
           <section class="tab-view hidden" id="reportsView" role="tabpanel" hidden>
             <section class="panel reports-panel">
               <div class="section-heading">
@@ -520,6 +615,6 @@
       </section>
     </main>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js" type="module"></script>
+    <script src="/static/app.js?v=4" type="module"></script>
   </body>
 </html>

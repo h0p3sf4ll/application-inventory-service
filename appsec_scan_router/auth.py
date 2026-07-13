@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import secrets
 import threading
@@ -10,20 +9,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse, urlunparse
 
-from .constants import MISSING_CRYPTOGRAPHY_MESSAGE, MISSING_REQUESTS_MESSAGE
+from .constants import MISSING_REQUESTS_MESSAGE
+from .secure_store import EncryptedJsonStore
 from .utils import clean_value
 
 try:
     import requests
 except ImportError:
     requests = None
-
-try:
-    from cryptography.fernet import Fernet, InvalidToken
-except ImportError:
-    Fernet = None
-    InvalidToken = Exception
-
 
 SESSION_COOKIE_NAME = "application_inventory_session"
 SESSION_TTL_SECONDS = 43200
@@ -70,18 +63,6 @@ class GitHubOAuthConfig:
     token_url: str = "https://github.com/login/oauth/access_token"
     user_url: str = "https://api.github.com/user"
     scope: str = "read:user"
-
-    @classmethod
-    def from_env(cls) -> GitHubOAuthConfig:
-        return cls(
-            client_id=env_value("APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_ID", "APPSEC_INVENTORY_SERVICE_GITHUB_CLIENT_ID"),
-            client_secret=env_value("APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET", "APPSEC_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET"),
-            authorize_url=env_value("APPLICATION_INVENTORY_SERVICE_GITHUB_AUTHORIZE_URL", "APPSEC_INVENTORY_SERVICE_GITHUB_AUTHORIZE_URL")
-            or cls.authorize_url,
-            token_url=env_value("APPLICATION_INVENTORY_SERVICE_GITHUB_TOKEN_URL", "APPSEC_INVENTORY_SERVICE_GITHUB_TOKEN_URL") or cls.token_url,
-            user_url=env_value("APPLICATION_INVENTORY_SERVICE_GITHUB_USER_URL", "APPSEC_INVENTORY_SERVICE_GITHUB_USER_URL") or cls.user_url,
-            scope=env_value("APPLICATION_INVENTORY_SERVICE_GITHUB_SCOPE", "APPSEC_INVENTORY_SERVICE_GITHUB_SCOPE") or cls.scope,
-        )
 
     @property
     def enabled(self) -> bool:
@@ -202,26 +183,12 @@ class TestLoginConfig:
 
 class CredentialStore:
     def __init__(self, state_dir: Path) -> None:
-        if Fernet is None:
-            raise SystemExit(MISSING_CRYPTOGRAPHY_MESSAGE)
         self.state_dir = state_dir
-        self.key_path = self.state_dir / "vault.key"
-        self.credentials_path = self.state_dir / "credentials.json.enc"
         self.lock = threading.RLock()
-        self.fernet = Fernet(self.encryption_key())
-
-    def encryption_key(self) -> bytes:
-        env_key = env_value("APPLICATION_INVENTORY_SERVICE_SECRET_KEY", "APPSEC_INVENTORY_SERVICE_SECRET_KEY")
-        if env_key:
-            return env_key.encode("utf-8")
-        self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        chmod_private(self.state_dir, 0o700)
-        if self.key_path.exists():
-            return self.key_path.read_bytes().strip()
-        key = Fernet.generate_key()
-        self.key_path.write_bytes(key)
-        chmod_private(self.key_path, 0o600)
-        return key
+        self.store = EncryptedJsonStore(state_dir, "credentials.json.enc", self.default_data)
+        self.key_path = self.store.key_path
+        self.credentials_path = self.store.path
+        self.fernet = self.store.fernet
 
     def save_token(self, user_id: str, provider: str, token: str) -> None:
         clean_provider = provider_name(provider)
@@ -265,21 +232,14 @@ class CredentialStore:
             }
 
     def read_data(self) -> dict[str, Any]:
-        if not self.credentials_path.exists():
-            return {"version": 1, "users": {}}
-        try:
-            plaintext = self.fernet.decrypt(self.credentials_path.read_bytes())
-            data = json.loads(plaintext.decode("utf-8"))
-        except (InvalidToken, OSError, ValueError):
-            return {"version": 1, "users": {}}
-        return data if isinstance(data, dict) else {"version": 1, "users": {}}
+        return self.store.read()
 
     def write_data(self, data: dict[str, Any]) -> None:
-        self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        chmod_private(self.state_dir, 0o700)
-        payload = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        self.credentials_path.write_bytes(self.fernet.encrypt(payload))
-        chmod_private(self.credentials_path, 0o600)
+        self.store.write(data)
+
+    @staticmethod
+    def default_data() -> dict[str, Any]:
+        return {"version": 1, "users": {}}
 
 
 class SessionStore:
@@ -526,7 +486,6 @@ class GoogleOAuthService:
 class AuthManager:
     def __init__(self, reports_root: Path) -> None:
         self.sessions = SessionStore()
-        self.github_oauth = GitHubOAuthService(GitHubOAuthConfig.from_env())
         self.github_enterprise_oauth = GitHubOAuthService(
             GitHubEnterpriseOAuthConfig.from_env(),
             provider="github-enterprise",
@@ -534,7 +493,6 @@ class AuthManager:
         )
         self.google_oauth = GoogleOAuthService(GoogleOAuthConfig.from_env())
         self.test_login = TestLoginConfig.from_env()
-        self.oauth = self.github_oauth
         self.credentials = CredentialStore(auth_state_dir(reports_root))
 
     def session(self, cookie_header: str) -> SessionRecord | None:
@@ -555,17 +513,10 @@ class AuthManager:
             "loggedIn": bool(record),
             "user": record.user.as_dict() if record else None,
             "csrfToken": record.csrf_token if record else "",
-            "githubLoginEnabled": self.github_oauth.enabled,
             "githubEnterpriseLoginEnabled": self.github_enterprise_oauth.enabled,
             "googleLoginEnabled": self.google_oauth.enabled,
             "testLoginEnabled": self.test_login.enabled,
             "authProviders": [
-                {
-                    "id": "github",
-                    "label": "GitHub SSO",
-                    "enabled": self.github_oauth.enabled,
-                    "startUrl": "/api/auth/github/start",
-                },
                 {
                     "id": "github-enterprise",
                     "label": "GitHub Enterprise",
@@ -724,13 +675,6 @@ def expired_session_cookie(secure: bool = False) -> str:
     if secure:
         parts.append("Secure")
     return "; ".join(parts)
-
-
-def chmod_private(path: Path, mode: int) -> None:
-    try:
-        path.chmod(mode)
-    except OSError:
-        return
 
 
 def utc_timestamp() -> str:

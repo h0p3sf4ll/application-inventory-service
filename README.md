@@ -1,5 +1,14 @@
 # Application Inventory Service
 
+```text
+    _    ___ ____    APPLICATION INVENTORY SERVICE
+   / \  |_ _/ ___|   --------------------------------
+  / _ \  | |\___ \   [ ADO ]--+
+ / ___ \ | | ___) |           +--> DISCOVER --> CLASSIFY --> ROUTE
+/_/   \_\___|____/    [ GHE ]--+        |            |          |
+                                      branches    app/API/AI   DB/SAST
+```
+
 ![Application Inventory Service](docs/assets/application-inventory-service-banner.svg)
 
 [![CI](https://github.com/h0p3sf4ll/application-inventory-service/actions/workflows/ci.yml/badge.svg)](https://github.com/h0p3sf4ll/application-inventory-service/actions/workflows/ci.yml)
@@ -24,12 +33,15 @@ The project is published as `application-inventory-service`. The original `appse
 - Optionally validates detected mobile identifiers against Apple App Store and Google Play.
 - Writes XLSX inventory reports, Semgrep target lists, and SonarQube project manifests labeled by selected application type.
 - Streams results into a normalized PostgreSQL schema, scoped by signed-in user when run from the UI.
+- Pauses, resumes, and stops active scans without terminating the UI service.
+- Runs encrypted, user-scoped one-time, daily, or weekly schedules.
 
 ## Documentation
 
 - [Application Intent](docs/APP_INTENT.md)
 - [Security Baseline](SECURITY.md)
 - [Code Reference](docs/CODE_REFERENCE.md)
+- [GitHub SSO Guide](docs/GITHUB_SSO.md)
 - [AWS Deployment Guide](docs/AWS_DEPLOYMENT.md)
 - [Azure Implementation Guide](docs/AZURE_IMPLEMENTATION.md)
 - [Architecture](docs/ARCHITECTURE.md)
@@ -71,11 +83,19 @@ application-inventory-service-ui \
 
 Open `http://127.0.0.1:48731`.
 
-The local test user is enabled by default for local runs. For shared environments, configure GitHub SSO or Google SSO and set `APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED=false`.
+The local test user is enabled by default for local runs. For shared environments, configure GitHub Enterprise SSO or Google SSO and set `APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED=false`.
 
-For Azure DevOps scans, add one or more organization/PAT pairs in the Azure organizations section. The UI does not use a shared organization, project, or standalone PAT field; each organization is always paired with its own PAT, and credentials are used only for the current scan.
+For Azure DevOps scans, add one or more organization/PAT pairs in the Azure organizations section. The UI does not use a shared organization, project, or standalone PAT field; each organization is always paired with its own PAT. Interactive credentials remain in browser memory for the active session. Scheduled configurations are encrypted in service state.
 
 For GitHub Enterprise scans, the UI uses service-managed GitHub App credentials on every run. The organization list, optional repository defaults, App ID, installation ID, API endpoint, and PEM path are configured through the server environment. The UI does not expose credentials or the API endpoint.
+
+### Run control and scheduling
+
+The Runs page controls the selected subprocess. Pause and resume use POSIX process-group signals, which cover the scanner and any child processes. This is supported on Linux and macOS, including the Docker image. Stop works for queued, running, and paused scans.
+
+The Schedules page creates a schedule from the current Scan setup. Schedule definitions and embedded source credentials are encrypted in `schedules.json.enc` under the service state directory. Schedules are scoped to the signed-in user and survive service restarts when the state directory and `APPLICATION_INVENTORY_SERVICE_SECRET_KEY` remain stable.
+
+Available frequencies are once, daily, and weekly. Each schedule can be run immediately, disabled, enabled, or deleted. `APPLICATION_INVENTORY_SERVICE_MAX_CONCURRENT_SCANS` limits aggregate scan pressure from interactive and scheduled runs.
 
 ## Quick Start: Docker
 
@@ -160,13 +180,31 @@ Store lookup is available for mobile scans. Select countries in the UI or repeat
 
 ### GitHub Enterprise sign-in
 
-When the Enterprise service requires an interactive user sign-in, configure a GitHub Enterprise OAuth App and use the **GitHub Enterprise** option on the UI login page. Set the OAuth App callback URL to:
+GitHub Enterprise OAuth authenticates people to the UI. The separate GitHub App authenticates repository discovery and scans. Configure both when users must sign in and the service must inventory private repositories.
+
+See [GitHub SSO](docs/GITHUB_SSO.md) for registration, secret management, reverse-proxy settings, verification, organization approval, and troubleshooting.
+
+Create an OAuth App in GitHub Enterprise and set its authorization callback URL to:
 
 ```text
 https://inventory.example.com/api/auth/github-enterprise/callback
 ```
 
-Configure `APPLICATION_INVENTORY_SERVICE_GHE_BASE_URL`, `APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_ID`, and `APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_SECRET`. The service derives the standard Enterprise OAuth endpoints from the base URL. Set `APPLICATION_INVENTORY_SERVICE_GHE_SCOPE` to the minimum scope required by the Enterprise policy; the default is `read:user read:org`. Private repository content may require the Enterprise OAuth App's `repo` scope.
+Configure the backend and restart the service:
+
+```bash
+export APPLICATION_INVENTORY_SERVICE_PUBLIC_URL="https://inventory.example.com"
+export APPLICATION_INVENTORY_SERVICE_GHE_BASE_URL="https://github.enterprise.example"
+export APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_ID="your-oauth-client-id"
+export APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_SECRET="your-oauth-client-secret"
+export APPLICATION_INVENTORY_SERVICE_GHE_SCOPE="read:user read:org"
+export APPLICATION_INVENTORY_SERVICE_SECRET_KEY="your-fernet-key"
+export APPLICATION_INVENTORY_SERVICE_COOKIE_SECURE=true
+```
+
+The service derives the authorization, token, and user endpoints from the Enterprise base URL. Use `read:user read:org` unless policy requires a different minimum. Add `repo` only when the user OAuth token itself must access private repository content. Keep the client secret in a secret manager, use HTTPS, and disable test login in shared environments. A configured instance reports `githubEnterpriseLoginEnabled: true` from `/api/config` and shows **GitHub Enterprise** on the login page.
+
+For GitHub Enterprise Cloud, set `APPLICATION_INVENTORY_SERVICE_GHE_BASE_URL=https://github.com`. For GitHub Enterprise Server, use the server origin such as `https://github.enterprise.example`; an `/api/v3` suffix is accepted and normalized automatically.
 
 After sign-in, the OAuth access token is encrypted in the service state directory and scoped to the signed-in user. It is never returned to the browser or written to reports. A signed-in Enterprise token is used for that user's repository discovery and scan; otherwise the configured server-managed GitHub App is used.
 
@@ -203,7 +241,11 @@ application-inventory-service \
   --out-dir reports
 ```
 
-The service creates the normalized inventory tables and `application_inventory.observability_events`. Structured events include service lifecycle, HTTP request timing, scan lifecycle, provider, user scope, status, and sanitized metadata. The UI exposes database-backed health at `/api/health` and operational counters at `/api/metrics`.
+The service creates normalized inventory tables and `application_inventory.observability_events`. Inventory identity is scoped by signed-in user, provider, organization, project, repository, and branch. Repeated scans update the current row and synchronize child values instead of inserting duplicate inventory records. Repository records use the same user scope, and unreferenced internal scan records are removed after successful writes.
+
+The **Database** page searches repository, application, branch, type, developer, language, category, and mobile/store identifiers. Search results and CSV or JSON exports are restricted to the signed-in user. Exports preserve the active search filter. Operational scan and observability records remain event-based because each execution and log entry is new audit data.
+
+Structured events include service lifecycle, HTTP request timing, scan lifecycle, provider, user scope, status, and sanitized metadata. The UI exposes database-backed health at `/api/health` and operational counters at `/api/metrics`.
 
 For local development, set `APPLICATION_INVENTORY_OBSERVABILITY_DSN=postgresql://postgres:postgres@localhost:5432/postgres`. In shared environments, use a secret manager or workload identity and grant the service permission to create or migrate tables in the configured schema.
 
@@ -230,8 +272,7 @@ docker run --name application-inventory-postgres \
 | `APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS` | Comma-separated GitHub Enterprise host allowlist |
 | `APPLICATION_INVENTORY_SERVICE_ALLOW_INSECURE_PROVIDER_URLS` | Local-only escape hatch for HTTP provider URLs |
 | `APPLICATION_INVENTORY_SERVICE_MAX_JSON_BODY_BYTES` | Maximum UI JSON request size |
-| `APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_ID` | GitHub OAuth client ID |
-| `APPLICATION_INVENTORY_SERVICE_GITHUB_CLIENT_SECRET` | GitHub OAuth client secret |
+| `APPLICATION_INVENTORY_SERVICE_MAX_CONCURRENT_SCANS` | Concurrent interactive and scheduled scan processes; defaults to `2` |
 | `APPLICATION_INVENTORY_SERVICE_GHE_BASE_URL` | GitHub Enterprise base URL used for OAuth sign-in |
 | `APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_ID` | GitHub Enterprise OAuth client ID |
 | `APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_SECRET` | GitHub Enterprise OAuth client secret |
@@ -259,6 +300,15 @@ docker run --name application-inventory-postgres \
 | `APPLICATION_INVENTORY_ADO_MAX_RETRIES` | Azure DevOps retry count for throttled or transient reads; defaults to `8` |
 | `APPLICATION_INVENTORY_ADO_POOL_SIZE` | Azure DevOps per-thread connection pool size; defaults to `4` |
 | `APPLICATION_INVENTORY_ADO_LOW_REMAINING_BACKOFF_SECONDS` | Extra pause when Azure DevOps rate-limit remaining reaches zero; defaults to `2` |
+| `APPLICATION_INVENTORY_GITHUB_REQUESTS_PER_SECOND` | Shared GitHub request pace per installation or token; defaults to `8` |
+| `APPLICATION_INVENTORY_GITHUB_MAX_RETRIES` | GitHub retry count for throttled or transient reads; defaults to `5` |
+| `APPLICATION_INVENTORY_GITHUB_POOL_SIZE` | GitHub per-thread connection pool size; defaults to `8` |
+| `APPLICATION_INVENTORY_GITHUB_RATE_LIMIT_RESERVE` | GitHub requests held in reserve before reset; defaults to `50` |
+| `APPLICATION_INVENTORY_XLSX_CHECKPOINT_ROWS` | Findings between XLSX checkpoints; defaults to `500` |
+| `APPLICATION_INVENTORY_XLSX_MAX_CHECKPOINT_ROWS` | Maximum adaptive XLSX checkpoint interval; defaults to `5000` |
+| `APPLICATION_INVENTORY_XLSX_CHECKPOINT_SECONDS` | Maximum seconds between XLSX checkpoints while findings arrive; defaults to `30` |
+| `APPLICATION_INVENTORY_POSTGRES_COMMIT_ROWS` | Findings per PostgreSQL transaction; defaults to `50` |
+| `APPLICATION_INVENTORY_POSTGRES_COMMIT_SECONDS` | Maximum seconds between PostgreSQL commits while findings arrive; defaults to `2` |
 
 Legacy `APPSEC_INVENTORY_*` and `APPSEC_INVENTORY_SERVICE_*` variables remain supported.
 
@@ -272,6 +322,8 @@ With the default prefix and no application type filter, the service writes:
 
 When application types are selected, the type label is added to the output name, for example `application_inventory_service_mobile_app_api_service.xlsx`.
 
+XLSX and database exports place source, ownership, activity, and scanner-routing fields first. Application classifications follow those fields. Mobile metadata and app-store validation columns are placed at the far right.
+
 The target files are intended for downstream orchestration with Semgrep, SonarQube, SCA tools, custom security scanners, or pipeline automation.
 
 ## SDK
@@ -279,7 +331,7 @@ The target files are intended for downstream orchestration with Semgrep, SonarQu
 ```python
 from pathlib import Path
 
-from application_inventory_service import AzureDevOpsOrgPat, ScanConfig, scan_to_reports
+from application_inventory_service import AzureDevOpsOrgPat, ScanConfig, scan_reports, scan_to_reports
 
 config = ScanConfig(
     provider="mixed",
@@ -298,6 +350,7 @@ config = ScanConfig(
     out_dir=Path("reports"),
     out_prefix="application_inventory_service",
     max_workers=8,
+    source_workers=2,
     branch_workers=16,
     content_workers=16,
     max_commits_per_repo=0,
@@ -306,7 +359,29 @@ config = ScanConfig(
 )
 
 results, xlsx_path, semgrep_path, sonarqube_path = scan_to_reports(config)
+
+result_count, xlsx_path, semgrep_path, sonarqube_path = scan_reports(config)
 ```
+
+`scan_to_reports` returns every finding for in-process consumers. `scan_reports` writes the same outputs and returns only the finding count and paths, which keeps memory bounded for large inventories. The CLI uses the bounded-memory path.
+
+## Performance
+
+The scanner uses four bounded concurrency layers: sources, repository preparation, branch analysis, and manifest retrieval. Defaults are conservative enough for hosted provider APIs. Increase them only after observing provider latency, rate-limit headers, CPU, memory, and PostgreSQL commit time.
+
+```bash
+application-inventory-service \
+  --source-workers 2 \
+  --max-workers 8 \
+  --branch-workers 16 \
+  --content-workers 16 \
+  --provider mixed \
+  --out-dir reports
+```
+
+For long commit histories, contributor extraction consumes provider pages as an iterator instead of retaining every commit in memory. Source and repository discovery run concurrently, GitHub installation tokens and throttles are shared across owners, manifest work uses bounded backpressure, PostgreSQL commits are batched, and CLI findings stream without accumulating a result list. Generated dependency directories and unused lockfiles are excluded from content retrieval.
+
+XLSX checkpoints expand adaptively up to the configured maximum, reducing repeated full-workbook serialization while preserving a live report. Each checkpoint is written to a temporary file and atomically replaces the prior workbook. Throughput is normally limited by provider throttling rather than local CPU; increase worker and request-rate settings only from observed provider capacity.
 
 ## Release
 

@@ -348,11 +348,12 @@ def detect_inventory_repo(
 def collect_detection_evidence(
     paths: Iterable[str],
     file_contents: dict[str, str],
+    path_set: set[str] | None = None,
 ) -> list[DetectionEvidence]:
     evidence: list[DetectionEvidence] = []
-    path_set = {normalize_path(path).lower() for path in paths}
+    normalized_paths = path_set if path_set is not None else {normalize_path(path).lower() for path in paths}
     properties = collect_metadata_properties(file_contents)
-    evidence.extend(collect_path_evidence(path_set))
+    evidence.extend(collect_path_evidence(normalized_paths))
 
     for path, content in file_contents.items():
         lower_path = normalize_path(path).lower()
@@ -367,7 +368,7 @@ def collect_detection_evidence(
         elif lower_path.endswith("project.pbxproj") or lower_path.endswith(".xcconfig"):
             evidence.extend(detect_xcode_settings_evidence(path, content))
         elif lower_path.endswith("pubspec.yaml"):
-            evidence.extend(detect_pubspec_evidence(path, content, path_set))
+            evidence.extend(detect_pubspec_evidence(path, content, normalized_paths))
         elif lower_path.endswith("package.json"):
             evidence.extend(detect_package_json_evidence(path, content))
         elif lower_path.endswith("app.json") or lower_path.endswith("expo.json"):
@@ -392,8 +393,8 @@ def collect_inventory_evidence(
     paths: Iterable[str],
     file_contents: dict[str, str],
 ) -> list[DetectionEvidence]:
-    evidence = collect_detection_evidence(paths, file_contents)
     path_set = {normalize_path(path).lower() for path in paths}
+    evidence = collect_detection_evidence(paths, file_contents, path_set)
     evidence.extend(collect_inventory_path_evidence(path_set))
 
     for path, content in file_contents.items():

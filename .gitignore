@@ -14,6 +14,9 @@ reports/
 work/
 *.log
 *.tmp
+*.key
+*.p12
+*.pem
 .env
 .env.*
 !.env.example
