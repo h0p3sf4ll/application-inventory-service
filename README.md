@@ -106,7 +106,7 @@ docker run --rm \
   -p 48731:48731 \
   --env-file .env \
   -v "$PWD/reports:/reports" \
-  h0p3sf4ll/application-inventory-service:1.6.7 \
+  h0p3sf4ll/application-inventory-service:1.6.8 \
   ui \
   --host 0.0.0.0 \
   --port 48731 \
