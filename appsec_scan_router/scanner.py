@@ -25,6 +25,7 @@ from .constants import (
     older_sheet_name,
 )
 from .detection import detect_inventory_repo
+from .domains import NETWORKED_INVENTORY_TYPES, discover_web_domains, web_domain_columns
 from .github import GitHubAppCredentials, GitHubEnterpriseClient, configured_github_owners, parse_github_urls
 from .metadata import extract_mobile_metadata
 from .models import (
@@ -588,6 +589,12 @@ def scan_branch(
         return None
 
     metadata = extract_mobile_metadata(contents)
+    deployment_endpoints = fetch_web_endpoints(
+        client,
+        target.project_name,
+        repo_id,
+        branch_name,
+    ) if set(inventory_types) & NETWORKED_INVENTORY_TYPES else []
     activity = fetch_repo_activity(
         client=client,
         project_name=target.project_name,
@@ -610,6 +617,7 @@ def scan_branch(
         evidence=evidence,
         branch_age_days=branch_age_days,
         store_client=store_client,
+        deployment_endpoints=deployment_endpoints,
     )
 
 
@@ -626,6 +634,7 @@ def build_scan_row(
     evidence: list[DetectionEvidence],
     branch_age_days: int,
     store_client: StoreLookupClient | None,
+    deployment_endpoints: Iterable[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     repo = target.repo
     age_bucket = branch_age_bucket(activity.last_updated, branch_age_days)
@@ -638,6 +647,12 @@ def build_scan_row(
     scanner_target = scanner_target_ref(source_url, branch_name)
     sonarqube_project_key = sonar_project_key(target.project_name, repo.get("name", ""), branch_name)
     branch_contributing_developers = "; ".join(activity.contributing_developers)
+    domain_evidence = (
+        discover_web_domains(contents, repo, deployment_endpoints)
+        if set(inventory_types) & NETWORKED_INVENTORY_TYPES
+        else ()
+    )
+    domain_metadata = web_domain_columns(domain_evidence)
     return {
         "provider": target.provider,
         "organization": target.organization,
@@ -648,6 +663,7 @@ def build_scan_row(
         "branch_age_bucket": age_bucket,
         "web_url": repo.get("webUrl", ""),
         "source_url": source_url,
+        **domain_metadata,
         "inventory_name": inventory_name,
         "inventory_version": inventory_version,
         "inventory_types": "; ".join(inventory_types),
@@ -685,10 +701,11 @@ def row_sort_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
 
 def log_detected_result(result: dict[str, Any]) -> None:
     LOGGER.info(
-        "DETECTED asset=%s version=%s id=%s types=%s confidence=%s repo=%s/%s/%s branch=%s age=%s categories=%s",
+        "DETECTED asset=%s version=%s id=%s domain=%s types=%s confidence=%s repo=%s/%s/%s branch=%s age=%s categories=%s",
         result["inventory_name"] or "(unknown)",
         result["inventory_version"] or "(unknown)",
         result["mobile_identifier"] or "(not_applicable)",
+        result["primary_web_domain"] or "(not_detected)",
         result["inventory_types"] or "(unknown)",
         result["confidence"],
         result.get("organization", ""),
@@ -698,6 +715,23 @@ def log_detected_result(result: dict[str, Any]) -> None:
         result["branch_age_bucket"],
         result["categories"],
     )
+
+
+def fetch_web_endpoints(
+    client: AzureDevOpsClient,
+    project_name: str,
+    repo_id: str,
+    branch_name: str,
+) -> list[dict[str, Any]]:
+    loader = getattr(client, "list_web_endpoints", None)
+    if not callable(loader):
+        return []
+    try:
+        endpoints = loader(project_name, repo_id, branch_name)
+    except AzureDevOpsError as exc:
+        LOGGER.debug("Could not inspect deployment domains for %s/%s@%s: %s", project_name, repo_id, branch_name, exc)
+        return []
+    return [endpoint for endpoint in endpoints if isinstance(endpoint, dict)]
 
 
 def create_store_client(config: ScanConfig) -> StoreLookupClient | None:

@@ -129,6 +129,70 @@ STORE_FIELDNAMES = (
     "google_play_lookup_status",
 )
 
+WEB_DOMAIN_FIELDNAMES = (
+    "primary_web_domain",
+    "web_domains",
+    "web_urls",
+    "web_domain_status",
+    "web_domain_sources",
+    "web_domain_evidence",
+)
+
+DOMAIN_CONFIG_FILE_NAMES = frozenset(
+    {
+        ".firebaserc",
+        "amplify.yaml",
+        "amplify.yml",
+        "app.yaml",
+        "app.yml",
+        "appspec.yaml",
+        "appspec.yml",
+        "azure-pipeline.yml",
+        "azure-pipeline.yaml",
+        "azure-pipelines.yml",
+        "azure-pipelines.yaml",
+        "caddyfile",
+        "cname",
+        "compose.yaml",
+        "compose.yml",
+        "docker-compose.yaml",
+        "docker-compose.yml",
+        "firebase.json",
+        "fly.toml",
+        "kustomization.yaml",
+        "main.tf",
+        "netlify.toml",
+        "nginx.conf",
+        "outputs.tf",
+        "render.yaml",
+        "render.yml",
+        "serverless.yaml",
+        "serverless.yml",
+        "staticwebapp.config.json",
+        "template.yaml",
+        "template.yml",
+        "values.yaml",
+        "values.yml",
+        "vercel.json",
+        "wrangler.toml",
+    }
+)
+
+DOMAIN_CONFIG_STEM_TOKENS = frozenset(
+    {
+        "api_gateway",
+        "app_service",
+        "cdn",
+        "cloudfront",
+        "dns",
+        "domain",
+        "frontend",
+        "ingress",
+        "route53",
+        "web",
+    }
+)
+
 CONTENT_FILES_TO_FETCH: tuple[str, ...] = (
     "package.json",
     "app.json",
@@ -210,6 +274,7 @@ CORE_INVENTORY_FIELDNAMES = (
     "branch_age_bucket",
     "web_url",
     "source_url",
+    *WEB_DOMAIN_FIELDNAMES,
     "inventory_name",
     "inventory_version",
     "primary_language",
@@ -255,6 +320,8 @@ SONARQUBE_FIELDNAMES = (
     "branch",
     "source_url",
     "web_url",
+    "primary_web_domain",
+    "web_domains",
     "project",
     "repo_name",
     "inventory_types",

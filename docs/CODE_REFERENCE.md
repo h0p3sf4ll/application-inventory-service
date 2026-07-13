@@ -21,6 +21,7 @@ Compatibility packages and commands delegate to the same implementation. New int
 | --- | --- |
 | `scanner.py` | Coordinates source, repository, branch, manifest, activity, store, report, and database stages |
 | `detection.py` | Converts repository structure and manifest evidence into categories, scores, and confidence |
+| `domains.py` | Extracts, normalizes, ranks, deduplicates, and serializes web-domain evidence |
 | `metadata.py` | Extracts application names, versions, and mobile identifiers from platform manifests |
 | `activity.py` | Reduces commit streams into unique contributors and the latest commit timestamp |
 | `models.py` | Defines immutable scan configuration, targets, evidence, metadata, and store records |
@@ -40,7 +41,7 @@ Compatibility packages and commands delegate to the same implementation. New int
 | `source_discovery.py` | Loads selectable projects and repositories concurrently for the UI |
 | `store_lookup.py` | Queries Apple App Store and Google Play and validates listing identity |
 
-Provider clients expose a common operational shape: list projects, repositories, branches, repository items, commits, and selected file content. The scanner does not require a repository clone.
+Provider clients expose a common operational shape: list projects, repositories, branches, repository items, commits, and selected file content. GitHub additionally exposes bounded successful deployment environment URLs for domain attribution. The scanner does not require a repository clone.
 
 ### Output and persistence
 
@@ -51,7 +52,7 @@ Provider clients expose a common operational shape: list projects, repositories,
 | `secure_store.py` | Atomically reads and writes Fernet-encrypted JSON state |
 | `observability.py` | Configures structured console and PostgreSQL logging |
 
-The report writer creates all output files at scan start. Text targets flush per finding. XLSX checkpoints use bounded adaptive intervals, atomically replace the prior workbook, and save once more at close. PostgreSQL uses short transactions controlled by row and time thresholds. Inventory keys include the owning user and source identity, so repeated scans update rows instead of creating duplicate findings. Child types, categories, contributors, and store listings are synchronized by value.
+The report writer creates all output files at scan start. Text targets flush per finding. XLSX checkpoints use bounded adaptive intervals, atomically replace the prior workbook, and save once more at close. PostgreSQL uses short transactions controlled by row and time thresholds. Inventory keys include the owning user and source identity, so repeated scans update rows instead of creating duplicate findings. Child types, categories, contributors, web domains, domain sources, and store listings are synchronized by value.
 
 ### UI operations
 
@@ -78,8 +79,9 @@ The report writer creates all output files at scan start. Text targets flush per
 5. Repository trees are read and selected manifests enter a bounded content-fetch queue.
 6. Detection produces evidence, categories, confidence, and score.
 7. Metadata and commit iterators produce names, versions, identifiers, contributors, and timestamps.
-8. Optional store validation runs only when mobile scanning and lookup are enabled.
-9. Findings stream to reports and PostgreSQL. SDK list-returning calls retain rows; CLI and `scan_reports` calls retain only a count.
+8. Deployable types combine provider deployment URLs, repository metadata, and structured source configuration into ranked domain evidence.
+9. Optional store validation runs only when mobile scanning and lookup are enabled.
+10. Findings stream to reports and PostgreSQL. SDK list-returning calls retain rows; CLI and `scan_reports` calls retain only a count.
 
 ## Concurrency Controls
 

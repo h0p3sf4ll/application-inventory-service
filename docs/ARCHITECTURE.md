@@ -31,6 +31,7 @@ flowchart LR
 | CLI | Non-interactive scans for automation and scheduled inventory jobs |
 | SDK | Importable API for other applications and orchestration processes |
 | Inventory engine | Provider traversal, branch selection, detection, metadata extraction, activity extraction |
+| Domain attribution | Normalized deployment, repository, and configuration evidence linked to source branches |
 | Report writer | Streaming XLSX inventory, Semgrep target, and SonarQube target outputs |
 | PostgreSQL writer | Current-state normalized upserts scoped by owner/user and source identity |
 | Store lookup client | Optional mobile app store validation |
@@ -44,8 +45,9 @@ flowchart LR
 5. The engine resolves one branch per repository.
 6. The engine reads repository trees and selected manifest/configuration files through a bounded queue.
 7. Detection evidence is converted into inventory types, categories, metadata, contributors, timestamps, and a provider value.
-8. Results from every source stream through the same report writer and PostgreSQL writer. CLI runs do not retain a second in-memory result set.
-9. Scanner manifests are consumed by downstream security tooling.
+8. Network-deployable findings collect bounded domain evidence and select a primary domain by evidence strength and environment.
+9. Results from every source stream through the same report writer and PostgreSQL writer. CLI runs do not retain a second in-memory result set.
+10. Scanner manifests are consumed by downstream security tooling.
 
 The service emits structured lifecycle, request, scan, and provider-authentication events to the configured PostgreSQL observability table. The UI exposes health and metrics endpoints without exposing provider secrets.
 
@@ -61,6 +63,8 @@ The UI writes reports, encrypted provider credentials, and encrypted schedules u
 - Scheduled scan configuration and credentials are encrypted with Fernet and scoped by user.
 - PostgreSQL inventory and repository keys are scoped by signed-in user.
 - Repeated findings update current-state rows; normalized child values are synchronized without duplicate insertion.
+- Domains and domain evidence sources use separate normalized child tables keyed to branch inventory.
+- Domain attribution never performs HTTP or DNS requests to discovered hosts.
 - Database search and filtered exports enforce the signed-in user scope in SQL.
 - OAuth should be configured with a dedicated callback domain.
 - Production secrets should be stored in AWS Secrets Manager and injected into ECS tasks.

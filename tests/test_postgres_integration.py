@@ -44,6 +44,8 @@ class PostgresInventoryIntegrationTests(unittest.TestCase):
                         (SELECT count(*) FROM {scan_runs}),
                         (SELECT count(*) FROM {inventory_types}),
                         (SELECT count(*) FROM {contributors}),
+                        (SELECT count(*) FROM {web_domains}),
+                        (SELECT count(*) FROM {web_domain_sources}),
                         (SELECT count(*) FROM {store_listings})
                     """
                 ).format(
@@ -53,11 +55,13 @@ class PostgresInventoryIntegrationTests(unittest.TestCase):
                     scan_runs=sql.Identifier(self.schema, "scan_runs"),
                     inventory_types=sql.Identifier(self.schema, "inventory_types"),
                     contributors=sql.Identifier(self.schema, "branch_contributors"),
+                    web_domains=sql.Identifier(self.schema, "web_domains"),
+                    web_domain_sources=sql.Identifier(self.schema, "web_domain_sources"),
                     store_listings=sql.Identifier(self.schema, "store_listings"),
                 )
             ).fetchone()
 
-        self.assertEqual(counts, (1, 1, 1, 1, 2, 2, 2))
+        self.assertEqual(counts, (1, 1, 1, 1, 2, 2, 2, 2, 2))
         search = search_inventory(
             POSTGRES_TEST_DSN,
             schema=self.schema,
@@ -66,6 +70,16 @@ class PostgresInventoryIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(search["total"], 1)
         self.assertEqual(search["rows"][0]["inventory_version"], "1.1.0")
+        self.assertEqual(search["rows"][0]["primary_web_domain"], "inventory.example.engineering")
+        self.assertEqual(
+            search_inventory(
+                POSTGRES_TEST_DSN,
+                schema=self.schema,
+                owner_user_id="user-a",
+                query="inventory.example.engineering",
+            )["total"],
+            1,
+        )
 
         self.write_result("user-b", "bob", "2.0.0")
 
@@ -119,6 +133,27 @@ class PostgresInventoryIntegrationTests(unittest.TestCase):
             "score": 12,
             "last_updated": "2026-07-13T12:00:00+00:00",
             "branch_last_updated": "2026-07-13T12:00:00+00:00",
+            "primary_web_domain": "inventory.example.engineering",
+            "web_domains": "inventory.example.engineering; api.example.engineering",
+            "web_urls": "https://inventory.example.engineering; https://api.example.engineering",
+            "web_domain_status": "confirmed",
+            "web_domain_sources": "inventory.example.engineering [github:deployment_status]",
+            "web_domain_evidence": """[
+                {
+                    "domain": "inventory.example.engineering",
+                    "url": "https://inventory.example.engineering",
+                    "confidence": "confirmed",
+                    "environment": "production",
+                    "sources": ["github:deployment_status"]
+                },
+                {
+                    "domain": "api.example.engineering",
+                    "url": "https://api.example.engineering",
+                    "confidence": "configured",
+                    "environment": "production",
+                    "sources": ["source:/deploy/ingress.yaml:host:3"]
+                }
+            ]""",
             "apple_app_store_name": "Inventory Mobile",
             "apple_app_store_identifier": "com.example.inventory",
             "apple_app_store_url": "https://apps.apple.com/app/id123456789",

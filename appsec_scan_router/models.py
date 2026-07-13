@@ -116,6 +116,24 @@ class StoreListing:
 
 
 @dataclass(frozen=True)
+class WebDomainEvidence:
+    domain: str
+    url: str
+    confidence: str
+    sources: tuple[str, ...]
+    environment: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "domain": self.domain,
+            "url": self.url,
+            "confidence": self.confidence,
+            "sources": list(self.sources),
+            "environment": self.environment,
+        }
+
+
+@dataclass(frozen=True)
 class DetectionEvidence:
     category: str
     source: str

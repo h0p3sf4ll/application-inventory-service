@@ -17,7 +17,7 @@ jobs:
   publish:
     name: Publish to PyPI
     runs-on: ubuntu-latest
-    if: github.repository == 'h0p3sf4ll/application-inventory-service' || github.repository == 'h0p3sf4ll/appsec-inventory-service'
+    if: github.repository == 'InfoSec-Actions/application-inventory-service'
     environment:
       name: pypi
       url: https://pypi.org/project/application-inventory-service/
@@ -57,7 +57,7 @@ jobs:
   dockerhub:
     name: Publish to Docker Hub
     runs-on: ubuntu-latest
-    if: github.repository == 'h0p3sf4ll/application-inventory-service' || github.repository == 'h0p3sf4ll/appsec-inventory-service'
+    if: github.repository == 'InfoSec-Actions/application-inventory-service'
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}

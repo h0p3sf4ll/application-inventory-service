@@ -695,7 +695,7 @@ function renderDatabaseResults() {
   const search = state.databaseSearch;
   if (!search.loaded) {
     databaseResultSummary.textContent = "Search to view inventory records";
-    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="11">No search has been run.</td></tr>';
+    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="12">No search has been run.</td></tr>';
     databasePageSummary.textContent = "Page 1";
     databasePreviousButton.disabled = true;
     databaseNextButton.disabled = true;
@@ -706,7 +706,7 @@ function renderDatabaseResults() {
   const filterLabel = search.query ? ` matching "${search.query}"` : "";
   databaseResultSummary.textContent = `Showing ${start}-${end} of ${search.total}${filterLabel}`;
   if (!search.rows.length) {
-    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="11">No inventory records match this search.</td></tr>';
+    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="12">No inventory records match this search.</td></tr>';
   } else {
     databaseResultRows.innerHTML = search.rows.map((row) => `
       <tr>
@@ -715,6 +715,7 @@ function renderDatabaseResults() {
         <td>${databaseCell(row.project)}</td>
         <td>${databaseCell(row.repo_name)}</td>
         <td>${databaseCell(row.branch_name)}</td>
+        <td>${databaseDomainCell(row)}</td>
         <td>${databaseCell(row.inventory_name || row.mobile_name)}</td>
         <td>${databaseCell(row.inventory_version || row.mobile_version)}</td>
         <td>${databaseCell(row.primary_language)}</td>
@@ -734,6 +735,15 @@ function renderDatabaseResults() {
 function databaseCell(value) {
   const text = String(value || "").trim();
   return escapeHtml(text || "Not detected");
+}
+
+function databaseDomainCell(row) {
+  const domain = String(row.primary_web_domain || "").trim();
+  if (!domain) {
+    return '<span class="database-domain-empty">Not detected</span>';
+  }
+  const status = String(row.web_domain_status || "configured").trim();
+  return `<span class="database-domain-value">${escapeHtml(domain)}</span><small class="database-domain-status">${escapeHtml(capitalize(status))}</small>`;
 }
 
 function renderLogs() {

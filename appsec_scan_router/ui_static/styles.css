@@ -1587,7 +1587,7 @@ button:focus-visible {
 
 .database-table {
   width: 100%;
-  min-width: 1220px;
+  min-width: 1360px;
   border-collapse: collapse;
   font-size: 12px;
 }
@@ -1618,6 +1618,22 @@ button:focus-visible {
 
 .database-table tbody tr:hover td {
   background: var(--accent-soft);
+}
+
+.database-domain-value,
+.database-domain-status {
+  display: block;
+}
+
+.database-domain-value {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.database-domain-status,
+.database-domain-empty {
+  margin-top: 3px;
+  color: var(--muted);
 }
 
 .database-empty-row {

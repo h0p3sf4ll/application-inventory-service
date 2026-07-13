@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .constants import DEFAULT_POSTGRES_SCHEMA, DEFAULT_POSTGRES_TABLE, MISSING_PSYCOPG_MESSAGE
+from .domains import normalize_web_endpoint, normalized_confidence
 from .models import ScanConfig
 
 try:
@@ -38,6 +39,8 @@ NORMALIZED_TABLES = (
     "inventory_types",
     "inventory_categories",
     "branch_contributors",
+    "web_domains",
+    "web_domain_sources",
     "store_listings",
     "observability_events",
 )
@@ -54,6 +57,12 @@ EXPORT_COLUMNS = (
     "branch_age_bucket",
     "web_url",
     "source_url",
+    "primary_web_domain",
+    "web_domains",
+    "web_urls",
+    "web_domain_status",
+    "web_domain_sources",
+    "web_domain_evidence",
     "inventory_name",
     "inventory_version",
     "primary_language",
@@ -106,6 +115,11 @@ SEARCHABLE_EXPORT_COLUMNS = (
     "inventory_types",
     "primary_language",
     "scanner_target",
+    "primary_web_domain",
+    "web_domains",
+    "web_urls",
+    "web_domain_status",
+    "web_domain_sources",
     "branch_contributing_developers",
     "confidence",
     "categories",
@@ -292,6 +306,7 @@ class PostgresInventoryWriter:
             branch_inventory_id,
             semicolon_values(result.get("branch_contributing_developers") or result.get("contributing_developers")),
         )
+        self.replace_web_domains(branch_inventory_id, result)
         self.replace_store_listings(branch_inventory_id, result)
 
     def upsert_scan_run(self, result: dict[str, Any]) -> None:
@@ -557,6 +572,98 @@ class PostgresInventoryWriter:
                 ),
             )
 
+    def replace_web_domains(self, branch_inventory_id: int, result: dict[str, Any]) -> None:
+        domains = web_domain_rows(result)
+        domain_names = [domain["domain"] for domain in domains]
+        existing = {
+            row[1]: int(row[0])
+            for row in self.connection.execute(
+                sql.SQL("SELECT web_domain_id, domain FROM {table} WHERE branch_inventory_id = %s").format(
+                    table=object_identifier(self.schema, "web_domains")
+                ),
+                (branch_inventory_id,),
+            ).fetchall()
+        }
+        self.connection.execute(
+            sql.SQL(
+                "DELETE FROM {table} WHERE branch_inventory_id = %s AND NOT (domain = ANY(%s::text[]))"
+            ).format(table=object_identifier(self.schema, "web_domains")),
+            (branch_inventory_id, domain_names),
+        )
+        for domain in domains:
+            web_domain_id = existing.get(domain["domain"])
+            if web_domain_id is None:
+                web_domain_id = int(
+                    self.connection.execute(
+                        sql.SQL(
+                            """
+                            INSERT INTO {table} (
+                                branch_inventory_id,
+                                domain,
+                                url,
+                                confidence,
+                                environment,
+                                is_primary
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            RETURNING web_domain_id
+                            """
+                        ).format(table=object_identifier(self.schema, "web_domains")),
+                        (
+                            branch_inventory_id,
+                            domain["domain"],
+                            domain["url"],
+                            domain["confidence"],
+                            domain["environment"],
+                            domain["is_primary"],
+                        ),
+                    ).fetchone()[0]
+                )
+            else:
+                self.connection.execute(
+                    sql.SQL(
+                        """
+                        UPDATE {table}
+                        SET url = %s,
+                            confidence = %s,
+                            environment = %s,
+                            is_primary = %s
+                        WHERE web_domain_id = %s
+                          AND (url, confidence, environment, is_primary)
+                              IS DISTINCT FROM (%s, %s, %s, %s)
+                        """
+                    ).format(table=object_identifier(self.schema, "web_domains")),
+                    (
+                        domain["url"],
+                        domain["confidence"],
+                        domain["environment"],
+                        domain["is_primary"],
+                        web_domain_id,
+                        domain["url"],
+                        domain["confidence"],
+                        domain["environment"],
+                        domain["is_primary"],
+                    ),
+                )
+            self.replace_web_domain_sources(web_domain_id, domain["sources"])
+
+    def replace_web_domain_sources(self, web_domain_id: int, sources: list[str]) -> None:
+        unique_sources = sorted(set(sources))
+        self.connection.execute(
+            sql.SQL(
+                "DELETE FROM {table} WHERE web_domain_id = %s AND NOT (source = ANY(%s::text[]))"
+            ).format(table=object_identifier(self.schema, "web_domain_sources")),
+            (web_domain_id, unique_sources),
+        )
+        if unique_sources:
+            self.connection.execute(
+                sql.SQL(
+                    "INSERT INTO {table} (web_domain_id, source) "
+                    "SELECT %s, value FROM unnest(%s::text[]) AS value ON CONFLICT DO NOTHING"
+                ).format(table=object_identifier(self.schema, "web_domain_sources")),
+                (web_domain_id, unique_sources),
+            )
+
     def prune_unreferenced_scan_runs(self) -> None:
         if self.connection is None:
             return
@@ -617,6 +724,12 @@ class PostgresInventoryWriter:
             "branch_age_bucket": text_value(result.get("branch_age_bucket")),
             "web_url": text_value(result.get("web_url")),
             "source_url": text_value(result.get("source_url")),
+            "primary_web_domain": text_value(result.get("primary_web_domain")),
+            "web_domains": semicolon_values(result.get("web_domains")),
+            "web_urls": semicolon_values(result.get("web_urls")),
+            "web_domain_status": text_value(result.get("web_domain_status")),
+            "web_domain_sources": text_value(result.get("web_domain_sources")),
+            "web_domain_evidence": Jsonb(json_value(result.get("web_domain_evidence"))),
             "inventory_name": text_value(result.get("inventory_name")),
             "inventory_version": text_value(result.get("inventory_version")),
             "inventory_types": semicolon_values(result.get("inventory_types")),
@@ -703,6 +816,12 @@ def create_flat_table(connection: Any, schema: str, table: str) -> None:
                 branch_age_bucket text,
                 web_url text,
                 source_url text,
+                primary_web_domain text,
+                web_domains text[] NOT NULL DEFAULT '{{}}',
+                web_urls text[] NOT NULL DEFAULT '{{}}',
+                web_domain_status text,
+                web_domain_sources text,
+                web_domain_evidence jsonb,
                 inventory_name text,
                 inventory_version text,
                 inventory_types text[] NOT NULL DEFAULT '{{}}',
@@ -777,6 +896,12 @@ def create_flat_table(connection: Any, schema: str, table: str) -> None:
     connection.execute(
         sql.SQL("CREATE INDEX IF NOT EXISTS {index} ON {table} USING GIN (categories)").format(
             index=sql.Identifier(f"{index_prefix}_categories_idx"),
+            table=target,
+        )
+    )
+    connection.execute(
+        sql.SQL("CREATE INDEX IF NOT EXISTS {index} ON {table} USING GIN (web_domains)").format(
+            index=sql.Identifier(f"{index_prefix}_web_domains_idx"),
             table=target,
         )
     )
@@ -870,6 +995,39 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
         sql.SQL(
             """
             CREATE TABLE IF NOT EXISTS {table} (
+                web_domain_id bigserial PRIMARY KEY,
+                branch_inventory_id bigint NOT NULL REFERENCES {branch_inventory}(branch_inventory_id) ON DELETE CASCADE,
+                domain text NOT NULL,
+                url text,
+                confidence text NOT NULL,
+                environment text,
+                is_primary boolean NOT NULL DEFAULT false,
+                UNIQUE (branch_inventory_id, domain)
+            )
+            """
+        ).format(
+            table=object_identifier(schema, "web_domains"),
+            branch_inventory=object_identifier(schema, "branch_inventory"),
+        )
+    )
+    connection.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {table} (
+                web_domain_id bigint NOT NULL REFERENCES {web_domains}(web_domain_id) ON DELETE CASCADE,
+                source text NOT NULL,
+                PRIMARY KEY (web_domain_id, source)
+            )
+            """
+        ).format(
+            table=object_identifier(schema, "web_domain_sources"),
+            web_domains=object_identifier(schema, "web_domains"),
+        )
+    )
+    connection.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {table} (
                 branch_inventory_id bigint NOT NULL REFERENCES {branch_inventory}(branch_inventory_id) ON DELETE CASCADE,
                 inventory_type text NOT NULL,
                 PRIMARY KEY (branch_inventory_id, inventory_type)
@@ -935,6 +1093,8 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
         ("repositories", "provider"),
         ("branch_inventory", "owner_user_id"),
         ("branch_inventory", "last_updated"),
+        ("web_domains", "branch_inventory_id"),
+        ("web_domains", "domain"),
     ):
         connection.execute(
             sql.SQL("CREATE INDEX IF NOT EXISTS {index} ON {table} ({column})").format(
@@ -1215,7 +1375,13 @@ def create_export_view(connection: Any, schema: str) -> None:
                 google.validation_passed AS google_play_validation_passed,
                 google.lookup_status AS google_play_lookup_status,
                 b.scan_started_at,
-                b.synced_at
+                b.synced_at,
+                COALESCE(domains.primary_web_domain, '') AS primary_web_domain,
+                COALESCE(domains.web_domains, '') AS web_domains,
+                COALESCE(domains.web_urls, '') AS web_urls,
+                COALESCE(domains.web_domain_status, 'not_detected') AS web_domain_status,
+                COALESCE(domains.web_domain_sources, '') AS web_domain_sources,
+                COALESCE(domains.web_domain_evidence, '[]'::jsonb) AS web_domain_evidence
             FROM {branch_inventory} b
             JOIN {repositories} r ON r.repository_id = b.repository_id
             LEFT JOIN (
@@ -1233,6 +1399,40 @@ def create_export_view(connection: Any, schema: str) -> None:
                 FROM {branch_contributors}
                 GROUP BY branch_inventory_id
             ) contributors ON contributors.branch_inventory_id = b.branch_inventory_id
+            LEFT JOIN (
+                SELECT
+                    d.branch_inventory_id,
+                    COALESCE(
+                        max(d.domain) FILTER (WHERE d.is_primary),
+                        (array_agg(d.domain ORDER BY d.is_primary DESC, d.domain))[1]
+                    ) AS primary_web_domain,
+                    string_agg(d.domain, '; ' ORDER BY d.is_primary DESC, d.domain) AS web_domains,
+                    string_agg(d.url, '; ' ORDER BY d.is_primary DESC, d.domain) FILTER (WHERE d.url <> '') AS web_urls,
+                    COALESCE(
+                        max(d.confidence) FILTER (WHERE d.is_primary),
+                        (array_agg(d.confidence ORDER BY d.is_primary DESC, d.domain))[1]
+                    ) AS web_domain_status,
+                    string_agg(
+                        d.domain || ' [' || array_to_string(COALESCE(domain_sources.sources, ARRAY[]::text[]), ', ') || ']',
+                        '; ' ORDER BY d.is_primary DESC, d.domain
+                    ) AS web_domain_sources,
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'domain', d.domain,
+                            'url', d.url,
+                            'confidence', d.confidence,
+                            'environment', d.environment,
+                            'sources', COALESCE(domain_sources.sources, ARRAY[]::text[])
+                        ) ORDER BY d.is_primary DESC, d.domain
+                    ) AS web_domain_evidence
+                FROM {web_domains} d
+                LEFT JOIN (
+                    SELECT web_domain_id, array_agg(source ORDER BY source) AS sources
+                    FROM {web_domain_sources}
+                    GROUP BY web_domain_id
+                ) domain_sources ON domain_sources.web_domain_id = d.web_domain_id
+                GROUP BY d.branch_inventory_id
+            ) domains ON domains.branch_inventory_id = b.branch_inventory_id
             LEFT JOIN {store_listings} apple ON apple.branch_inventory_id = b.branch_inventory_id AND apple.platform = 'apple_app_store'
             LEFT JOIN {store_listings} google ON google.branch_inventory_id = b.branch_inventory_id AND google.platform = 'google_play'
             """
@@ -1243,6 +1443,8 @@ def create_export_view(connection: Any, schema: str) -> None:
             inventory_types=object_identifier(schema, "inventory_types"),
             inventory_categories=object_identifier(schema, "inventory_categories"),
             branch_contributors=object_identifier(schema, "branch_contributors"),
+            web_domains=object_identifier(schema, "web_domains"),
+            web_domain_sources=object_identifier(schema, "web_domain_sources"),
             store_listings=object_identifier(schema, "store_listings"),
         )
     )
@@ -1473,6 +1675,12 @@ POSTGRES_COLUMNS = (
     "branch_age_bucket",
     "web_url",
     "source_url",
+    "primary_web_domain",
+    "web_domains",
+    "web_urls",
+    "web_domain_status",
+    "web_domain_sources",
+    "web_domain_evidence",
     "inventory_name",
     "inventory_version",
     "primary_language",
@@ -1518,6 +1726,12 @@ FLAT_TABLE_MIGRATIONS = (
     ("owner_user_id", "text NOT NULL DEFAULT 'anonymous'"),
     ("owner_user_login", "text NOT NULL DEFAULT 'anonymous'"),
     ("branch_contributing_developers", "text"),
+    ("primary_web_domain", "text"),
+    ("web_domains", "text[] NOT NULL DEFAULT '{}'"),
+    ("web_urls", "text[] NOT NULL DEFAULT '{}'"),
+    ("web_domain_status", "text"),
+    ("web_domain_sources", "text"),
+    ("web_domain_evidence", "jsonb"),
     ("apple_app_store_name", "text"),
     ("apple_app_store_identifier", "text"),
     ("apple_app_store_url", "text"),
@@ -1560,6 +1774,52 @@ def store_listing_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def web_domain_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
+    evidence = json_value(result.get("web_domain_evidence"))
+    evidence_items = evidence if isinstance(evidence, list) else []
+    primary_domain = text_value(result.get("primary_web_domain"))
+    rows: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(evidence_items):
+        if not isinstance(item, dict):
+            continue
+        confidence = normalized_confidence(item.get("confidence"))
+        normalized = normalize_web_endpoint(item.get("url") or item.get("domain"), confidence)
+        if normalized is None:
+            continue
+        domain, url, confidence = normalized
+        raw_sources = item.get("sources")
+        if isinstance(raw_sources, (list, tuple, set)):
+            sources = sorted({text_value(source) for source in raw_sources if text_value(source)})
+        else:
+            sources = semicolon_values(raw_sources)
+        rows[domain] = {
+            "domain": domain,
+            "url": url,
+            "confidence": confidence,
+            "environment": text_value(item.get("environment")),
+            "is_primary": domain == primary_domain or (not primary_domain and index == 0),
+            "sources": sources,
+        }
+    if not rows:
+        for index, value in enumerate(semicolon_values(result.get("web_domains"))):
+            normalized = normalize_web_endpoint(value, result.get("web_domain_status"))
+            if normalized is None:
+                continue
+            domain, url, confidence = normalized
+            rows[domain] = {
+                "domain": domain,
+                "url": url,
+                "confidence": confidence,
+                "environment": "",
+                "is_primary": domain == primary_domain or (not primary_domain and index == 0),
+                "sources": [],
+            }
+    ordered = sorted(rows.values(), key=lambda row: (not row["is_primary"], row["domain"]))
+    if ordered and not any(row["is_primary"] for row in ordered):
+        ordered[0]["is_primary"] = True
+    return ordered
 
 
 def schema_table_parts(schema: str, table: str) -> tuple[str, str]:
@@ -1652,6 +1912,8 @@ def export_cell(value: Any) -> str:
         return value.isoformat()
     if isinstance(value, bool):
         return "TRUE" if value else "FALSE"
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, default=export_cell, sort_keys=True)
     return text_value(value)
 
 

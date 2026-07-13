@@ -17,6 +17,8 @@ Most application security programs struggle to answer basic operational question
 
 The service reads provider metadata, repository trees, selected manifests, dependency files, build files, and deployment configuration through Azure DevOps and GitHub Enterprise APIs. It avoids full clone operations and focuses on high-value evidence already available in normal source repositories.
 
+For network-deployable assets, the service attributes source branches to web domains through successful deployment environment URLs, repository metadata, and structured deployment configuration. Every domain retains its source and confidence tier. Attribution describes available evidence; it does not prove DNS ownership, reachability, or production approval.
+
 ## Intended Users
 
 - Application security teams building an inventory baseline.
@@ -30,6 +32,7 @@ The service reads provider metadata, repository trees, selected manifests, depen
 - It does not replace SAST, SCA, secrets scanning, or infrastructure scanning.
 - It does not execute code from scanned repositories.
 - It does not attempt to infer production truth beyond available branch, pipeline, deployment, and activity signals.
+- It does not connect to attributed domains or perform availability, TLS, DNS, or ownership validation.
 
 ## Primary Outputs
 

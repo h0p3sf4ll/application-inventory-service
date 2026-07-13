@@ -6,7 +6,13 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-from .constants import CONTENT_FILE_EXTENSION_SUFFIXES, CONTENT_FILE_NAMES, IGNORED_CONTENT_DIRECTORIES
+from .constants import (
+    CONTENT_FILE_EXTENSION_SUFFIXES,
+    CONTENT_FILE_NAMES,
+    DOMAIN_CONFIG_FILE_NAMES,
+    DOMAIN_CONFIG_STEM_TOKENS,
+    IGNORED_CONTENT_DIRECTORIES,
+)
 
 
 def should_fetch_content(path: str) -> bool:
@@ -15,7 +21,29 @@ def should_fetch_content(path: str) -> bool:
     if IGNORED_CONTENT_DIRECTORIES.intersection(parts[:-1]):
         return False
     filename = parts[-1]
-    return filename in CONTENT_FILE_NAMES or filename.endswith(CONTENT_FILE_EXTENSION_SUFFIXES)
+    return (
+        filename in CONTENT_FILE_NAMES
+        or filename.endswith(CONTENT_FILE_EXTENSION_SUFFIXES)
+        or is_domain_config_path(normalized)
+    )
+
+
+def is_domain_config_path(path: str) -> bool:
+    normalized = path.replace("\\", "/").lower()
+    parts = normalized.strip("/").split("/")
+    if not parts:
+        return False
+    filename = parts[-1]
+    if filename in DOMAIN_CONFIG_FILE_NAMES:
+        return True
+    if len(parts) >= 3 and parts[-3:-1] == [".github", "workflows"]:
+        return filename.endswith((".yaml", ".yml"))
+    if filename.startswith(("ingress-", "ingress.", "values-", "values.")) and filename.endswith((".yaml", ".yml")):
+        return True
+    if filename.endswith(".tf"):
+        stem = filename[:-3]
+        return any(token in stem for token in DOMAIN_CONFIG_STEM_TOKENS)
+    return False
 
 
 def normalize_path(path: str) -> str:

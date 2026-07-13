@@ -11,9 +11,9 @@
 
 ![Application Inventory Service](docs/assets/application-inventory-service-banner.svg)
 
-[![CI](https://github.com/h0p3sf4ll/application-inventory-service/actions/workflows/ci.yml/badge.svg)](https://github.com/h0p3sf4ll/application-inventory-service/actions/workflows/ci.yml)
-[![Security](https://github.com/h0p3sf4ll/application-inventory-service/actions/workflows/security.yml/badge.svg)](https://github.com/h0p3sf4ll/application-inventory-service/actions/workflows/security.yml)
-[![Publish](https://github.com/h0p3sf4ll/application-inventory-service/actions/workflows/publish.yml/badge.svg)](https://github.com/h0p3sf4ll/application-inventory-service/actions/workflows/publish.yml)
+[![CI](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/ci.yml/badge.svg)](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/ci.yml)
+[![Security](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/security.yml/badge.svg)](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/security.yml)
+[![Publish](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/publish.yml/badge.svg)](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/publish.yml)
 [![PyPI](https://img.shields.io/pypi/v/application-inventory-service.svg)](https://pypi.org/project/application-inventory-service/)
 [![Python](https://img.shields.io/pypi/pyversions/application-inventory-service.svg)](https://pypi.org/project/application-inventory-service/)
 [![License](https://img.shields.io/pypi/l/application-inventory-service.svg)](LICENSE)
@@ -30,6 +30,7 @@ The project is published as `application-inventory-service`. The original `appse
 - Pulls Azure DevOps projects and GitHub repositories into the UI for targeted scans.
 - Scans default branches, with production-like fallback branch resolution when no default branch exists.
 - Captures inventory name, version, type, language, mobile identifiers, contributors, last activity, and evidence.
+- Links deployable source branches to web domains using provider deployment records and structured deployment configuration.
 - Optionally validates detected mobile identifiers against Apple App Store and Google Play.
 - Writes XLSX inventory reports, Semgrep target lists, and SonarQube project manifests labeled by selected application type.
 - Streams results into a normalized PostgreSQL schema, scoped by signed-in user when run from the UI.
@@ -64,7 +65,7 @@ application-inventory-service-ui --help
 For local development:
 
 ```bash
-git clone https://github.com/h0p3sf4ll/application-inventory-service.git
+git clone https://github.com/InfoSec-Actions/application-inventory-service.git
 cd application-inventory-service
 python3 -m venv .venv
 source .venv/bin/activate
@@ -175,6 +176,21 @@ application-inventory-service \
 Repeat `--github-url` for additional owners. When owner arguments are omitted, the scanner uses `APPLICATION_INVENTORY_GITHUB_URLS`. Set `APPLICATION_INVENTORY_GITHUB_REPOSITORIES` to `OWNER=REPOSITORY` values when the backend should scan a fixed repository set by default; leave it blank to scan all accessible repositories. The public API endpoint defaults to `https://api.github.com` and is intentionally not shown in the UI. Set `APPLICATION_INVENTORY_GITHUB_API_URL` only for a GitHub Enterprise API endpoint.
 
 The GitHub App must be installed on the owner with read-only Metadata, Contents, and Deployments permissions. The service signs a short-lived App JWT, exchanges it for an installation access token, caches that token, and refreshes it before expiry. A `GITHUB_TOKEN` or `GHE_TOKEN` remains supported as a compatibility fallback, but is not required when the App settings are present.
+
+## Web Domain Attribution
+
+Domain attribution runs automatically for web apps, API services, microservices, and serverless workloads. It combines successful GitHub deployment environment URLs, repository homepage and GitHub Pages metadata, and explicit values from deployment-oriented files such as `CNAME`, ingress manifests, Helm values, Terraform domain files, Azure Pipelines, and GitHub Actions workflows.
+
+Each result includes `primary_web_domain`, `web_domains`, `web_urls`, `web_domain_status`, `web_domain_sources`, and JSON evidence. Status values are designed for filtering:
+
+| Status | Meaning |
+| --- | --- |
+| `confirmed` | A successful provider deployment supplied the environment URL |
+| `configured` | Repository metadata or source-controlled deployment configuration declares the domain |
+| `inferred` | A recognized hosting convention produced the domain from an explicit app or project name |
+| `not_detected` | No acceptable domain evidence was found |
+
+The scanner rejects localhost, IP addresses, reserved placeholders, unresolved variables, credential-bearing URLs, and known provider, package, identity, and schema hosts. It does not probe attributed domains over HTTP or DNS. This avoids scan-time SSRF risk and keeps attribution separate from runtime availability validation.
 
 Store lookup is available for mobile scans. Select countries in the UI or repeat `--store-country` in the CLI, for example `--store-country US --store-country CA --store-country GB`. The default is `US`; validation passes only when every requested store/platform lookup succeeds.
 
@@ -304,6 +320,7 @@ docker run --name application-inventory-postgres \
 | `APPLICATION_INVENTORY_GITHUB_MAX_RETRIES` | GitHub retry count for throttled or transient reads; defaults to `5` |
 | `APPLICATION_INVENTORY_GITHUB_POOL_SIZE` | GitHub per-thread connection pool size; defaults to `8` |
 | `APPLICATION_INVENTORY_GITHUB_RATE_LIMIT_RESERVE` | GitHub requests held in reserve before reset; defaults to `50` |
+| `APPLICATION_INVENTORY_GITHUB_DOMAIN_ENVIRONMENTS` | Maximum recent GitHub deployment environments inspected per deployable repository; defaults to `4` |
 | `APPLICATION_INVENTORY_XLSX_CHECKPOINT_ROWS` | Findings between XLSX checkpoints; defaults to `500` |
 | `APPLICATION_INVENTORY_XLSX_MAX_CHECKPOINT_ROWS` | Maximum adaptive XLSX checkpoint interval; defaults to `5000` |
 | `APPLICATION_INVENTORY_XLSX_CHECKPOINT_SECONDS` | Maximum seconds between XLSX checkpoints while findings arrive; defaults to `30` |
@@ -381,6 +398,8 @@ application-inventory-service \
 
 For long commit histories, contributor extraction consumes provider pages as an iterator instead of retaining every commit in memory. Source and repository discovery run concurrently, GitHub installation tokens and throttles are shared across owners, manifest work uses bounded backpressure, PostgreSQL commits are batched, and CLI findings stream without accumulating a result list. Generated dependency directories and unused lockfiles are excluded from content retrieval.
 
+GitHub domain attribution reads at most 30 recent deployments, inspects no more than two deployments per environment, and caps the environment count with `APPLICATION_INVENTORY_GITHUB_DOMAIN_ENVIRONMENTS`. Deployment lookups run only for network-deployable inventory types.
+
 XLSX checkpoints expand adaptively up to the configured maximum, reducing repeated full-workbook serialization while preserving a live report. Each checkpoint is written to a temporary file and atomically replaces the prior workbook. Throughput is normally limited by provider throttling rather than local CPU; increase worker and request-rate settings only from observed provider capacity.
 
 ## Release
@@ -395,7 +414,7 @@ python -m twine check dist/*
 
 Publish with the `Publish` GitHub Actions workflow. The workflow uses the `pypi` environment and supports two release paths:
 
-- Preferred: configure PyPI Trusted Publishing for repository `h0p3sf4ll/application-inventory-service`, workflow `.github/workflows/publish.yml`, environment `pypi`.
+- Preferred: configure PyPI Trusted Publishing for repository `InfoSec-Actions/application-inventory-service`, workflow `.github/workflows/publish.yml`, environment `pypi`.
 - Fallback: add a GitHub Actions secret named `PYPI_API_TOKEN` with a PyPI API token.
 
 ## Security Notes

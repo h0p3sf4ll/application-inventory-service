@@ -51,6 +51,7 @@ class PublicApiTests(unittest.TestCase):
         self.assertTrue(callable(scanner.scan_to_reports))
         self.assertTrue(callable(scanner.detect_mobile_repo))
         self.assertTrue(callable(scanner.detect_inventory_repo))
+        self.assertTrue(callable(scanner.discover_web_domains))
         self.assertTrue(callable(scanner.ApplicationInventoryService))
         self.assertIs(scanner.ApplicationInventoryService, application_inventory_service.ApplicationInventoryService)
         self.assertTrue(callable(scanner.AppSecInventoryService))
@@ -2015,6 +2016,22 @@ class OutputTests(unittest.TestCase):
             "branch_age_bucket": scanner.ACTIVE_SHEET_NAME,
             "web_url": "https://example.invalid/repo",
             "source_url": "https://example.invalid/repo.git",
+            "primary_web_domain": "agsnap.fabrikam.example",
+            "web_domains": "agsnap.fabrikam.example",
+            "web_urls": "https://agsnap.fabrikam.example",
+            "web_domain_status": "configured",
+            "web_domain_sources": "agsnap.fabrikam.example [source:/deploy/ingress.yaml:host:3]",
+            "web_domain_evidence": json.dumps(
+                [
+                    {
+                        "domain": "agsnap.fabrikam.example",
+                        "url": "https://agsnap.fabrikam.example",
+                        "confidence": "configured",
+                        "environment": "production",
+                        "sources": ["source:/deploy/ingress.yaml:host:3"],
+                    }
+                ]
+            ),
             "inventory_name": "Agsnap",
             "inventory_version": "1.0.2",
             "inventory_types": "mobile_app",
@@ -2077,6 +2094,10 @@ class OutputTests(unittest.TestCase):
             self.assertEqual(workbook.sheetnames, [scanner.ACTIVE_SHEET_NAME, scanner.OLDER_SHEET_NAME])
             self.assertEqual(workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "mobile_name", 2), "Agsnap")
             self.assertEqual(workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "provider", 2), "azure-devops")
+            self.assertEqual(
+                workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "primary_web_domain", 2),
+                "agsnap.fabrikam.example",
+            )
             self.assertEqual(
                 workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "branch_contributing_developers", 2),
                 "Alice Adams <alice@example.com>; Bob Brown <bob@example.com>",

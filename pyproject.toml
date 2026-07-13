@@ -48,9 +48,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/h0p3sf4ll/application-inventory-service"
-Repository = "https://github.com/h0p3sf4ll/application-inventory-service"
-Issues = "https://github.com/h0p3sf4ll/application-inventory-service/issues"
+Homepage = "https://github.com/InfoSec-Actions/application-inventory-service"
+Repository = "https://github.com/InfoSec-Actions/application-inventory-service"
+Issues = "https://github.com/InfoSec-Actions/application-inventory-service/issues"
 
 [project.scripts]
 application-inventory-service = "appsec_scan_router.cli:main"

@@ -397,7 +397,12 @@ class GitHubEnterpriseClient:
                 status_code=response.status_code,
             ) from exc
 
-    def _get_paginated(self, path: str, params: dict[str, Any] | None = None) -> list[Any]:
+    def _get_paginated(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        max_items: int = 0,
+    ) -> list[Any]:
         results: list[Any] = []
         next_url = self._url(path)
         request_params = dict(params or {})
@@ -412,6 +417,8 @@ class GitHubEnterpriseClient:
                 results.extend(data["items"])
             else:
                 break
+            if max_items and len(results) >= max_items:
+                return results[:max_items]
             next_url = response.links.get("next", {}).get("url", "")
             request_params = {}
 
@@ -442,6 +449,8 @@ class GitHubEnterpriseClient:
         full_name = clean_value(repo.get("full_name"))
         name = clean_value(repo.get("name"))
         default_branch = clean_value(repo.get("default_branch"))
+        homepage_url = clean_value(repo.get("homepage"))
+        pages_url = github_pages_url(full_name) if repo.get("has_pages") else ""
         return {
             "id": full_name or name,
             "name": name,
@@ -449,6 +458,8 @@ class GitHubEnterpriseClient:
             "defaultBranch": f"refs/heads/{default_branch}" if default_branch else "",
             "webUrl": clean_value(repo.get("html_url")),
             "remoteUrl": clean_value(repo.get("clone_url")) or clean_value(repo.get("ssh_url")),
+            "homepageUrl": homepage_url,
+            "pagesUrl": pages_url,
             "isDisabled": bool(repo.get("disabled") or repo.get("archived")),
         }
 
@@ -497,6 +508,90 @@ class GitHubEnterpriseClient:
             return True
         latest = statuses[0] if isinstance(statuses[0], dict) else {}
         return clean_value(latest.get("state")).lower() in GITHUB_SUCCESSFUL_DEPLOYMENT_STATES
+
+    def list_web_endpoints(
+        self,
+        project_name: str,
+        repo_id: str,
+        branch_name: str,
+    ) -> list[dict[str, str]]:
+        params: dict[str, Any] = {"per_page": 30}
+        if branch_name:
+            params["ref"] = branch_name
+        try:
+            deployments = self._get_paginated(
+                f"/repos/{quote(repo_id, safe='/')}/deployments",
+                params,
+                max_items=30,
+            )
+        except AzureDevOpsError as exc:
+            if exc.status_code in {403, 404}:
+                return []
+            raise
+        deployments = sorted(deployments, key=github_deployment_environment_rank, reverse=True)
+        max_environments = min(20, positive_int_env("APPLICATION_INVENTORY_GITHUB_DOMAIN_ENVIRONMENTS", 4))
+        max_status_checks = max_environments * 2
+        environment_checks: dict[str, int] = {}
+        resolved_environments: set[str] = set()
+        seen_urls: set[str] = set()
+        endpoints: list[dict[str, str]] = []
+        status_checks = 0
+        for deployment in deployments:
+            if status_checks >= max_status_checks:
+                break
+            if not isinstance(deployment, dict):
+                continue
+            environment = clean_value(deployment.get("environment")) or "default"
+            environment_key = environment.casefold()
+            if environment_key in resolved_environments:
+                continue
+            if environment_key not in environment_checks and len(environment_checks) >= max_environments:
+                continue
+            checks = environment_checks.get(environment_key, 0)
+            if checks >= 2:
+                continue
+            environment_checks[environment_key] = checks + 1
+            deployment_id = clean_value(deployment.get("id"))
+            if not deployment_id:
+                continue
+            status_checks += 1
+            try:
+                statuses = self._get_paginated(
+                    f"/repos/{quote(repo_id, safe='/')}/deployments/{deployment_id}/statuses",
+                    {"per_page": 10},
+                    max_items=10,
+                )
+            except AzureDevOpsError as exc:
+                if exc.status_code in {403, 404, 422}:
+                    continue
+                raise
+            successful_status = next(
+                (
+                    status
+                    for status in statuses
+                    if isinstance(status, dict)
+                    and clean_value(status.get("state")).lower() in GITHUB_SUCCESSFUL_DEPLOYMENT_STATES
+                    and clean_value(status.get("environment_url"))
+                ),
+                None,
+            )
+            if successful_status is None:
+                continue
+            environment_url = clean_value(successful_status.get("environment_url"))
+            if environment_url in seen_urls:
+                resolved_environments.add(environment_key)
+                continue
+            seen_urls.add(environment_url)
+            resolved_environments.add(environment_key)
+            endpoints.append(
+                {
+                    "url": environment_url,
+                    "source": "github:deployment_status",
+                    "confidence": "confirmed",
+                    "environment": environment,
+                }
+            )
+        return endpoints
 
     def list_repo_items(self, project_name: str, repo_id: str, branch_name: str | None = None) -> list[dict[str, Any]]:
         ref = quote(branch_name or "HEAD", safe="")
@@ -600,6 +695,28 @@ def github_commit_to_activity_commit(commit: dict[str, Any]) -> dict[str, Any]:
             "date": clean_value(committer.get("date") or author.get("date")),
         },
     }
+
+
+def github_pages_url(full_name: str) -> str:
+    parts = [part for part in clean_value(full_name).split("/") if part]
+    if len(parts) != 2:
+        return ""
+    owner, repository = parts
+    host = f"{owner.lower()}.github.io"
+    if repository.casefold() == host.casefold():
+        return f"https://{host}"
+    return f"https://{host}/{quote(repository)}"
+
+
+def github_deployment_environment_rank(deployment: Any) -> int:
+    if not isinstance(deployment, dict):
+        return 0
+    environment = re.sub(r"[^a-z0-9]+", "", clean_value(deployment.get("environment")).lower())
+    if environment in {"production", "prod"}:
+        return 3
+    if environment in {"preproduction", "preprod", "staging", "stage"}:
+        return 2
+    return 1
 
 
 def normalize_github_api_url(base_url: str) -> str:
