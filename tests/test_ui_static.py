@@ -2,6 +2,8 @@ import unittest
 from html.parser import HTMLParser
 from pathlib import Path
 
+from appsec_scan_router.ui import static_cache_control
+
 
 class UiStructureParser(HTMLParser):
     void_elements = {
@@ -47,6 +49,10 @@ class UiStructureParser(HTMLParser):
 
 
 class UiStaticTests(unittest.TestCase):
+    def test_index_document_is_not_cached(self):
+        self.assertEqual(static_cache_control("index.html"), "no-store, max-age=0")
+        self.assertEqual(static_cache_control("styles.css"), "private, max-age=300")
+
     def test_inventory_table_has_its_own_navigation_view(self):
         index_path = (
             Path(__file__).resolve().parents[1]

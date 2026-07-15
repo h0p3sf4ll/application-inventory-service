@@ -715,7 +715,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             return
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
-        self.send_header("Cache-Control", "private, max-age=300")
+        self.send_header("Cache-Control", static_cache_control(name))
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         try:
@@ -1012,6 +1012,12 @@ def public_database_status(status: dict[str, Any] | None) -> dict[str, Any] | No
 @lru_cache(maxsize=32)
 def static_content(name: str) -> bytes:
     return files("appsec_scan_router").joinpath("ui_static").joinpath(name).read_bytes()
+
+
+def static_cache_control(name: str) -> str:
+    if name == "index.html":
+        return "no-store, max-age=0"
+    return "private, max-age=300"
 
 
 def report_content_type(path: Path) -> str:
