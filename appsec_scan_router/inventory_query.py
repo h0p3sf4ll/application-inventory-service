@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from typing import Any, Mapping
+from urllib.parse import urlsplit, urlunsplit
 
 from .constants import APPLICATION_TYPE_LABELS, KNOWN_INVENTORY_TYPES
 
@@ -47,6 +48,33 @@ QUERY_FIELDS = frozenset(
         "sort_direction",
     }
 )
+
+
+def repository_browse_url(record: Mapping[str, Any]) -> str:
+    for field in ("web_url", "source_url"):
+        url = canonical_repository_url(record.get(field))
+        if url:
+            return url
+    return ""
+
+
+def canonical_repository_url(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw or "\\" in raw or any(ord(character) < 32 for character in raw):
+        return ""
+    try:
+        parsed = urlsplit(raw)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return ""
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not hostname:
+        return ""
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    netloc = f"{host}:{port}" if port is not None else host
+    path = parsed.path[:-4] if parsed.path.lower().endswith(".git") else parsed.path
+    return urlunsplit((scheme, netloc, path or "/", "", ""))
 
 
 @dataclass(frozen=True, slots=True)

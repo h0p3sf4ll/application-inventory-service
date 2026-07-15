@@ -69,8 +69,11 @@ const databaseColumnFilters = {
   updated: document.querySelector("#filterUpdated"),
   confidence: document.querySelector("#filterConfidence"),
   source: document.querySelector("#filterSource"),
-  type: document.querySelector("#filterType"),
 };
+const databaseTypeFilter = document.querySelector("#filterType");
+const databaseTypeFilterSummary = document.querySelector("#filterTypeSummary");
+const databaseTypeCheckboxes = Array.from(document.querySelectorAll('input[name="databaseFilterType"]'));
+const clearDatabaseTypeFilterButton = document.querySelector("#clearFilterTypes");
 const localLlmStatus = document.querySelector("#localLlmStatus");
 const inventoryAssistantQuery = document.querySelector("#inventoryAssistantQuery");
 const askInventoryButton = document.querySelector("#askInventory");
@@ -280,6 +283,28 @@ function bindEvents() {
         applyDatabaseColumnFilters();
       }
     });
+  });
+  databaseTypeCheckboxes.forEach((checkbox) => {
+    checkbox.addEventListener("change", (event) => {
+      renderDatabaseTypeFilter();
+      scheduleColumnFilterSearch(event);
+    });
+  });
+  clearDatabaseTypeFilterButton.addEventListener("click", () => {
+    setDatabaseTypeFilters([]);
+    setActiveInventoryFilterButton("");
+    applyDatabaseColumnFilters();
+  });
+  databaseTypeFilter.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      databaseTypeFilter.open = false;
+      databaseTypeFilterSummary.focus();
+    }
+  });
+  document.addEventListener("click", (event) => {
+    if (databaseTypeFilter.open && !databaseTypeFilter.contains(event.target)) {
+      databaseTypeFilter.open = false;
+    }
   });
   askInventoryButton.addEventListener("click", askInventory);
   inventoryAssistantQuery.addEventListener("keydown", (event) => {
@@ -832,8 +857,36 @@ function databaseApplicationCell(row, index) {
 }
 
 function databaseRepositoryCell(row) {
+  const name = String(row.repo_name || "Not detected").trim();
   const scope = [row.organization, row.project].filter(Boolean).join(" / ");
-  return `<strong class="database-cell-title">${databaseCell(row.repo_name)}</strong>${scope ? `<small class="database-cell-meta">${escapeHtml(scope)}</small>` : ""}`;
+  const repositoryUrl = safeExternalUrl(row.repository_url);
+  const repository = repositoryUrl
+    ? `<a class="database-repository-link" href="${escapeHtml(repositoryUrl)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${escapeHtml(name)} repository in a new tab" title="Open repository in a new tab">${escapeHtml(name)}</a>`
+    : `<strong class="database-cell-title">${escapeHtml(name)}</strong>`;
+  return `${repository}${scope ? `<small class="database-cell-meta">${escapeHtml(scope)}</small>` : ""}`;
+}
+
+function safeExternalUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  try {
+    const url = new URL(text);
+    if (!["http:", "https:"].includes(url.protocol)) {
+      return "";
+    }
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    if (url.pathname.toLowerCase().endsWith(".git")) {
+      url.pathname = url.pathname.slice(0, -4);
+    }
+    return url.href;
+  } catch {
+    return "";
+  }
 }
 
 function confidenceCell(value) {
@@ -1144,6 +1197,7 @@ function renderDatabaseSortHeaders(filters) {
 function scheduleColumnFilterSearch(event) {
   event.stopPropagation();
   setActiveInventoryFilterButton("");
+  state.databaseSearch.filters = databaseFiltersFromControls();
   window.clearTimeout(scheduleColumnFilterSearch.timeout);
   if (event.currentTarget.matches("select")) {
     applyDatabaseColumnFilters();
@@ -1154,6 +1208,12 @@ function scheduleColumnFilterSearch(event) {
 
 function applyDatabaseColumnFilters() {
   window.clearTimeout(scheduleColumnFilterSearch.timeout);
+  const filters = databaseFiltersFromControls();
+  state.databaseSearch.filters = filters;
+  searchDatabase(0, databaseSearchQuery.value, {filters});
+}
+
+function databaseFiltersFromControls() {
   const filters = {...(state.databaseSearch.filters || {})};
   for (const key of [
     "application_search",
@@ -1169,7 +1229,7 @@ function applyDatabaseColumnFilters() {
     delete filters[key];
   }
   Object.assign(filters, databaseColumnFilterCriteria());
-  searchDatabase(0, databaseSearchQuery.value, {filters});
+  return filters;
 }
 
 function databaseColumnFilterCriteria() {
@@ -1200,8 +1260,9 @@ function databaseColumnFilterCriteria() {
   if (databaseColumnFilters.source.value) {
     filters.providers = [databaseColumnFilters.source.value];
   }
-  if (databaseColumnFilters.type.value) {
-    filters.application_types = [databaseColumnFilters.type.value];
+  const applicationTypes = selectedDatabaseTypes();
+  if (applicationTypes.length) {
+    filters.application_types = applicationTypes;
   }
   return filters;
 }
@@ -1214,13 +1275,47 @@ function populateDatabaseColumnFilters(filters = {}) {
   databaseColumnFilters.updated.value = filters.updated_within_days ? "active" : filters.older_than_days ? "older" : "";
   databaseColumnFilters.confidence.value = filters.confidences && filters.confidences.length === 1 ? filters.confidences[0] : "";
   databaseColumnFilters.source.value = filters.providers && filters.providers.length === 1 ? filters.providers[0] : "";
-  databaseColumnFilters.type.value = filters.application_types && filters.application_types.length === 1 ? filters.application_types[0] : "";
+  setDatabaseTypeFilters(filters.application_types || []);
 }
 
 function resetDatabaseColumnFilters() {
   Object.values(databaseColumnFilters).forEach((control) => {
     control.value = "";
   });
+  setDatabaseTypeFilters([]);
+}
+
+function selectedDatabaseTypes() {
+  return databaseTypeCheckboxes
+    .filter((checkbox) => checkbox.checked)
+    .map((checkbox) => checkbox.value);
+}
+
+function setDatabaseTypeFilters(values) {
+  const selected = new Set(Array.isArray(values) ? values : []);
+  databaseTypeCheckboxes.forEach((checkbox) => {
+    checkbox.checked = selected.has(checkbox.value);
+  });
+  renderDatabaseTypeFilter();
+}
+
+function renderDatabaseTypeFilter() {
+  const selected = selectedDatabaseTypes();
+  const labels = selected.map(applicationTypeLabel);
+  databaseTypeFilterSummary.textContent = labels.length === 0
+    ? "Any type"
+    : labels.length === 1
+      ? labels[0]
+      : `${labels.length} types selected`;
+  databaseTypeFilterSummary.title = labels.length ? labels.join(", ") : "All application types";
+  databaseTypeFilterSummary.setAttribute(
+    "aria-label",
+    labels.length
+      ? `Filter application types. Selected: ${labels.join(", ")}`
+      : "Filter application types. All types",
+  );
+  databaseTypeFilter.classList.toggle("active", selected.length > 0);
+  clearDatabaseTypeFilterButton.disabled = selected.length === 0;
 }
 
 function setActiveInventoryFilterButton(name) {

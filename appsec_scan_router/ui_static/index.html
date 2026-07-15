@@ -530,7 +530,24 @@
                       <th><select id="filterUpdated" aria-label="Filter update date"><option value="">Any date</option><option value="active">Updated 90d</option><option value="older">Older 90d</option></select></th>
                       <th><select id="filterConfidence" aria-label="Filter confidence"><option value="">Any</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></th>
                       <th><select id="filterSource" aria-label="Filter source"><option value="">Any</option><option value="azure-devops">Azure DevOps</option><option value="github-enterprise">GitHub</option></select></th>
-                      <th><select id="filterType" aria-label="Filter application type"><option value="">Any type</option><option value="mobile_app">Mobile app</option><option value="web_app">Web app</option><option value="api_service">API service</option><option value="microservice">Microservice</option><option value="middleware">Middleware</option><option value="serverless">Serverless</option><option value="library">Library</option><option value="infrastructure">Infrastructure</option><option value="ai_enabled">AI-enabled</option><option value="ml_enabled">ML-enabled</option></select></th>
+                      <th>
+                        <details class="database-multi-filter" id="filterType">
+                          <summary id="filterTypeSummary" aria-label="Filter application types. All types">Any type</summary>
+                          <div class="database-multi-filter-menu" role="group" aria-label="Application types">
+                            <label class="database-type-option"><input name="databaseFilterType" type="checkbox" value="mobile_app"><span>Mobile app</span></label>
+                            <label class="database-type-option"><input name="databaseFilterType" type="checkbox" value="web_app"><span>Web app</span></label>
+                            <label class="database-type-option"><input name="databaseFilterType" type="checkbox" value="api_service"><span>API service</span></label>
+                            <label class="database-type-option"><input name="databaseFilterType" type="checkbox" value="microservice"><span>Microservice</span></label>
+                            <label class="database-type-option"><input name="databaseFilterType" type="checkbox" value="middleware"><span>Middleware</span></label>
+                            <label class="database-type-option"><input name="databaseFilterType" type="checkbox" value="serverless"><span>Serverless</span></label>
+                            <label class="database-type-option"><input name="databaseFilterType" type="checkbox" value="library"><span>Library</span></label>
+                            <label class="database-type-option"><input name="databaseFilterType" type="checkbox" value="infrastructure"><span>Infrastructure</span></label>
+                            <label class="database-type-option"><input name="databaseFilterType" type="checkbox" value="ai_enabled"><span>AI-enabled</span></label>
+                            <label class="database-type-option"><input name="databaseFilterType" type="checkbox" value="ml_enabled"><span>ML-enabled</span></label>
+                            <button class="database-multi-filter-clear" id="clearFilterTypes" type="button" disabled>Clear types</button>
+                          </div>
+                        </details>
+                      </th>
                     </tr>
                   </thead>
                   <tbody id="databaseResultRows">

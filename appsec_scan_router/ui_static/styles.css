@@ -1800,8 +1800,9 @@ button:focus-visible {
   background: var(--surface-muted);
 }
 
-.database-filter-row input,
-.database-filter-row select {
+.database-filter-row > th > input,
+.database-filter-row > th > select,
+.database-multi-filter > summary {
   width: 100%;
   min-width: 0;
   min-height: 32px;
@@ -1809,6 +1810,104 @@ button:focus-visible {
   border-radius: 6px;
   font-size: 11px;
   font-weight: 700;
+}
+
+.database-multi-filter {
+  position: relative;
+  width: 100%;
+  color: var(--text);
+}
+
+.database-multi-filter > summary {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.database-multi-filter > summary::marker {
+  color: var(--accent-strong);
+}
+
+.database-multi-filter.active > summary,
+.database-multi-filter[open] > summary {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.database-multi-filter > summary:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.database-multi-filter-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  display: grid;
+  width: 230px;
+  max-height: 330px;
+  gap: 2px;
+  padding: 8px;
+  overflow-y: auto;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  box-shadow: var(--shadow);
+}
+
+.database-type-option {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.database-type-option:hover {
+  background: var(--accent-soft);
+}
+
+.database-type-option input {
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  min-height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.database-type-option input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.database-multi-filter-clear {
+  min-height: 32px;
+  margin-top: 5px;
+  padding: 0 10px;
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.database-multi-filter-clear:not(:disabled):hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
 }
 
 .database-sort-button {
@@ -1872,6 +1971,25 @@ button:focus-visible {
 
 .database-cell-title {
   color: var(--text);
+}
+
+.database-repository-link {
+  color: var(--accent-strong);
+  font-weight: 800;
+  overflow-wrap: anywhere;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.database-repository-link:hover {
+  color: var(--text);
+}
+
+.database-repository-link:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 3px;
 }
 
 .database-cell-meta {
