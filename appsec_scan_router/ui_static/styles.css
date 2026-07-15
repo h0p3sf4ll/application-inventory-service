@@ -2127,6 +2127,24 @@ button:focus-visible {
   margin-top: 12px;
 }
 
+.database-page-summary {
+  display: grid;
+  min-width: 132px;
+  gap: 2px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.database-page-summary strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.database-page-summary small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .inventory-dialog {
   width: min(760px, calc(100vw - 32px));
   max-height: min(760px, calc(100vh - 48px));

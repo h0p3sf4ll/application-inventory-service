@@ -345,7 +345,7 @@ class GitHubOAuthService:
                     "Accept": "application/vnd.github+json",
                     "Authorization": f"Bearer {access_token}",
                     "X-GitHub-Api-Version": "2022-11-28",
-                    "User-Agent": "application-inventory-service/1.6.16",
+                    "User-Agent": "application-inventory-service/1.6.17",
                 },
                 timeout=20,
             )
@@ -448,7 +448,7 @@ class GoogleOAuthService:
                 headers={
                     "Accept": "application/json",
                     "Authorization": f"Bearer {access_token}",
-                    "User-Agent": "application-inventory-service/1.6.16",
+                    "User-Agent": "application-inventory-service/1.6.17",
                 },
                 timeout=20,
             )

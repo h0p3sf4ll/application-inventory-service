@@ -62,7 +62,8 @@ const databaseResultSummary = document.querySelector("#databaseResultSummary");
 const databaseResultRows = document.querySelector("#databaseResultRows");
 const databasePreviousButton = document.querySelector("#databasePrevious");
 const databaseNextButton = document.querySelector("#databaseNext");
-const databasePageSummary = document.querySelector("#databasePageSummary");
+const databasePagePosition = document.querySelector("#databasePagePosition");
+const databaseRecordCount = document.querySelector("#databaseRecordCount");
 const inventoryFilterButtons = document.querySelectorAll("[data-inventory-filter]");
 const databaseSortButtons = document.querySelectorAll("[data-database-sort]");
 const databaseColumnFilters = {
@@ -856,7 +857,8 @@ function renderDatabaseResults() {
   if (!search.loaded) {
     databaseResultSummary.textContent = "Loading inventory records";
     databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="9">Loading inventory records.</td></tr>';
-    databasePageSummary.textContent = "Page 1";
+    databasePagePosition.textContent = "Page 1";
+    databaseRecordCount.textContent = "Loading records";
     databasePreviousButton.disabled = true;
     databaseNextButton.disabled = true;
     databaseLiveStatus.textContent = state.database && !state.database.connected ? "PostgreSQL is unavailable" : "Loading your inventory";
@@ -888,7 +890,8 @@ function renderDatabaseResults() {
   }
   const page = search.total ? Math.floor(search.offset / search.limit) + 1 : 1;
   const pages = Math.max(1, Math.ceil(search.total / search.limit));
-  databasePageSummary.textContent = `Page ${page} of ${pages}`;
+  databasePagePosition.textContent = `Page ${page} of ${pages}`;
+  databaseRecordCount.textContent = `${Number(search.total).toLocaleString()} ${search.total === 1 ? "matching record" : "matching records"}`;
   databasePreviousButton.disabled = search.offset <= 0;
   databaseNextButton.disabled = search.offset + search.rows.length >= search.total;
 }

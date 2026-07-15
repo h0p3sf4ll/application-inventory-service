@@ -104,6 +104,21 @@ class UiStaticTests(unittest.TestCase):
         self.assertIn("filters.languages = languages", javascript)
         self.assertIn('input[name="databaseFilterLanguage"]', javascript)
 
+    def test_inventory_pagination_displays_filtered_record_count(self):
+        static_root = (
+            Path(__file__).resolve().parents[1] / "appsec_scan_router" / "ui_static"
+        )
+        html = (static_root / "index.html").read_text(encoding="utf-8")
+        javascript = (static_root / "app.js").read_text(encoding="utf-8")
+        stylesheet = (static_root / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="databasePagePosition"', html)
+        self.assertIn('id="databaseRecordCount"', html)
+        self.assertIn('class="database-page-summary"', html)
+        self.assertIn('search.total === 1 ? "matching record"', javascript)
+        self.assertIn("Number(search.total).toLocaleString()", javascript)
+        self.assertIn(".database-page-summary", stylesheet)
+
     def test_record_details_gate_mobile_fields_and_separate_scanner_targets(self):
         static_root = (
             Path(__file__).resolve().parents[1] / "appsec_scan_router" / "ui_static"

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Application Inventory Service</title>
-    <link rel="stylesheet" href="/static/styles.css?v=10">
+    <link rel="stylesheet" href="/static/styles.css?v=11">
   </head>
   <body class="login-mode">
     <main class="login-shell" id="loginPage">
@@ -575,7 +575,10 @@
               </div>
               <div class="database-pagination">
                 <button class="ghost" id="databasePrevious" type="button" disabled>Previous</button>
-                <span id="databasePageSummary">Page 1</span>
+                <span class="database-page-summary" id="databasePageSummary" aria-live="polite">
+                  <strong id="databasePagePosition">Page 1</strong>
+                  <small id="databaseRecordCount">Loading records</small>
+                </span>
                 <button class="ghost" id="databaseNext" type="button" disabled>Next</button>
               </div>
             </div>
@@ -718,6 +721,6 @@
       </section>
     </main>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=10" type="module"></script>
+    <script src="/static/app.js?v=11" type="module"></script>
   </body>
 </html>
