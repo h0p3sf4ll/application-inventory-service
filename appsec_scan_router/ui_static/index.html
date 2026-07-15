@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Application Inventory Service</title>
-    <link rel="stylesheet" href="/static/styles.css?v=6">
+    <link rel="stylesheet" href="/static/styles.css?v=7">
   </head>
   <body class="login-mode">
     <main class="login-shell" id="loginPage">
@@ -74,6 +74,7 @@
         <button class="tab-button active" type="button" data-view="setupView" role="tab" aria-controls="setupView" aria-selected="true">Scan setup</button>
         <button class="tab-button" type="button" data-view="runsView" role="tab" aria-controls="runsView" aria-selected="false">Runs</button>
         <button class="tab-button" type="button" data-view="schedulesView" role="tab" aria-controls="schedulesView" aria-selected="false">Schedules</button>
+        <button class="tab-button" type="button" data-view="inventoryView" role="tab" aria-controls="inventoryView" aria-selected="false">Inventory</button>
         <button class="tab-button" type="button" data-view="reportsView" role="tab" aria-controls="reportsView" aria-selected="false">Reports</button>
         <button class="tab-button" type="button" data-view="databaseView" role="tab" aria-controls="databaseView" aria-selected="false">Database</button>
       </nav>
@@ -371,7 +372,7 @@
           </details>
           <div class="form-actions">
             <button class="primary" id="startScanForm" type="button">Run scan</button>
-            <span>Results appear in Runs and Reports.</span>
+            <span>Results appear in Runs, Inventory, and Reports.</span>
           </div>
           </section>
 
@@ -437,11 +438,14 @@
                 <button class="ghost" id="checkDatabase" type="button">Test connection</button>
               </div>
             </details>
+          </section>
 
+          <section class="panel inventory-panel tab-view hidden" id="inventoryView" role="tabpanel" hidden>
             <div class="database-browser">
               <div class="section-heading database-browser-heading">
                 <div>
-                  <h3>Inventory records</h3>
+                  <p class="eyebrow">Application inventory</p>
+                  <h2>Inventory records</h2>
                   <p id="databaseLiveStatus">Loading your inventory</p>
                 </div>
                 <span class="default-badge">Private to your account</span>

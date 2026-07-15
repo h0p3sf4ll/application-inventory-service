@@ -401,6 +401,7 @@ button:not(:disabled):active {
 .hero-panel,
 .runs-panel,
 .reports-panel,
+.inventory-panel,
 .log-panel {
   padding: 18px;
 }
@@ -1539,12 +1540,18 @@ button:focus-visible {
   border-top: 1px solid var(--border);
 }
 
+.inventory-panel .database-browser {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
 .database-browser-heading {
   align-items: start;
   margin-bottom: 16px;
 }
 
-.database-browser-heading h3 {
+.database-browser-heading h2 {
   margin: 0;
   font-size: 18px;
   letter-spacing: 0;
@@ -1554,6 +1561,12 @@ button:focus-visible {
   margin: 4px 0 0;
   color: var(--muted);
   font-size: 13px;
+}
+
+.database-browser-heading .eyebrow {
+  margin: 0 0 4px;
+  color: var(--accent);
+  font-size: 12px;
 }
 
 .inventory-assistant {

@@ -109,7 +109,7 @@ docker run --rm \
   -p 48731:48731 \
   --env-file .env \
   -v "$PWD/reports:/reports" \
-  h0p3sf4ll/application-inventory-service:1.6.11 \
+  h0p3sf4ll/application-inventory-service:1.6.12 \
   ui \
   --host 0.0.0.0 \
   --port 48731 \
@@ -261,11 +261,11 @@ application-inventory-service \
 
 The local defaults are host `localhost`, port `5432`, database `postgres`, user `postgres`, and password `postgres`. The password is editable on the **Database** page and is not stored in browser storage. Change every default credential outside local development.
 
-At startup, the service tests PostgreSQL and applies versioned, advisory-lock-protected schema migrations before accepting scan work. Unchanged schemas take the fast readiness path. A scan with database sync enabled is rejected if its configured database is unavailable. Findings commit at least once per second while a scan is active, and the **Database** table refreshes as those transactions become visible.
+At startup, the service tests PostgreSQL and applies versioned, advisory-lock-protected schema migrations before accepting scan work. Unchanged schemas take the fast readiness path. A scan with database sync enabled is rejected if its configured database is unavailable. Findings commit at least once per second while a scan is active, and the **Inventory** table refreshes as those transactions become visible.
 
 The schema separates repositories, branch inventory, application types, categories, contributors, web domains, domain evidence, store listings, scan runs, and observability events. Inventory identity is scoped by signed-in user, provider, organization, project, repository, and branch. Repeated scans update current rows and synchronize child values instead of inserting duplicate records. Full-text search uses a PostgreSQL GIN index; common type, owner, activity, domain, and validation filters use selective indexes.
 
-The **Database** page provides sortable columns, per-column filters, full-text search, activity/domain/type quick filters, record details, and XLSX, CSV, or JSON exports. Results and exports use the same filters, sort order, and signed-in user scope. XLSX, CSV, and JSON exports consume a server-side database cursor to bound application memory. Operational scan and observability records remain event-based because each execution and log entry is a distinct audit record.
+The **Inventory** page provides sortable columns, per-column filters, full-text search, activity/domain/type quick filters, record details, and XLSX, CSV, or JSON exports. The **Database** page contains connection, synchronization, and schema settings. Results and exports use the same filters, sort order, and signed-in user scope. XLSX, CSV, and JSON exports consume a server-side database cursor to bound application memory. Operational scan and observability records remain event-based because each execution and log entry is a distinct audit record.
 
 Structured events include service lifecycle, HTTP request timing, scan lifecycle, provider, user scope, status, and sanitized metadata. The UI exposes database-backed health at `/api/health` and operational counters at `/api/metrics`.
 

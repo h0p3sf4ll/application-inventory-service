@@ -1,0 +1,68 @@
+import unittest
+from html.parser import HTMLParser
+from pathlib import Path
+
+
+class UiStructureParser(HTMLParser):
+    void_elements = {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+
+    def __init__(self):
+        super().__init__()
+        self.stack = []
+        self.ancestors_by_id = {}
+        self.views = set()
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        identifier = attributes.get("id")
+        if identifier:
+            self.ancestors_by_id[identifier] = tuple(
+                ancestor_id for _, ancestor_id in self.stack if ancestor_id
+            )
+        if view := attributes.get("data-view"):
+            self.views.add(view)
+        if tag not in self.void_elements:
+            self.stack.append((tag, identifier))
+
+    def handle_endtag(self, tag):
+        while self.stack:
+            open_tag, _ = self.stack.pop()
+            if open_tag == tag:
+                return
+
+
+class UiStaticTests(unittest.TestCase):
+    def test_inventory_table_has_its_own_navigation_view(self):
+        index_path = (
+            Path(__file__).resolve().parents[1]
+            / "appsec_scan_router"
+            / "ui_static"
+            / "index.html"
+        )
+        parser = UiStructureParser()
+        parser.feed(index_path.read_text(encoding="utf-8"))
+
+        self.assertIn("inventoryView", parser.views)
+        self.assertIn("databaseView", parser.views)
+        table_ancestors = parser.ancestors_by_id["databaseResultRows"]
+        self.assertIn("inventoryView", table_ancestors)
+        self.assertNotIn("databaseView", table_ancestors)
+
+
+if __name__ == "__main__":
+    unittest.main()
