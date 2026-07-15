@@ -16,6 +16,7 @@ SORT_FIELDS = frozenset(
         "branch",
         "confidence",
         "domain",
+        "language",
         "repository",
         "source",
         "types",

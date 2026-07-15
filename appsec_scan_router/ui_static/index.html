@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Application Inventory Service</title>
-    <link rel="stylesheet" href="/static/styles.css?v=7">
+    <link rel="stylesheet" href="/static/styles.css?v=8">
   </head>
   <body class="login-mode">
     <main class="login-shell" id="loginPage">
@@ -509,6 +509,7 @@
                     <col class="column-application">
                     <col class="column-repository">
                     <col class="column-branch">
+                    <col class="column-language">
                     <col class="column-domain">
                     <col class="column-updated">
                     <col class="column-confidence">
@@ -520,6 +521,7 @@
                       <th scope="col" data-sort-column="application"><button class="database-sort-button" type="button" data-database-sort="application">Application<span class="sort-indicator" aria-hidden="true"></span></button></th>
                       <th scope="col" data-sort-column="repository"><button class="database-sort-button" type="button" data-database-sort="repository">Repository<span class="sort-indicator" aria-hidden="true"></span></button></th>
                       <th scope="col" data-sort-column="branch"><button class="database-sort-button" type="button" data-database-sort="branch">Branch<span class="sort-indicator" aria-hidden="true"></span></button></th>
+                      <th scope="col" data-sort-column="language"><button class="database-sort-button" type="button" data-database-sort="language">Language<span class="sort-indicator" aria-hidden="true"></span></button></th>
                       <th scope="col" data-sort-column="domain"><button class="database-sort-button" type="button" data-database-sort="domain">Web domain<span class="sort-indicator" aria-hidden="true"></span></button></th>
                       <th scope="col" data-sort-column="updated"><button class="database-sort-button" type="button" data-database-sort="updated">Updated<span class="sort-indicator" aria-hidden="true"></span></button></th>
                       <th scope="col" data-sort-column="confidence"><button class="database-sort-button" type="button" data-database-sort="confidence">Confidence<span class="sort-indicator" aria-hidden="true"></span></button></th>
@@ -530,6 +532,16 @@
                       <th><input id="filterApplication" type="search" maxlength="120" placeholder="Filter" aria-label="Filter applications"></th>
                       <th><input id="filterRepository" type="search" maxlength="120" placeholder="Filter" aria-label="Filter repositories"></th>
                       <th><input id="filterBranch" type="search" maxlength="120" placeholder="Filter" aria-label="Filter branches"></th>
+                      <th>
+                        <details class="database-multi-filter" id="filterLanguage">
+                          <summary id="filterLanguageSummary" aria-label="Filter languages. All languages">Any language</summary>
+                          <div class="database-multi-filter-menu" role="group" aria-label="Languages">
+                            <div class="database-multi-filter-options" id="filterLanguageOptions"></div>
+                            <span class="database-multi-filter-empty" id="filterLanguageEmpty">No languages detected</span>
+                            <button class="database-multi-filter-clear" id="clearFilterLanguages" type="button" disabled>Clear languages</button>
+                          </div>
+                        </details>
+                      </th>
                       <th><select id="filterDomain" aria-label="Filter web domains"><option value="">Any</option><option value="has">Has domain</option><option value="missing">Missing</option></select></th>
                       <th><select id="filterUpdated" aria-label="Filter update date"><option value="">Any date</option><option value="active">Updated 90d</option><option value="older">Older 90d</option></select></th>
                       <th><select id="filterConfidence" aria-label="Filter confidence"><option value="">Any</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></th>
@@ -556,7 +568,7 @@
                   </thead>
                   <tbody id="databaseResultRows">
                     <tr>
-                      <td class="database-empty-row" colspan="8">Loading inventory records.</td>
+                      <td class="database-empty-row" colspan="9">Loading inventory records.</td>
                     </tr>
                   </tbody>
                 </table>
@@ -690,6 +702,6 @@
       </section>
     </main>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=7" type="module"></script>
+    <script src="/static/app.js?v=8" type="module"></script>
   </body>
 </html>

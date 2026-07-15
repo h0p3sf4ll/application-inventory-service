@@ -1376,6 +1376,14 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
             table=branch_inventory,
         )
     )
+    connection.execute(
+        sql.SQL(
+            "CREATE INDEX IF NOT EXISTS {index} ON {table} (owner_user_id, lower(primary_language))"
+        ).format(
+            index=sql.Identifier(f"{schema}_branch_inventory_owner_language_idx"[:63]),
+            table=branch_inventory,
+        )
+    )
     for table_name, column_name in (
         ("inventory_types", "inventory_type"),
         ("inventory_categories", "category"),
@@ -1898,6 +1906,7 @@ def search_inventory(
     offset: int = 0,
     table: str = DEFAULT_POSTGRES_TABLE,
     filters: dict[str, Any] | InventorySearchCriteria | None = None,
+    include_facets: bool = False,
 ) -> dict[str, Any]:
     if psycopg is None:
         raise RuntimeError(MISSING_PSYCOPG_MESSAGE)
@@ -1948,7 +1957,16 @@ def search_inventory(
             result = {column: json_cell(value) for column, value in zip(columns, row)}
             result["repository_url"] = repository_browse_url(result)
             rows.append(result)
-    return {
+        facets = (
+            {
+                "languages": inventory_language_options(
+                    connection, resolved_schema, owner_user_id
+                )
+            }
+            if include_facets
+            else None
+        )
+    result = {
         "query": criteria.text,
         "filters": criteria.as_dict(),
         "rows": rows,
@@ -1956,6 +1974,9 @@ def search_inventory(
         "limit": resolved_limit,
         "offset": resolved_offset,
     }
+    if facets is not None:
+        result["facets"] = facets
+    return result
 
 
 def export_inventory_csv(
@@ -2065,7 +2086,6 @@ def inventory_search_filter(
         ("organization", resolved.organizations),
         ("project", resolved.projects),
         ("repo_name", resolved.repositories),
-        ("primary_language", resolved.languages),
         ("confidence", resolved.confidences),
         ("web_domain_status", resolved.domain_statuses),
     ):
@@ -2076,6 +2096,9 @@ def inventory_search_filter(
                 ).format(column=sql.Identifier(column))
             )
             parameters.append([value.lower() for value in values])
+    if resolved.languages:
+        clauses.append(sql.SQL("lower(inventory.primary_language) = ANY(%s::text[])"))
+        parameters.append([value.lower() for value in resolved.languages])
     if resolved.application_types:
         clauses.append(
             sql.SQL(
@@ -2152,6 +2175,7 @@ def inventory_order_by(criteria: InventorySearchCriteria) -> Any:
         "repository": sql.SQL("inventory.repo_name"),
         "branch": sql.SQL("inventory.branch_name"),
         "domain": sql.SQL("inventory.primary_web_domain"),
+        "language": sql.SQL("lower(inventory.primary_language)"),
         "source": sql.SQL("inventory.provider"),
         "types": sql.SQL("inventory.inventory_types"),
         "confidence": sql.SQL(
@@ -2164,6 +2188,29 @@ def inventory_order_by(criteria: InventorySearchCriteria) -> Any:
         "{primary} {direction} NULLS LAST, inventory.organization, inventory.project, "
         "inventory.repo_name, inventory.branch_name"
     ).format(primary=expressions[criteria.sort_by], direction=direction)
+
+
+def inventory_language_options(
+    connection: Any,
+    schema: str,
+    owner_user_id: str,
+    limit: int = 200,
+) -> list[str]:
+    rows = connection.execute(
+        sql.SQL(
+            """
+            SELECT min(btrim(primary_language)) AS language
+            FROM {table}
+            WHERE (%s = '' OR owner_user_id = %s)
+              AND nullif(btrim(primary_language), '') IS NOT NULL
+            GROUP BY lower(btrim(primary_language))
+            ORDER BY lower(btrim(primary_language))
+            LIMIT %s
+            """
+        ).format(table=object_identifier(schema, "branch_inventory")),
+        (owner_user_id, owner_user_id, bounded_limit(limit, 200, 500)),
+    ).fetchall()
+    return [row[0] for row in rows]
 
 
 def contains_pattern(value: str) -> str:

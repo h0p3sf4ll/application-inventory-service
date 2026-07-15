@@ -69,6 +69,22 @@ class UiStaticTests(unittest.TestCase):
         self.assertIn("inventoryView", table_ancestors)
         self.assertNotIn("databaseView", table_ancestors)
 
+    def test_language_has_a_sortable_multi_select_column(self):
+        static_root = (
+            Path(__file__).resolve().parents[1] / "appsec_scan_router" / "ui_static"
+        )
+        html = (static_root / "index.html").read_text(encoding="utf-8")
+        javascript = (static_root / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('data-database-sort="language">Language', html)
+        self.assertIn('id="filterLanguage"', html)
+        self.assertIn('id="filterLanguageOptions"', html)
+        self.assertIn('id="clearFilterLanguages"', html)
+        self.assertIn('colspan="9"', html)
+        self.assertIn("<td>${databaseCell(row.primary_language)}</td>", javascript)
+        self.assertIn("filters.languages = languages", javascript)
+        self.assertIn('input[name="databaseFilterLanguage"]', javascript)
+
 
 if __name__ == "__main__":
     unittest.main()

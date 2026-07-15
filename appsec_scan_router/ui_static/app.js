@@ -74,6 +74,11 @@ const databaseTypeFilter = document.querySelector("#filterType");
 const databaseTypeFilterSummary = document.querySelector("#filterTypeSummary");
 const databaseTypeCheckboxes = Array.from(document.querySelectorAll('input[name="databaseFilterType"]'));
 const clearDatabaseTypeFilterButton = document.querySelector("#clearFilterTypes");
+const databaseLanguageFilter = document.querySelector("#filterLanguage");
+const databaseLanguageFilterSummary = document.querySelector("#filterLanguageSummary");
+const databaseLanguageOptions = document.querySelector("#filterLanguageOptions");
+const databaseLanguageEmpty = document.querySelector("#filterLanguageEmpty");
+const clearDatabaseLanguageFilterButton = document.querySelector("#clearFilterLanguages");
 const localLlmStatus = document.querySelector("#localLlmStatus");
 const inventoryAssistantQuery = document.querySelector("#inventoryAssistantQuery");
 const askInventoryButton = document.querySelector("#askInventory");
@@ -99,6 +104,7 @@ const state = {
   session: null,
   database: null,
   databaseSearch: {query: "", filters: {}, rows: [], total: 0, limit: 100, offset: 0, loaded: false},
+  databaseFacets: {languages: [], loaded: false},
   databaseSearchBusy: false,
   databaseConfigDirty: true,
   databaseRefreshTimer: null,
@@ -215,6 +221,7 @@ function bindEvents() {
     saveForm();
     if (databaseFieldChanged(event.target)) {
       state.databaseConfigDirty = true;
+      resetDatabaseFacets();
       scheduleDatabaseConnectionCheck();
     }
   });
@@ -290,21 +297,35 @@ function bindEvents() {
       scheduleColumnFilterSearch(event);
     });
   });
+  databaseLanguageOptions.addEventListener("change", (event) => {
+    if (!event.target.matches('input[name="databaseFilterLanguage"]')) {
+      return;
+    }
+    renderDatabaseLanguageFilterSummary();
+    scheduleColumnFilterSearch(event);
+  });
   clearDatabaseTypeFilterButton.addEventListener("click", () => {
     setDatabaseTypeFilters([]);
     setActiveInventoryFilterButton("");
     applyDatabaseColumnFilters();
   });
-  databaseTypeFilter.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      databaseTypeFilter.open = false;
-      databaseTypeFilterSummary.focus();
-    }
+  clearDatabaseLanguageFilterButton.addEventListener("click", () => {
+    setDatabaseLanguageFilters([]);
+    setActiveInventoryFilterButton("");
+    applyDatabaseColumnFilters();
   });
-  document.addEventListener("click", (event) => {
-    if (databaseTypeFilter.open && !databaseTypeFilter.contains(event.target)) {
-      databaseTypeFilter.open = false;
+  [databaseTypeFilter, databaseLanguageFilter].forEach((filter) => filter.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      filter.open = false;
+      filter.querySelector("summary").focus();
     }
+  }));
+  document.addEventListener("click", (event) => {
+    [databaseTypeFilter, databaseLanguageFilter].forEach((filter) => {
+      if (filter.open && !filter.contains(event.target)) {
+        filter.open = false;
+      }
+    });
   });
   askInventoryButton.addEventListener("click", askInventory);
   inventoryAssistantQuery.addEventListener("keydown", (event) => {
@@ -419,6 +440,7 @@ async function logout() {
     state.logs = [];
     state.database = null;
     state.databaseSearch = {query: "", filters: {}, rows: [], total: 0, limit: 100, offset: 0, loaded: false};
+    resetDatabaseFacets();
     databaseSearchQuery.value = "";
     resetDatabaseColumnFilters();
     setActiveInventoryFilterButton("all");
@@ -512,6 +534,7 @@ function listenToScan(scanId) {
     mergeScan(state.activeScan);
     closeEventSource();
     await loadScans(state.activeScan.id);
+    state.databaseFacets.loaded = false;
     await searchDatabase(0, state.databaseSearch.query, {filters: state.databaseSearch.filters, silent: true});
     notify(`Scan ${state.activeScan.status}.`);
   });
@@ -805,7 +828,7 @@ function renderDatabaseResults() {
   renderDatabaseSortHeaders(search.filters || {});
   if (!search.loaded) {
     databaseResultSummary.textContent = "Loading inventory records";
-    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="8">Loading inventory records.</td></tr>';
+    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="9">Loading inventory records.</td></tr>';
     databasePageSummary.textContent = "Page 1";
     databasePreviousButton.disabled = true;
     databaseNextButton.disabled = true;
@@ -820,13 +843,14 @@ function renderDatabaseResults() {
     ? "Updating as findings are committed"
     : `Updated ${formatTime(search.refreshedAt || Date.now())}`;
   if (!search.rows.length) {
-    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="8">No inventory records match these filters.</td></tr>';
+    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="9">No inventory records match these filters.</td></tr>';
   } else {
     databaseResultRows.innerHTML = search.rows.map((row, index) => `
       <tr>
         <td>${databaseApplicationCell(row, index)}</td>
         <td>${databaseRepositoryCell(row)}</td>
         <td>${databaseCell(row.branch_name)}</td>
+        <td>${databaseCell(row.primary_language)}</td>
         <td>${databaseDomainCell(row)}</td>
         <td>${databaseCell(formatDate(row.branch_last_updated || row.last_updated))}</td>
         <td>${confidenceCell(row.confidence)}</td>
@@ -849,7 +873,7 @@ function databaseCell(value) {
 
 function databaseApplicationCell(row, index) {
   const name = row.inventory_name || row.mobile_name || row.repo_name || "Not detected";
-  const metadata = [row.inventory_version || row.mobile_version, row.primary_language].filter(Boolean).join(" · ");
+  const metadata = row.inventory_version || row.mobile_version || "";
   return `
     <button class="inventory-record-link" type="button" data-record-index="${index}">${escapeHtml(name)}</button>
     ${metadata ? `<small class="database-cell-meta">${escapeHtml(metadata)}</small>` : ""}
@@ -1046,11 +1070,25 @@ async function searchDatabase(offset = 0, query = "", {filters = state.databaseS
     const response = await fetch("/api/database/search", {
       method: "POST",
       headers: authHeaders(true),
-      body: JSON.stringify({...databasePayload(), query, filters, offset, limit: state.databaseSearch.limit}),
+      body: JSON.stringify({
+        ...databasePayload(),
+        query,
+        filters,
+        offset,
+        limit: state.databaseSearch.limit,
+        includeFacets: !state.databaseFacets.loaded,
+      }),
     });
     const data = await response.json();
     if (!response.ok) {
       throw new Error(data.error || "Database search failed.");
+    }
+    if (data.search.facets) {
+      state.databaseFacets = {
+        languages: Array.isArray(data.search.facets.languages) ? data.search.facets.languages : [],
+        loaded: true,
+      };
+      renderDatabaseLanguageOptions(selectedDatabaseLanguages());
     }
     state.databaseSearch = {...data.search, loaded: true, refreshedAt: Date.now()};
     databaseSearchQuery.value = data.search.query || "";
@@ -1225,6 +1263,7 @@ function databaseFiltersFromControls() {
     "confidences",
     "providers",
     "application_types",
+    "languages",
   ]) {
     delete filters[key];
   }
@@ -1264,6 +1303,10 @@ function databaseColumnFilterCriteria() {
   if (applicationTypes.length) {
     filters.application_types = applicationTypes;
   }
+  const languages = selectedDatabaseLanguages();
+  if (languages.length) {
+    filters.languages = languages;
+  }
   return filters;
 }
 
@@ -1276,6 +1319,7 @@ function populateDatabaseColumnFilters(filters = {}) {
   databaseColumnFilters.confidence.value = filters.confidences && filters.confidences.length === 1 ? filters.confidences[0] : "";
   databaseColumnFilters.source.value = filters.providers && filters.providers.length === 1 ? filters.providers[0] : "";
   setDatabaseTypeFilters(filters.application_types || []);
+  setDatabaseLanguageFilters(filters.languages || []);
 }
 
 function resetDatabaseColumnFilters() {
@@ -1283,6 +1327,7 @@ function resetDatabaseColumnFilters() {
     control.value = "";
   });
   setDatabaseTypeFilters([]);
+  setDatabaseLanguageFilters([]);
 }
 
 function selectedDatabaseTypes() {
@@ -1316,6 +1361,69 @@ function renderDatabaseTypeFilter() {
   );
   databaseTypeFilter.classList.toggle("active", selected.length > 0);
   clearDatabaseTypeFilterButton.disabled = selected.length === 0;
+}
+
+function databaseLanguageCheckboxes() {
+  return Array.from(databaseLanguageOptions.querySelectorAll('input[name="databaseFilterLanguage"]'));
+}
+
+function selectedDatabaseLanguages() {
+  return databaseLanguageCheckboxes()
+    .filter((checkbox) => checkbox.checked)
+    .map((checkbox) => checkbox.value);
+}
+
+function setDatabaseLanguageFilters(values) {
+  renderDatabaseLanguageOptions(Array.isArray(values) ? values : []);
+}
+
+function renderDatabaseLanguageOptions(selectedValues = selectedDatabaseLanguages()) {
+  const selected = selectedValues.map((value) => String(value || "").trim()).filter(Boolean);
+  const selectedKeys = new Set(selected.map((value) => value.toLocaleLowerCase()));
+  const languagesByKey = new Map();
+  [...(state.databaseFacets.languages || []), ...selected].forEach((value) => {
+    const language = String(value || "").trim();
+    const key = language.toLocaleLowerCase();
+    if (language && !languagesByKey.has(key)) {
+      languagesByKey.set(key, language);
+    }
+  });
+  const languages = Array.from(languagesByKey.values())
+    .sort((left, right) => left.localeCompare(right, undefined, {sensitivity: "base"}));
+  databaseLanguageOptions.innerHTML = languages.map((language) => `
+    <label class="database-type-option">
+      <input name="databaseFilterLanguage" type="checkbox" value="${escapeHtml(language)}"${selectedKeys.has(language.toLocaleLowerCase()) ? " checked" : ""}>
+      <span>${escapeHtml(language)}</span>
+    </label>
+  `).join("");
+  databaseLanguageEmpty.hidden = languages.length > 0;
+  databaseLanguageCheckboxes().forEach((checkbox) => {
+    checkbox.disabled = state.databaseSearchBusy;
+  });
+  renderDatabaseLanguageFilterSummary();
+}
+
+function renderDatabaseLanguageFilterSummary() {
+  const selected = selectedDatabaseLanguages();
+  databaseLanguageFilterSummary.textContent = selected.length === 0
+    ? "Any language"
+    : selected.length === 1
+      ? selected[0]
+      : `${selected.length} languages selected`;
+  databaseLanguageFilterSummary.title = selected.length ? selected.join(", ") : "All languages";
+  databaseLanguageFilterSummary.setAttribute(
+    "aria-label",
+    selected.length
+      ? `Filter languages. Selected: ${selected.join(", ")}`
+      : "Filter languages. All languages",
+  );
+  databaseLanguageFilter.classList.toggle("active", selected.length > 0);
+  clearDatabaseLanguageFilterButton.disabled = selected.length === 0 || state.databaseSearchBusy;
+}
+
+function resetDatabaseFacets() {
+  state.databaseFacets = {languages: [], loaded: false};
+  setDatabaseLanguageFilters([]);
 }
 
 function setActiveInventoryFilterButton(name) {
@@ -1961,6 +2069,14 @@ function setDatabaseBusy(isBusy) {
   Object.values(databaseColumnFilters).forEach((control) => {
     control.disabled = isBusy;
   });
+  databaseTypeCheckboxes.forEach((checkbox) => {
+    checkbox.disabled = isBusy;
+  });
+  databaseLanguageCheckboxes().forEach((checkbox) => {
+    checkbox.disabled = isBusy;
+  });
+  clearDatabaseTypeFilterButton.disabled = isBusy || selectedDatabaseTypes().length === 0;
+  clearDatabaseLanguageFilterButton.disabled = isBusy || selectedDatabaseLanguages().length === 0;
   if (isBusy) {
     askInventoryButton.disabled = true;
   } else {

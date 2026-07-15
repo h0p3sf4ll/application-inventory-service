@@ -93,6 +93,21 @@ class PostgresInventoryIntegrationTests(unittest.TestCase):
         self.assertEqual(
             search["rows"][0]["primary_web_domain"], "inventory.example.engineering"
         )
+        faceted = search_inventory(
+            POSTGRES_TEST_DSN,
+            schema=self.schema,
+            owner_user_id="user-a",
+            filters={
+                "languages": ["Python", "Go"],
+                "sort_by": "language",
+                "sort_direction": "asc",
+            },
+            include_facets=True,
+        )
+        self.assertEqual(faceted["total"], 1)
+        self.assertEqual(faceted["facets"]["languages"], ["Python"])
+        self.assertEqual(faceted["filters"]["languages"], ["Go", "Python"])
+        self.assertEqual(faceted["filters"]["sort_by"], "language")
         self.assertEqual(
             search_inventory(
                 POSTGRES_TEST_DSN,
@@ -241,6 +256,7 @@ class PostgresInventoryIntegrationTests(unittest.TestCase):
             "branch_name": "main",
             "inventory_name": "Inventory Service",
             "inventory_version": version,
+            "primary_language": "Python",
             "inventory_types": "api_service; microservice",
             "categories": "python; fastapi",
             "branch_contributing_developers": "Alice <alice@example.com>; Bob <bob@example.com>",

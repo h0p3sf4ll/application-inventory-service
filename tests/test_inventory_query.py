@@ -86,6 +86,19 @@ class InventorySearchCriteriaTests(unittest.TestCase):
 
         self.assertIsNone(criteria.older_than_days)
 
+    def test_language_filters_are_multi_select_and_sortable(self) -> None:
+        criteria = InventorySearchCriteria.from_mapping(
+            {
+                "languages": ["Python", "Go", "Python", ""],
+                "sort_by": "language",
+                "sort_direction": "asc",
+            }
+        )
+
+        self.assertEqual(criteria.languages, ("Go", "Python"))
+        self.assertEqual(criteria.sort_by, "language")
+        self.assertEqual(criteria.sort_direction, "asc")
+
     def test_query_plan_defaults_exports_to_xlsx(self) -> None:
         plan = InventoryQueryPlan.from_mapping(
             {

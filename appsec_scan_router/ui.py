@@ -632,6 +632,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                 limit=positive_int(payload.get("limit"), 100),
                 offset=max(0, integer_value(payload.get("offset"), 0)),
                 table=config["postgresTable"],
+                include_facets=payload.get("includeFacets") is True,
             )
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)

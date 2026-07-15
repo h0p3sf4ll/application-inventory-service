@@ -178,7 +178,7 @@ class GitHubAppTokenProvider:
             "Authorization": f"Bearer {assertion}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "application-inventory-service/1.6.13",
+            "User-Agent": "application-inventory-service/1.6.14",
         }
         try:
             response = self._session.post(url, headers=headers, timeout=self.timeout_seconds)
@@ -297,7 +297,7 @@ class GitHubEnterpriseClient:
         self._headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "application-inventory-service/1.6.13",
+            "User-Agent": "application-inventory-service/1.6.14",
         }
         self._retry = Retry(
             total=positive_int_env("APPLICATION_INVENTORY_GITHUB_MAX_RETRIES", DEFAULT_GITHUB_MAX_RETRIES),

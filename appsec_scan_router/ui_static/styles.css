@@ -1746,7 +1746,7 @@ button:focus-visible {
 
 .database-table {
   width: 100%;
-  min-width: 1320px;
+  min-width: 1480px;
   border-collapse: collapse;
   font-size: 12px;
   table-layout: fixed;
@@ -1759,6 +1759,10 @@ button:focus-visible {
 
 .database-table .column-branch {
   width: 150px;
+}
+
+.database-table .column-language {
+  width: 160px;
 }
 
 .database-table .column-domain {
@@ -1872,6 +1876,18 @@ button:focus-visible {
   border: 1px solid var(--border-strong);
   border-radius: 7px;
   box-shadow: var(--shadow);
+}
+
+.database-multi-filter-options {
+  display: grid;
+  gap: 2px;
+}
+
+.database-multi-filter-empty {
+  padding: 9px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .database-type-option {
