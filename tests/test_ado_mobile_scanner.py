@@ -1043,6 +1043,10 @@ class UiServiceTests(unittest.TestCase):
         self.assertIn('id="askInventory" type="button">Ask AI</button>', html)
         self.assertIn('data-database-sort="confidence"', html)
         self.assertIn('id="filterConfidence"', html)
+        self.assertIn('id="filterType"', html)
+        self.assertIn('id="clearFilterTypes"', html)
+        self.assertEqual(html.count('name="databaseFilterType"'), 10)
+        self.assertNotIn('<select id="filterType"', html)
         self.assertIn('data-inventory-filter="has-domain"', html)
         for inventory_filter in (
             "mobile-app",

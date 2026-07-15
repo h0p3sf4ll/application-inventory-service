@@ -19,7 +19,7 @@ from .constants import (
 )
 from .domains import normalize_web_endpoint, normalized_confidence
 from .inventory_exports import json_cell, rows_to_csv, rows_to_json, rows_to_xlsx
-from .inventory_query import InventorySearchCriteria
+from .inventory_query import InventorySearchCriteria, repository_browse_url
 from .models import ScanConfig
 
 try:
@@ -1943,10 +1943,11 @@ def search_inventory(
             (*parameters, resolved_limit, resolved_offset),
         )
         columns = [column.name for column in cursor.description]
-        rows = [
-            {column: json_cell(value) for column, value in zip(columns, row)}
-            for row in cursor.fetchall()
-        ]
+        rows = []
+        for row in cursor.fetchall():
+            result = {column: json_cell(value) for column, value in zip(columns, row)}
+            result["repository_url"] = repository_browse_url(result)
+            rows.append(result)
     return {
         "query": criteria.text,
         "filters": criteria.as_dict(),

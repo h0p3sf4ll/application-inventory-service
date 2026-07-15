@@ -107,14 +107,17 @@ class PostgresInventoryIntegrationTests(unittest.TestCase):
             schema=self.schema,
             owner_user_id="user-a",
             filters={
-                "application_types": ["api_service"],
+                "application_types": ["mobile_app", "api_service"],
                 "has_domain": True,
                 "confidences": ["high"],
                 "updated_within_days": 90,
             },
         )
         self.assertEqual(structured["total"], 1)
-        self.assertEqual(structured["filters"]["application_types"], ["api_service"])
+        self.assertEqual(
+            structured["filters"]["application_types"],
+            ["api_service", "mobile_app"],
+        )
         column_filtered = search_inventory(
             POSTGRES_TEST_DSN,
             schema=self.schema,
@@ -144,7 +147,7 @@ class PostgresInventoryIntegrationTests(unittest.TestCase):
             POSTGRES_TEST_DSN,
             schema=self.schema,
             owner_user_id="user-a",
-            filters={"application_types": ["api_service"]},
+            filters={"application_types": ["mobile_app", "api_service"]},
         )
         workbook = load_workbook(BytesIO(export), read_only=True)
         self.assertEqual(sum(1 for _ in workbook["Inventory"].iter_rows()), 2)
