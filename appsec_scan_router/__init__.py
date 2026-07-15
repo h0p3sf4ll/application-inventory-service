@@ -126,6 +126,7 @@ from .postgres import (
     export_inventory_csv,
     export_inventory_json,
     export_inventory_rows,
+    export_inventory_xlsx,
     search_inventory,
 )
 from .reports import (
@@ -304,6 +305,7 @@ __all__ = [
     "export_inventory_csv",
     "export_inventory_json",
     "export_inventory_rows",
+    "export_inventory_xlsx",
     "ScanConfig",
     "SourceTargetFilter",
     "ScanManager",

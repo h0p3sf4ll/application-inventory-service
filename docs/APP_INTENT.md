@@ -40,6 +40,8 @@ For network-deployable assets, the service attributes source branches to web dom
 - Semgrep target lists.
 - SonarQube project metadata suggestions.
 - Normalized PostgreSQL tables for analytics and reporting.
+- Live, user-scoped inventory search with XLSX, CSV, and JSON exports.
+- Optional local natural-language query planning without sharing inventory records with the model.
 - Encrypted recurring scan definitions for repeatable inventory operations.
 
 ## Design Principles

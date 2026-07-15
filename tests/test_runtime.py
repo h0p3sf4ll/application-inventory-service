@@ -23,7 +23,9 @@ class RuntimeTests(unittest.TestCase):
             run = ScanRun("scan-1", {}, (), (), Path(tmpdir))
             for index in range(5100):
                 run.append_log(f"line {index}")
-            run.append_log('SCAN_PROGRESS {"repositoriesPrepared":10,"repositoriesTotal":20,"branchesScanned":7,"branchesTotal":12}')
+            run.append_log(
+                'SCAN_PROGRESS {"repositoriesPrepared":10,"repositoriesTotal":20,"branchesScanned":7,"branchesTotal":12}'
+            )
             run.append_log("DETECTED asset=Payments branch=main")
 
             summary = run.summary()
@@ -36,21 +38,99 @@ class RuntimeTests(unittest.TestCase):
 
     def test_scan_manager_pauses_and_resumes_running_process(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            manager = ScanManager(Path(tmpdir), dict, lambda config, path: [], lambda config: {}, list)
+            manager = ScanManager(
+                Path(tmpdir), dict, lambda config, path: [], lambda config: {}, list
+            )
             process = Mock()
             process.poll.return_value = None
-            run = ScanRun("scan-1", {"ownerUserId": "user-1"}, (), (), Path(tmpdir), status="running", process=process)
+            run = ScanRun(
+                "scan-1",
+                {"ownerUserId": "user-1"},
+                (),
+                (),
+                Path(tmpdir),
+                status="running",
+                process=process,
+            )
             manager.scans[run.id] = run
 
-            with patch("appsec_scan_router.runtime.pause_process") as pause, patch("appsec_scan_router.runtime.resume_process") as resume:
+            with (
+                patch("appsec_scan_router.runtime.pause_process") as pause,
+                patch("appsec_scan_router.runtime.resume_process") as resume,
+            ):
                 manager.pause_scan(run.id)
                 self.assertEqual(run.status, "paused")
-                pause.assert_called_once_with(process)
+                pause.assert_called_once_with(process, None)
                 manager.resume_scan(run.id)
                 self.assertEqual(run.status, "running")
-                resume.assert_called_once_with(process)
+                resume.assert_called_once_with(process, None)
 
-    @unittest.skipUnless(os.name == "posix", "Process pause and resume require POSIX signals.")
+    @unittest.skipUnless(
+        os.name == "posix", "Durable process recovery requires POSIX process groups."
+    )
+    def test_running_scan_survives_manager_restart(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            state_dir = root / "state"
+
+            def command(config, path):
+                return [
+                    sys.executable,
+                    "-c",
+                    "import time; print('ready', flush=True); time.sleep(1.5); print('done', flush=True)",
+                ]
+
+            manager = ScanManager(
+                root / "reports",
+                dict,
+                command,
+                lambda config: dict(os.environ),
+                list,
+                state_dir=state_dir,
+            )
+            run = manager.start_scan(
+                {"ownerUserId": "user-1", "token": "not-written-in-plaintext"}
+            )
+            deadline = time.monotonic() + 3
+            while (
+                run.process_pid is None or not any("ready" in line for line in run.logs)
+            ) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertIsNotNone(run.process_pid)
+            process_pid = run.process_pid
+
+            manager.close()
+            os.kill(process_pid, 0)
+            self.assertNotIn(
+                b"not-written-in-plaintext",
+                (state_dir / "scan-runs.json.enc").read_bytes(),
+            )
+
+            recovered_manager = ScanManager(
+                root / "reports",
+                dict,
+                command,
+                lambda config: dict(os.environ),
+                list,
+                state_dir=state_dir,
+            )
+            recovered = recovered_manager.get_scan(run.id)
+            self.assertIsNotNone(recovered)
+            self.assertTrue(recovered.recovered)
+            self.assertIn(recovered.status, {"running", "succeeded"})
+            deadline = time.monotonic() + 5
+            while recovered.status != "succeeded" and time.monotonic() < deadline:
+                time.sleep(0.03)
+            recovered_manager.close()
+            if run.process is not None:
+                run.process.wait(timeout=2)
+
+        self.assertEqual(recovered.status, "succeeded")
+        self.assertTrue(any("done" in line for line in recovered.logs))
+
+    @unittest.skipUnless(
+        os.name == "posix", "Process pause and resume require POSIX signals."
+    )
     def test_scan_manager_controls_a_real_process_group(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = ScanManager(
@@ -74,19 +154,28 @@ class RuntimeTests(unittest.TestCase):
             manager.resume_scan(run.id)
             self.assertEqual(run.status, "running")
             manager.stop_scan(run.id)
-            while run.status not in {"stopped", "failed"} and time.monotonic() < deadline:
+            while (
+                run.status not in {"stopped", "failed"} and time.monotonic() < deadline
+            ):
                 time.sleep(0.01)
             manager.close()
 
         self.assertEqual(run.status, "stopped")
 
     def test_application_and_mobile_fields_are_at_the_end(self):
-        classification_start = INVENTORY_FIELDNAMES.index(APPLICATION_CLASSIFICATION_FIELDNAMES[0])
+        classification_start = INVENTORY_FIELDNAMES.index(
+            APPLICATION_CLASSIFICATION_FIELDNAMES[0]
+        )
         mobile_start = INVENTORY_FIELDNAMES.index(MOBILE_FIELDNAMES[0])
-        self.assertEqual(INVENTORY_FIELDNAMES[classification_start:mobile_start], APPLICATION_CLASSIFICATION_FIELDNAMES)
+        self.assertEqual(
+            INVENTORY_FIELDNAMES[classification_start:mobile_start],
+            APPLICATION_CLASSIFICATION_FIELDNAMES,
+        )
         self.assertEqual(INVENTORY_FIELDNAMES[mobile_start:], MOBILE_FIELDNAMES)
         self.assertEqual(EXPORT_COLUMNS[-1], "google_play_lookup_status")
-        self.assertGreater(EXPORT_COLUMNS.index("mobile_name"), EXPORT_COLUMNS.index("inventory_types"))
+        self.assertGreater(
+            EXPORT_COLUMNS.index("mobile_name"), EXPORT_COLUMNS.index("inventory_types")
+        )
 
     def test_repository_discovery_uses_multiple_workers(self):
         lock = threading.Lock()

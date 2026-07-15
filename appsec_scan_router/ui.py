@@ -35,6 +35,7 @@ from .constants import (
     DEFAULT_OUT_PREFIX,
     DEFAULT_POSTGRES_DATABASE,
     DEFAULT_POSTGRES_HOST,
+    DEFAULT_POSTGRES_PASSWORD,
     DEFAULT_POSTGRES_PORT,
     DEFAULT_POSTGRES_SCHEMA,
     DEFAULT_POSTGRES_TABLE,
@@ -48,7 +49,14 @@ from .github import (
     configured_github_owners,
 )
 from .observability import configure_logging, log_github_app_context, observability_dsn
-from .postgres import database_status, export_inventory_csv, export_inventory_json, search_inventory
+from .local_llm import LocalInventoryAssistant
+from .postgres import (
+    database_status,
+    export_inventory_csv,
+    export_inventory_json,
+    export_inventory_xlsx,
+    search_inventory,
+)
 from .runtime import REPORT_EXTENSIONS, SCAN_STATUSES_DONE, ScanManager, ScanRun
 from .scan_request import (
     build_scan_command,
@@ -92,6 +100,8 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
     observability_schema: str = DEFAULT_POSTGRES_SCHEMA
     health_cache: dict[str, Any] | None = None
     health_cache_at: float = 0.0
+    startup_database_status: dict[str, Any] | None = None
+    local_assistant: LocalInventoryAssistant
 
     def handle_one_request(self) -> None:
         started = time.monotonic()
@@ -134,7 +144,13 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             self.handle_metrics()
             return
         if path == "/api/config":
-            self.send_json(default_ui_config(self.manager.reports_root))
+            self.send_json(
+                default_ui_config(
+                    self.manager.reports_root,
+                    database=self.startup_database_status,
+                    local_llm=self.local_assistant.public_config(),
+                )
+            )
             return
         if path == "/api/session":
             self.send_json({"session": self.auth.status(self.current_session())})
@@ -164,7 +180,9 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             record = self.require_session()
             if not record:
                 return
-            self.send_json({"schedules": self.scheduler.list_schedules(owner_scope(record))})
+            self.send_json(
+                {"schedules": self.scheduler.list_schedules(owner_scope(record))}
+            )
             return
         if path.startswith("/api/scans/"):
             self.handle_scan_get(path)
@@ -194,13 +212,24 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         if path == "/api/database/search":
             self.handle_database_search()
             return
+        if path == "/api/database/interpret":
+            self.handle_database_interpret()
+            return
         if path == "/api/source-targets":
             self.handle_source_targets()
             return
-        if path.startswith("/api/scans/") and path.rsplit("/", 1)[-1] in {"pause", "resume", "stop"}:
+        if path.startswith("/api/scans/") and path.rsplit("/", 1)[-1] in {
+            "pause",
+            "resume",
+            "stop",
+        }:
             self.handle_scan_action(path)
             return
-        if path.startswith("/api/schedules/") and path.rsplit("/", 1)[-1] in {"enable", "disable", "run"}:
+        if path.startswith("/api/schedules/") and path.rsplit("/", 1)[-1] in {
+            "enable",
+            "disable",
+            "run",
+        }:
             self.handle_schedule_action(path)
             return
         self.send_error(HTTPStatus.NOT_FOUND)
@@ -263,6 +292,22 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             payload["ownerUserId"] = owner_scope(record)
             payload["ownerUserLogin"] = owner_login(record)
             payload = self.auth.apply_credentials(payload, record)
+            database_config = normalize_database_config(payload)
+            if database_config["postgresEnabled"]:
+                status = database_status(
+                    database_config["postgresDsn"],
+                    schema=database_config["postgresSchema"],
+                    table=database_config["postgresTable"],
+                    owner_user_id=owner_scope(record),
+                )
+                if not status.get("connected"):
+                    self.send_json(
+                        {
+                            "error": f"PostgreSQL is unavailable: {status.get('message', 'connection failed')}"
+                        },
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                    )
+                    return
             run = self.manager.start_scan(payload)
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
@@ -332,7 +377,9 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         if action == "run":
             schedule = self.scheduler.run_now(schedule_id, owner_scope(record))
         else:
-            schedule = self.scheduler.set_enabled(schedule_id, owner_scope(record), action == "enable")
+            schedule = self.scheduler.set_enabled(
+                schedule_id, owner_scope(record), action == "enable"
+            )
         if not schedule:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
@@ -343,14 +390,20 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         if not self.valid_csrf(record):
             return
         parts = [part for part in path.split("/") if part]
-        if len(parts) != 3 or not self.scheduler.delete_schedule(parts[2], owner_scope(record)):
+        if len(parts) != 3 or not self.scheduler.delete_schedule(
+            parts[2], owner_scope(record)
+        ):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         self.send_json({"deleted": True})
 
     def handle_github_enterprise_auth_start(self) -> None:
         try:
-            self.redirect(self.auth.github_enterprise_oauth.authorization_url(self.redirect_uri("github-enterprise")))
+            self.redirect(
+                self.auth.github_enterprise_oauth.authorization_url(
+                    self.redirect_uri("github-enterprise")
+                )
+            )
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
@@ -371,11 +424,16 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         except ValueError:
             self.redirect("/?auth=failed&provider=github-enterprise")
             return
-        self.redirect("/?auth=success&provider=github-enterprise", session_cookie(record.id, secure_cookie()))
+        self.redirect(
+            "/?auth=success&provider=github-enterprise",
+            session_cookie(record.id, secure_cookie()),
+        )
 
     def handle_google_auth_start(self) -> None:
         try:
-            self.redirect(self.auth.google_oauth.authorization_url(self.redirect_uri("google")))
+            self.redirect(
+                self.auth.google_oauth.authorization_url(self.redirect_uri("google"))
+            )
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
@@ -387,12 +445,16 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             self.redirect("/?auth=failed&provider=google")
             return
         try:
-            user = self.auth.google_oauth.complete(code, state, self.redirect_uri("google"))
+            user = self.auth.google_oauth.complete(
+                code, state, self.redirect_uri("google")
+            )
             record = self.auth.create_session(user)
         except ValueError:
             self.redirect("/?auth=failed&provider=google")
             return
-        self.redirect("/?auth=success&provider=google", session_cookie(record.id, secure_cookie()))
+        self.redirect(
+            "/?auth=success&provider=google", session_cookie(record.id, secure_cookie())
+        )
 
     def handle_test_auth_start(self) -> None:
         try:
@@ -400,7 +462,9 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
-        self.redirect("/?auth=success&provider=test", session_cookie(record.id, secure_cookie()))
+        self.redirect(
+            "/?auth=success&provider=test", session_cookie(record.id, secure_cookie())
+        )
 
     def handle_logout(self) -> None:
         record = self.current_session()
@@ -408,7 +472,10 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             return
         if record:
             self.auth.logout(record.id)
-        self.send_json({"session": self.auth.status(None)}, headers={"Set-Cookie": expired_session_cookie(secure_cookie())})
+        self.send_json(
+            {"session": self.auth.status(None)},
+            headers={"Set-Cookie": expired_session_cookie(secure_cookie())},
+        )
 
     def handle_delete_credential(self) -> None:
         try:
@@ -454,7 +521,9 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             type(self).health_cache_at = now
         self.send_json(
             {
-                "status": "ok" if database is None or database.get("connected") else "degraded",
+                "status": "ok"
+                if database is None or database.get("connected")
+                else "degraded",
                 "service": "application-inventory-service",
                 "database": database,
                 "observability": {
@@ -487,15 +556,36 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                 return
             payload = self.read_json()
             config = normalize_database_config(payload)
-            export_format = clean_choice(payload.get("format"), {"csv", "json"}, "csv")
+            export_format = clean_choice(
+                payload.get("format"), {"csv", "json", "xlsx"}, "xlsx"
+            )
             query = clean_text(payload.get("query"))
-            if export_format == "json":
+            filters = (
+                payload.get("filters")
+                if isinstance(payload.get("filters"), dict)
+                else None
+            )
+            if export_format == "xlsx":
+                content = export_inventory_xlsx(
+                    config["postgresDsn"],
+                    schema=config["postgresSchema"],
+                    owner_user_id=owner_scope(record),
+                    query=query,
+                    table=config["postgresTable"],
+                    filters=filters,
+                )
+                filename = "application_inventory_database_export.xlsx"
+                content_type = (
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            elif export_format == "json":
                 content = export_inventory_json(
                     config["postgresDsn"],
                     schema=config["postgresSchema"],
                     owner_user_id=owner_scope(record),
                     query=query,
                     table=config["postgresTable"],
+                    filters=filters,
                 )
                 filename = "application_inventory_database_export.json"
                 content_type = "application/json"
@@ -506,6 +596,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                     owner_user_id=owner_scope(record),
                     query=query,
                     table=config["postgresTable"],
+                    filters=filters,
                 )
                 filename = "application_inventory_database_export.csv"
                 content_type = "text/csv"
@@ -513,7 +604,9 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
         except Exception as exc:
-            self.send_json({"error": database_export_error(exc)}, HTTPStatus.BAD_REQUEST)
+            self.send_json(
+                {"error": database_export_error(exc)}, HTTPStatus.BAD_REQUEST
+            )
             return
         self.send_bytes(
             content,
@@ -533,6 +626,9 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                 schema=config["postgresSchema"],
                 owner_user_id=owner_scope(record),
                 query=clean_text(payload.get("query")),
+                filters=payload.get("filters")
+                if isinstance(payload.get("filters"), dict)
+                else None,
                 limit=positive_int(payload.get("limit"), 100),
                 offset=max(0, integer_value(payload.get("offset"), 0)),
                 table=config["postgresTable"],
@@ -541,9 +637,57 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
         except Exception as exc:
-            self.send_json({"error": database_export_error(exc)}, HTTPStatus.BAD_REQUEST)
+            self.send_json(
+                {"error": database_export_error(exc)}, HTTPStatus.BAD_REQUEST
+            )
             return
         self.send_json({"search": result})
+
+    def handle_database_interpret(self) -> None:
+        try:
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
+            payload = self.read_json()
+            status = self.local_assistant.status()
+            if not status.get("available"):
+                self.send_json(
+                    {
+                        "error": status.get("message")
+                        or "The local inventory assistant is unavailable."
+                    },
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+            plan = self.local_assistant.interpret(clean_text(payload.get("question")))
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        except Exception:
+            LOGGER.exception(
+                "Local inventory assistant request failed",
+                extra={"event_type": "local_llm.failed"},
+            )
+            self.send_json(
+                {
+                    "error": "The local inventory assistant could not interpret that request."
+                },
+                HTTPStatus.BAD_GATEWAY,
+            )
+            return
+        LOGGER.info(
+            "Local inventory assistant created a query plan",
+            extra={
+                "event_type": "local_llm.query",
+                "owner_user_id": owner_scope(record),
+                "owner_user_login": owner_login(record),
+                "metadata": {
+                    "action": plan.action,
+                    "export_format": plan.export_format,
+                },
+            },
+        )
+        self.send_json({"plan": plan.as_dict()})
 
     def handle_source_targets(self) -> None:
         try:
@@ -728,64 +872,68 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         if not record:
             self.send_json({"error": "Sign in first."}, HTTPStatus.UNAUTHORIZED)
             return False
-        if not secrets.compare_digest(self.headers.get("X-CSRF-Token", ""), record.csrf_token):
-            self.send_json({"error": "Session validation failed. Refresh and try again."}, HTTPStatus.FORBIDDEN)
+        if not secrets.compare_digest(
+            self.headers.get("X-CSRF-Token", ""), record.csrf_token
+        ):
+            self.send_json(
+                {"error": "Session validation failed. Refresh and try again."},
+                HTTPStatus.FORBIDDEN,
+            )
             return False
         return True
 
     def redirect_uri(self, provider: str) -> str:
-        public_url = env_value("APPLICATION_INVENTORY_SERVICE_PUBLIC_URL", "APPSEC_INVENTORY_SERVICE_PUBLIC_URL")
+        public_url = env_value(
+            "APPLICATION_INVENTORY_SERVICE_PUBLIC_URL",
+            "APPSEC_INVENTORY_SERVICE_PUBLIC_URL",
+        )
         if public_url:
             base_url = safe_public_url(public_url)
         else:
-            proto = self.headers.get("X-Forwarded-Proto") or ("https" if secure_cookie() else "http")
-            host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or f"{self.server.server_name}:{self.server.server_port}"
+            proto = self.headers.get("X-Forwarded-Proto") or (
+                "https" if secure_cookie() else "http"
+            )
+            host = (
+                self.headers.get("X-Forwarded-Host")
+                or self.headers.get("Host")
+                or f"{self.server.server_name}:{self.server.server_port}"
+            )
             base_url = safe_request_base_url(proto, host)
         return f"{base_url}/api/auth/{provider}/callback"
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def default_ui_config(reports_root: Path) -> dict[str, Any]:
+def default_ui_config(
+    reports_root: Path,
+    database: dict[str, Any] | None = None,
+    local_llm: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     github_enterprise_oauth_config = GitHubEnterpriseOAuthConfig.from_env()
     google_oauth_config = GoogleOAuthConfig.from_env()
     test_login_config = TestLoginConfig.from_env()
     github_repositories = parse_source_target_filter_values(
-        [env_value("APPLICATION_INVENTORY_GITHUB_REPOSITORIES", "APPSEC_INVENTORY_GITHUB_REPOSITORIES")]
+        [
+            env_value(
+                "APPLICATION_INVENTORY_GITHUB_REPOSITORIES",
+                "APPSEC_INVENTORY_GITHUB_REPOSITORIES",
+            )
+        ]
     )
     return {
         "defaults": {
             "provider": "azure-devops",
             "githubUrls": list(configured_github_owners()),
-            "githubRepositories": [target_filter_value(item) for item in github_repositories],
+            "githubRepositories": [
+                target_filter_value(item) for item in github_repositories
+            ],
             "outPrefix": DEFAULT_OUT_PREFIX,
             "applicationTypes": [],
             "applicationTypeChoices": [
-                {"value": value, "label": APPLICATION_TYPE_LABELS.get(value, value.replace("_", " ").title())}
+                {
+                    "value": value,
+                    "label": APPLICATION_TYPE_LABELS.get(
+                        value, value.replace("_", " ").title()
+                    ),
+                }
                 for value in KNOWN_INVENTORY_TYPES
             ],
             "minConfidence": "medium",
@@ -801,11 +949,19 @@ def default_ui_config(reports_root: Path) -> dict[str, Any]:
             "storeCountries": ["US"],
             "storeTimeout": 15,
             "postgresEnabled": True,
-            "postgresHost": env_value("APPLICATION_INVENTORY_POSTGRES_HOST", "APPSEC_INVENTORY_POSTGRES_HOST") or DEFAULT_POSTGRES_HOST,
+            "postgresHost": env_value(
+                "APPLICATION_INVENTORY_POSTGRES_HOST", "APPSEC_INVENTORY_POSTGRES_HOST"
+            )
+            or DEFAULT_POSTGRES_HOST,
             "postgresPort": DEFAULT_POSTGRES_PORT,
             "postgresDatabase": DEFAULT_POSTGRES_DATABASE,
             "postgresUser": DEFAULT_POSTGRES_USER,
-            "postgresSchema": env_value("APPLICATION_INVENTORY_POSTGRES_SCHEMA", "APPSEC_INVENTORY_POSTGRES_SCHEMA") or DEFAULT_POSTGRES_SCHEMA,
+            "postgresPassword": DEFAULT_POSTGRES_PASSWORD,
+            "postgresSchema": env_value(
+                "APPLICATION_INVENTORY_POSTGRES_SCHEMA",
+                "APPSEC_INVENTORY_POSTGRES_SCHEMA",
+            )
+            or DEFAULT_POSTGRES_SCHEMA,
             "postgresTable": DEFAULT_POSTGRES_TABLE,
         },
         "auth": {
@@ -834,8 +990,23 @@ def default_ui_config(reports_root: Path) -> dict[str, Any]:
             ],
             "secureStorage": True,
         },
+        "database": public_database_status(database),
+        "localLlm": local_llm
+        or {
+            "enabled": False,
+            "available": False,
+            "status": "disabled",
+            "message": "Disabled",
+        },
         "reportsRoot": str(reports_root),
     }
+
+
+def public_database_status(status: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not status:
+        return None
+    keys = ("connected", "status", "message", "schema", "checkedAt", "latencyMs")
+    return {key: status[key] for key in keys if key in status}
 
 
 @lru_cache(maxsize=32)
@@ -875,13 +1046,12 @@ def env_flag(*names: str) -> bool:
 
 def max_json_body_bytes() -> int:
     return positive_int(
-        env_value("APPLICATION_INVENTORY_SERVICE_MAX_JSON_BODY_BYTES", "APPSEC_INVENTORY_SERVICE_MAX_JSON_BODY_BYTES"),
+        env_value(
+            "APPLICATION_INVENTORY_SERVICE_MAX_JSON_BODY_BYTES",
+            "APPSEC_INVENTORY_SERVICE_MAX_JSON_BODY_BYTES",
+        ),
         DEFAULT_MAX_JSON_BODY_BYTES,
     )
-
-
-
-
 
 
 def security_headers() -> dict[str, str]:
@@ -914,7 +1084,11 @@ def safe_request_base_url(proto: str, host: str) -> str:
     clean_host = clean_text(host).split(",", 1)[0]
     if clean_proto not in {"http", "https"}:
         clean_proto = "https" if secure_cookie() else "http"
-    if not clean_host or any(character in clean_host for character in "\r\n/@") or not HOST_HEADER_RE.match(clean_host):
+    if (
+        not clean_host
+        or any(character in clean_host for character in "\r\n/@")
+        or not HOST_HEADER_RE.match(clean_host)
+    ):
         raise ValueError("Request host is invalid.")
     return f"{clean_proto}://{clean_host}"
 
@@ -957,19 +1131,9 @@ def scan_log_extra(run: ScanRun, event_type: str, status: str = "") -> dict[str,
     }
 
 
-
-
-
-
 def clean_choice(value: Any, allowed: set[str], default: str) -> str:
     text = clean_text(value)
     return text if text in allowed else default
-
-
-
-
-
-
 
 
 def positive_int(value: Any, default: int) -> int:
@@ -987,19 +1151,22 @@ def integer_value(value: Any, default: int) -> int:
         return default
 
 
-
-
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def secure_cookie() -> bool:
-    return env_flag("APPLICATION_INVENTORY_SERVICE_COOKIE_SECURE", "APPSEC_INVENTORY_SERVICE_COOKIE_SECURE")
+    return env_flag(
+        "APPLICATION_INVENTORY_SERVICE_COOKIE_SECURE",
+        "APPSEC_INVENTORY_SERVICE_COOKIE_SECURE",
+    )
 
 
 def serve(host: str, port: int, reports_dir: Path) -> None:
+    resolved_reports_root = reports_dir.resolve()
+    service_state_dir = auth_state_dir(resolved_reports_root)
     manager = ScanManager(
-        reports_root=reports_dir.resolve(),
+        reports_root=resolved_reports_root,
         normalize_config=normalize_scan_config,
         build_command=build_scan_command,
         build_environment=scan_environment,
@@ -1011,18 +1178,34 @@ def serve(host: str, port: int, reports_dir: Path) -> None:
             ),
             2,
         ),
+        state_dir=service_state_dir,
     )
     auth = AuthManager(manager.reports_root)
-    scheduler = ScanScheduler(manager, auth_state_dir(manager.reports_root))
-    observability_schema = env_value(
-        "APPLICATION_INVENTORY_OBSERVABILITY_SCHEMA",
-        "APPSEC_INVENTORY_OBSERVABILITY_SCHEMA",
-        "APPLICATION_INVENTORY_POSTGRES_SCHEMA",
-        "APPSEC_INVENTORY_POSTGRES_SCHEMA",
-    ) or DEFAULT_POSTGRES_SCHEMA
-    configured_observability_dsn = observability_dsn()
+    scheduler = ScanScheduler(manager, service_state_dir)
+    startup_database_config = normalize_database_config({})
+    startup_database = database_status(
+        startup_database_config["postgresDsn"],
+        schema=startup_database_config["postgresSchema"],
+        table=startup_database_config["postgresTable"],
+    )
+    local_assistant = LocalInventoryAssistant.from_env()
+    local_llm_status = local_assistant.status(refresh=True)
+    observability_schema = (
+        env_value(
+            "APPLICATION_INVENTORY_OBSERVABILITY_SCHEMA",
+            "APPSEC_INVENTORY_OBSERVABILITY_SCHEMA",
+            "APPLICATION_INVENTORY_POSTGRES_SCHEMA",
+            "APPSEC_INVENTORY_POSTGRES_SCHEMA",
+        )
+        or DEFAULT_POSTGRES_SCHEMA
+    )
+    configured_observability_dsn = (
+        observability_dsn() or startup_database_config["postgresDsn"]
+    )
     configure_logging(
-        env_flag("APPLICATION_INVENTORY_SERVICE_VERBOSE", "APPSEC_INVENTORY_SERVICE_VERBOSE"),
+        env_flag(
+            "APPLICATION_INVENTORY_SERVICE_VERBOSE", "APPSEC_INVENTORY_SERVICE_VERBOSE"
+        ),
         dsn=configured_observability_dsn,
         schema=observability_schema,
         source="ui",
@@ -1036,12 +1219,41 @@ def serve(host: str, port: int, reports_dir: Path) -> None:
             "auth": auth,
             "observability_dsn": configured_observability_dsn,
             "observability_schema": observability_schema,
+            "startup_database_status": startup_database,
+            "health_cache": startup_database,
+            "health_cache_at": time.monotonic(),
+            "local_assistant": local_assistant,
         },
     )
     server = ThreadingHTTPServer((host, port), handler)
     scheduler.start()
-    LOGGER.info("UI service started host=%s port=%s", host, port, extra={"event_type": "service.started"})
-    log_github_app_context(configured_github_app_id(), configured_github_installation_id())
+    LOGGER.info(
+        "UI service started host=%s port=%s",
+        host,
+        port,
+        extra={"event_type": "service.started"},
+    )
+    LOGGER.info(
+        "PostgreSQL startup check status=%s latency_ms=%s",
+        startup_database.get("status"),
+        startup_database.get("latencyMs"),
+        extra={
+            "event_type": "database.startup",
+            "status": startup_database.get("status"),
+        },
+    )
+    LOGGER.info(
+        "Local inventory assistant status=%s model=%s",
+        local_llm_status.get("status"),
+        local_assistant.config.model,
+        extra={
+            "event_type": "local_llm.startup",
+            "status": local_llm_status.get("status"),
+        },
+    )
+    log_github_app_context(
+        configured_github_app_id(), configured_github_installation_id()
+    )
     print(f"Application Inventory Service UI listening on http://{host}:{port}")
     print(f"Reports root: {manager.reports_root}")
     try:
@@ -1061,14 +1273,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--host",
-        default=env_value("APPLICATION_INVENTORY_SERVICE_UI_HOST", "APPSEC_INVENTORY_SERVICE_UI_HOST")
+        default=env_value(
+            "APPLICATION_INVENTORY_SERVICE_UI_HOST", "APPSEC_INVENTORY_SERVICE_UI_HOST"
+        )
         or os.getenv("APPSEC_SCAN_ROUTER_UI_HOST", DEFAULT_UI_HOST),
     )
     parser.add_argument(
         "--port",
         type=int,
         default=int(
-            env_value("APPLICATION_INVENTORY_SERVICE_UI_PORT", "APPSEC_INVENTORY_SERVICE_UI_PORT")
+            env_value(
+                "APPLICATION_INVENTORY_SERVICE_UI_PORT",
+                "APPSEC_INVENTORY_SERVICE_UI_PORT",
+            )
             or os.getenv("APPSEC_SCAN_ROUTER_UI_PORT", str(DEFAULT_UI_PORT))
         ),
     )
@@ -1076,7 +1293,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--reports-dir",
         type=Path,
         default=Path(
-            env_value("APPLICATION_INVENTORY_SERVICE_REPORTS_DIR", "APPSEC_INVENTORY_SERVICE_REPORTS_DIR")
+            env_value(
+                "APPLICATION_INVENTORY_SERVICE_REPORTS_DIR",
+                "APPSEC_INVENTORY_SERVICE_REPORTS_DIR",
+            )
             or os.getenv("APPSEC_SCAN_ROUTER_REPORTS_DIR", "reports")
         ),
     )

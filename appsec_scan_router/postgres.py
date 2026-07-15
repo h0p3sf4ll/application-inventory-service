@@ -1,20 +1,25 @@
 from __future__ import annotations
 
-import csv
 import hashlib
-import io
-import logging
 import json
+import logging
 import os
 import re
 import threading
 import time
 import uuid
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from typing import Any
 
-from .constants import DEFAULT_POSTGRES_SCHEMA, DEFAULT_POSTGRES_TABLE, MISSING_PSYCOPG_MESSAGE
+from .constants import (
+    DEFAULT_POSTGRES_SCHEMA,
+    DEFAULT_POSTGRES_TABLE,
+    MISSING_PSYCOPG_MESSAGE,
+)
 from .domains import normalize_web_endpoint, normalized_confidence
+from .inventory_exports import json_cell, rows_to_csv, rows_to_json, rows_to_xlsx
+from .inventory_query import InventorySearchCriteria
 from .models import ScanConfig
 
 try:
@@ -31,8 +36,11 @@ CONTROL_CHARACTER_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 SQL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SCHEMA_READY_LOCK = threading.Lock()
 SCHEMA_READY: set[tuple[str, str, str]] = set()
+SCHEMA_VERSION = 2
+SCHEMA_VERSION_COMPONENT = "inventory"
 
 NORMALIZED_TABLES = (
+    "schema_versions",
     "scan_runs",
     "repositories",
     "branch_inventory",
@@ -135,7 +143,9 @@ SEARCHABLE_EXPORT_COLUMNS = (
 
 
 class PostgresLogHandler(logging.Handler):
-    def __init__(self, dsn: str, schema: str = DEFAULT_POSTGRES_SCHEMA, source: str = "service") -> None:
+    def __init__(
+        self, dsn: str, schema: str = DEFAULT_POSTGRES_SCHEMA, source: str = "service"
+    ) -> None:
         super().__init__()
         self.dsn = dsn
         self.schema = sql_name(schema or DEFAULT_POSTGRES_SCHEMA, "PostgreSQL schema")
@@ -145,7 +155,12 @@ class PostgresLogHandler(logging.Handler):
         self.retry_after = 0.0
 
     def emit(self, record: logging.LogRecord) -> None:
-        if psycopg is None or sql is None or Jsonb is None or time.monotonic() < self.retry_after:
+        if (
+            psycopg is None
+            or sql is None
+            or Jsonb is None
+            or time.monotonic() < self.retry_after
+        ):
             return
         try:
             with self.lock:
@@ -172,19 +187,29 @@ class PostgresLogHandler(logging.Handler):
                         )
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """
-                    ).format(table=object_identifier(self.schema, "observability_events")),
+                    ).format(
+                        table=object_identifier(self.schema, "observability_events")
+                    ),
                     (
                         record.levelname,
                         record.name,
                         self.source,
                         text_value(record.__dict__.get("event_type")) or "log",
                         sanitize_observability_message(record.getMessage()),
-                        text_value(record.__dict__.get("scan_id")) or text_value(os.getenv("APPLICATION_INVENTORY_SCAN_ID")),
-                        text_value(record.__dict__.get("owner_user_id")) or text_value(os.getenv("APPLICATION_INVENTORY_OWNER_USER_ID")),
-                        text_value(record.__dict__.get("owner_user_login")) or text_value(os.getenv("APPLICATION_INVENTORY_OWNER_USER_LOGIN")),
-                        text_value(record.__dict__.get("provider")) or text_value(os.getenv("APPLICATION_INVENTORY_PROVIDER")),
+                        text_value(record.__dict__.get("scan_id"))
+                        or text_value(os.getenv("APPLICATION_INVENTORY_SCAN_ID")),
+                        text_value(record.__dict__.get("owner_user_id"))
+                        or text_value(os.getenv("APPLICATION_INVENTORY_OWNER_USER_ID")),
+                        text_value(record.__dict__.get("owner_user_login"))
+                        or text_value(
+                            os.getenv("APPLICATION_INVENTORY_OWNER_USER_LOGIN")
+                        ),
+                        text_value(record.__dict__.get("provider"))
+                        or text_value(os.getenv("APPLICATION_INVENTORY_PROVIDER")),
                         text_value(record.__dict__.get("organization")),
-                        float(record.__dict__["duration_ms"]) if record.__dict__.get("duration_ms") is not None else None,
+                        float(record.__dict__["duration_ms"])
+                        if record.__dict__.get("duration_ms") is not None
+                        else None,
                         text_value(record.__dict__.get("status")),
                         Jsonb(metadata),
                     ),
@@ -200,7 +225,9 @@ class PostgresLogHandler(logging.Handler):
 
     def _open_connection(self) -> Any:
         if self.connection is None or self.connection.closed:
-            self.connection = psycopg.connect(self.dsn, autocommit=True, connect_timeout=3)
+            self.connection = psycopg.connect(
+                self.dsn, autocommit=True, connect_timeout=3
+            )
             create_observability_table(self.connection, self.schema)
         return self.connection
 
@@ -214,9 +241,13 @@ class PostgresLogHandler(logging.Handler):
 
 
 def sanitize_observability_message(message: str) -> str:
-    sanitized = re.sub(r"(?i)(postgresql://)[^\s]+", r"\1[redacted]", text_value(message))
+    sanitized = re.sub(
+        r"(?i)(postgresql://)[^\s]+", r"\1[redacted]", text_value(message)
+    )
     sanitized = re.sub(r"(?i)(bearer\s+)[^\s]+", r"\1[redacted]", sanitized)
-    sanitized = re.sub(r"(?i)(--(?:pat|ado-org-pat)\s+)[^\s]+", r"\1[redacted]", sanitized)
+    sanitized = re.sub(
+        r"(?i)(--(?:pat|ado-org-pat)\s+)[^\s]+", r"\1[redacted]", sanitized
+    )
     sanitized = re.sub(r"(?i)(password\s*[=:]\s*)[^\s]+", r"\1[redacted]", sanitized)
     return sanitized[:8000]
 
@@ -224,7 +255,9 @@ def sanitize_observability_message(message: str) -> str:
 class PostgresInventoryWriter:
     def __init__(self, config: ScanConfig) -> None:
         self.dsn = config.postgres_dsn
-        self.schema, self.table = schema_table_parts(config.postgres_schema, config.postgres_table or DEFAULT_POSTGRES_TABLE)
+        self.schema, self.table = schema_table_parts(
+            config.postgres_schema, config.postgres_table or DEFAULT_POSTGRES_TABLE
+        )
         self.provider = config.provider
         self.organization = config.org
         self.owner_user_id = config.owner_user_id or "anonymous"
@@ -235,47 +268,79 @@ class PostgresInventoryWriter:
         self.lock = threading.RLock()
         self.pending_rows = 0
         self.last_commit_at = time.monotonic()
-        self.commit_rows = positive_int_env("APPLICATION_INVENTORY_POSTGRES_COMMIT_ROWS", 50)
-        self.commit_seconds = positive_float_env("APPLICATION_INVENTORY_POSTGRES_COMMIT_SECONDS", 2.0)
+        self.commit_rows = positive_int_env(
+            "APPLICATION_INVENTORY_POSTGRES_COMMIT_ROWS", 50
+        )
+        self.commit_seconds = positive_float_env(
+            "APPLICATION_INVENTORY_POSTGRES_COMMIT_SECONDS", 1.0
+        )
         self.scan_run_written = False
+        self.flush_error: Exception | None = None
+        self.flush_stop = threading.Event()
+        self.flush_thread: threading.Thread | None = None
 
     def __enter__(self) -> PostgresInventoryWriter:
         if psycopg is None or sql is None or Jsonb is None:
             raise SystemExit(MISSING_PSYCOPG_MESSAGE)
         if not self.dsn:
-            raise ValueError("PostgreSQL DSN is required when database sync is enabled.")
+            raise ValueError(
+                "PostgreSQL DSN is required when database sync is enabled."
+            )
         self.connection = psycopg.connect(self.dsn, autocommit=False)
         self.create_schema()
         self.connection.commit()
+        self.flush_thread = threading.Thread(
+            target=self._flush_loop,
+            name=f"postgres-flush-{self.scan_id[:8]}",
+            daemon=True,
+        )
+        self.flush_thread.start()
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
         self.close(commit=exc_type is None)
 
     def close(self, commit: bool = True) -> None:
+        self.flush_stop.set()
+        if (
+            self.flush_thread is not None
+            and self.flush_thread is not threading.current_thread()
+        ):
+            self.flush_thread.join(timeout=max(2.0, self.commit_seconds * 2))
         with self.lock:
             if self.connection is not None:
-                if commit:
+                if commit and self.flush_error is None:
                     self.prune_unreferenced_scan_runs()
                     self.connection.commit()
                 else:
                     self.connection.rollback()
                 self.connection.close()
                 self.connection = None
+        if commit and self.flush_error is not None:
+            raise RuntimeError(
+                "PostgreSQL streaming commit failed."
+            ) from self.flush_error
 
     def write_result(self, result: dict[str, Any]) -> None:
         with self.lock:
             if self.connection is None:
-                raise RuntimeError("PostgresInventoryWriter must be opened before writing.")
+                raise RuntimeError(
+                    "PostgresInventoryWriter must be opened before writing."
+                )
+            if self.flush_error is not None:
+                raise RuntimeError(
+                    "PostgreSQL streaming commit failed."
+                ) from self.flush_error
             try:
                 self.write_flat_result(result)
                 self.write_normalized_result(result)
                 self.pending_rows += 1
                 now = time.monotonic()
-                if self.pending_rows >= self.commit_rows or now - self.last_commit_at >= self.commit_seconds:
-                    self.connection.commit()
-                    self.pending_rows = 0
-                    self.last_commit_at = now
+                if (
+                    self.pending_rows >= self.commit_rows
+                    or now - self.last_commit_at >= self.commit_seconds
+                ):
+                    self._commit_pending()
             except Exception:
                 self.connection.rollback()
                 self.pending_rows = 0
@@ -283,9 +348,32 @@ class PostgresInventoryWriter:
                 self.scan_run_written = False
                 raise
 
+    def _commit_pending(self) -> None:
+        if self.connection is None or self.pending_rows <= 0:
+            return
+        self.connection.commit()
+        self.pending_rows = 0
+        self.last_commit_at = time.monotonic()
+
+    def _flush_loop(self) -> None:
+        while not self.flush_stop.wait(self.commit_seconds):
+            with self.lock:
+                if self.connection is None or self.pending_rows <= 0:
+                    continue
+                try:
+                    self._commit_pending()
+                except Exception as exc:
+                    self.connection.rollback()
+                    self.pending_rows = 0
+                    self.flush_error = exc
+                    self.flush_stop.set()
+                    return
+
     def create_schema(self) -> None:
         if self.connection is None:
-            raise RuntimeError("PostgresInventoryWriter must be opened before creating schema.")
+            raise RuntimeError(
+                "PostgresInventoryWriter must be opened before creating schema."
+            )
         ensure_database_schema(self.connection, self.dsn, self.schema, self.table)
 
     def write_flat_result(self, result: dict[str, Any]) -> None:
@@ -298,13 +386,26 @@ class PostgresInventoryWriter:
             self.scan_run_written = True
         repository_id = self.upsert_repository(result)
         branch_inventory_id = self.upsert_branch_inventory(repository_id, result)
-        self.replace_value_set("inventory_types", "inventory_type", branch_inventory_id, semicolon_values(result.get("inventory_types")))
-        self.replace_value_set("inventory_categories", "category", branch_inventory_id, semicolon_values(result.get("categories")))
+        self.replace_value_set(
+            "inventory_types",
+            "inventory_type",
+            branch_inventory_id,
+            semicolon_values(result.get("inventory_types")),
+        )
+        self.replace_value_set(
+            "inventory_categories",
+            "category",
+            branch_inventory_id,
+            semicolon_values(result.get("categories")),
+        )
         self.replace_value_set(
             "branch_contributors",
             "developer",
             branch_inventory_id,
-            semicolon_values(result.get("branch_contributing_developers") or result.get("contributing_developers")),
+            semicolon_values(
+                result.get("branch_contributing_developers")
+                or result.get("contributing_developers")
+            ),
         )
         self.replace_web_domains(branch_inventory_id, result)
         self.replace_store_listings(branch_inventory_id, result)
@@ -378,7 +479,9 @@ class PostgresInventoryWriter:
         ).fetchone()
         return int(row[0])
 
-    def upsert_branch_inventory(self, repository_id: int, result: dict[str, Any]) -> int:
+    def upsert_branch_inventory(
+        self, repository_id: int, result: dict[str, Any]
+    ) -> int:
         cleaned_result = postgres_json_value(result)
         evidence = json_value(result.get("detection_evidence"))
         row = self.connection.execute(
@@ -412,12 +515,13 @@ class PostgresInventoryWriter:
                     store_platforms,
                     row_data,
                     detection_evidence,
+                    search_document,
                     scan_started_at,
                     synced_at
                 )
                 VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()
                 )
                 ON CONFLICT (repository_id, branch_name, owner_user_id)
                 DO UPDATE SET
@@ -445,6 +549,7 @@ class PostgresInventoryWriter:
                     store_platforms = EXCLUDED.store_platforms,
                     row_data = EXCLUDED.row_data,
                     detection_evidence = EXCLUDED.detection_evidence,
+                    search_document = EXCLUDED.search_document,
                     scan_started_at = EXCLUDED.scan_started_at,
                     synced_at = now()
                 RETURNING branch_inventory_id
@@ -478,12 +583,19 @@ class PostgresInventoryWriter:
                 text_value(result.get("store_platforms")),
                 Jsonb(cleaned_result),
                 Jsonb(evidence),
+                inventory_search_document(result, self.owner_user_login),
                 self.scan_started_at,
             ),
         ).fetchone()
         return int(row[0])
 
-    def replace_value_set(self, table_name: str, column_name: str, branch_inventory_id: int, values: list[str]) -> None:
+    def replace_value_set(
+        self,
+        table_name: str,
+        column_name: str,
+        branch_inventory_id: int,
+        values: list[str],
+    ) -> None:
         unique_values = sorted(set(values))
         self.connection.execute(
             sql.SQL(
@@ -506,7 +618,9 @@ class PostgresInventoryWriter:
                 (branch_inventory_id, unique_values),
             )
 
-    def replace_store_listings(self, branch_inventory_id: int, result: dict[str, Any]) -> None:
+    def replace_store_listings(
+        self, branch_inventory_id: int, result: dict[str, Any]
+    ) -> None:
         listings = store_listing_rows(result)
         platforms = [listing["platform"] for listing in listings]
         self.connection.execute(
@@ -572,15 +686,17 @@ class PostgresInventoryWriter:
                 ),
             )
 
-    def replace_web_domains(self, branch_inventory_id: int, result: dict[str, Any]) -> None:
+    def replace_web_domains(
+        self, branch_inventory_id: int, result: dict[str, Any]
+    ) -> None:
         domains = web_domain_rows(result)
         domain_names = [domain["domain"] for domain in domains]
         existing = {
             row[1]: int(row[0])
             for row in self.connection.execute(
-                sql.SQL("SELECT web_domain_id, domain FROM {table} WHERE branch_inventory_id = %s").format(
-                    table=object_identifier(self.schema, "web_domains")
-                ),
+                sql.SQL(
+                    "SELECT web_domain_id, domain FROM {table} WHERE branch_inventory_id = %s"
+                ).format(table=object_identifier(self.schema, "web_domains")),
                 (branch_inventory_id,),
             ).fetchall()
         }
@@ -647,7 +763,9 @@ class PostgresInventoryWriter:
                 )
             self.replace_web_domain_sources(web_domain_id, domain["sources"])
 
-    def replace_web_domain_sources(self, web_domain_id: int, sources: list[str]) -> None:
+    def replace_web_domain_sources(
+        self, web_domain_id: int, sources: list[str]
+    ) -> None:
         unique_sources = sorted(set(sources))
         self.connection.execute(
             sql.SQL(
@@ -690,7 +808,9 @@ class PostgresInventoryWriter:
         table = object_identifier(self.schema, self.table)
         columns = POSTGRES_COLUMNS
         assignments = [
-            sql.SQL("{column} = EXCLUDED.{column}").format(column=sql.Identifier(column))
+            sql.SQL("{column} = EXCLUDED.{column}").format(
+                column=sql.Identifier(column)
+            )
             for column in columns
             if column not in PRIMARY_KEY_COLUMNS
         ]
@@ -741,33 +861,58 @@ class PostgresInventoryWriter:
             "mobile_name": text_value(result.get("mobile_name")),
             "mobile_version": text_value(result.get("mobile_version")),
             "mobile_identifier": text_value(result.get("mobile_identifier")),
-            "mobile_identifier_source": text_value(result.get("mobile_identifier_source")),
-            "mobile_identifier_status": text_value(result.get("mobile_identifier_status")),
-            "branch_contributing_developers": text_value(
-                result.get("branch_contributing_developers") or result.get("contributing_developers")
+            "mobile_identifier_source": text_value(
+                result.get("mobile_identifier_source")
             ),
-            "contributing_developers": text_value(result.get("contributing_developers")),
+            "mobile_identifier_status": text_value(
+                result.get("mobile_identifier_status")
+            ),
+            "branch_contributing_developers": text_value(
+                result.get("branch_contributing_developers")
+                or result.get("contributing_developers")
+            ),
+            "contributing_developers": text_value(
+                result.get("contributing_developers")
+            ),
             "last_updated": timestamp_value(result.get("last_updated")),
             "confidence": text_value(result.get("confidence")),
             "score": int_value(result.get("score")),
             "categories": semicolon_values(result.get("categories")),
             "store_lookup_status": text_value(result.get("store_lookup_status")),
-            "store_validation_passed": bool_value(result.get("store_validation_passed")),
+            "store_validation_passed": bool_value(
+                result.get("store_validation_passed")
+            ),
             "store_platforms": text_value(result.get("store_platforms")),
             "apple_app_store_name": text_value(result.get("apple_app_store_name")),
-            "apple_app_store_identifier": text_value(result.get("apple_app_store_identifier")),
+            "apple_app_store_identifier": text_value(
+                result.get("apple_app_store_identifier")
+            ),
             "apple_app_store_url": text_value(result.get("apple_app_store_url")),
-            "apple_app_store_version": text_value(result.get("apple_app_store_version")),
-            "apple_app_store_last_updated": timestamp_value(result.get("apple_app_store_last_updated")),
-            "apple_app_store_validation_passed": bool_value(result.get("apple_app_store_validation_passed")),
-            "apple_app_store_lookup_status": text_value(result.get("apple_app_store_lookup_status")),
+            "apple_app_store_version": text_value(
+                result.get("apple_app_store_version")
+            ),
+            "apple_app_store_last_updated": timestamp_value(
+                result.get("apple_app_store_last_updated")
+            ),
+            "apple_app_store_validation_passed": bool_value(
+                result.get("apple_app_store_validation_passed")
+            ),
+            "apple_app_store_lookup_status": text_value(
+                result.get("apple_app_store_lookup_status")
+            ),
             "google_play_name": text_value(result.get("google_play_name")),
             "google_play_identifier": text_value(result.get("google_play_identifier")),
             "google_play_url": text_value(result.get("google_play_url")),
             "google_play_version": text_value(result.get("google_play_version")),
-            "google_play_last_updated": timestamp_value(result.get("google_play_last_updated")),
-            "google_play_validation_passed": bool_value(result.get("google_play_validation_passed")),
-            "google_play_lookup_status": text_value(result.get("google_play_lookup_status")),
+            "google_play_last_updated": timestamp_value(
+                result.get("google_play_last_updated")
+            ),
+            "google_play_validation_passed": bool_value(
+                result.get("google_play_validation_passed")
+            ),
+            "google_play_lookup_status": text_value(
+                result.get("google_play_lookup_status")
+            ),
             "row_data": Jsonb(cleaned_result),
             "detection_evidence": Jsonb(evidence),
             "scan_started_at": self.scan_started_at,
@@ -778,14 +923,66 @@ class PostgresInventoryWriter:
 def create_database_schema(connection: Any, schema: str, flat_table: str) -> None:
     valid_schema = sql_name(schema or DEFAULT_POSTGRES_SCHEMA, "PostgreSQL schema")
     valid_table = sql_name(flat_table or DEFAULT_POSTGRES_TABLE, "PostgreSQL table")
-    connection.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {schema}").format(schema=sql.Identifier(valid_schema)))
-    create_flat_table(connection, valid_schema, valid_table)
-    create_normalized_tables(connection, valid_schema)
-    create_observability_table(connection, valid_schema)
-    create_export_view(connection, valid_schema)
+    connection.execute(
+        sql.SQL("CREATE SCHEMA IF NOT EXISTS {schema}").format(
+            schema=sql.Identifier(valid_schema)
+        )
+    )
+    component = f"{SCHEMA_VERSION_COMPONENT}:{valid_table}"
+    lock_name = f"application-inventory:{valid_schema}:{valid_table}"
+    connection.execute("SELECT pg_advisory_lock(hashtextextended(%s, 0))", (lock_name,))
+    try:
+        create_schema_version_table(connection, valid_schema)
+        current_version = connection.execute(
+            sql.SQL("SELECT version FROM {table} WHERE component = %s").format(
+                table=object_identifier(valid_schema, "schema_versions")
+            ),
+            (component,),
+        ).fetchone()
+        if current_version and int(current_version[0]) >= SCHEMA_VERSION:
+            return
+        create_flat_table(connection, valid_schema, valid_table)
+        create_normalized_tables(connection, valid_schema)
+        create_observability_table(connection, valid_schema)
+        create_export_view(connection, valid_schema)
+        connection.execute(
+            sql.SQL(
+                """
+                INSERT INTO {table} (component, version, updated_at)
+                VALUES (%s, %s, now())
+                ON CONFLICT (component)
+                DO UPDATE SET version = EXCLUDED.version, updated_at = now()
+                """
+            ).format(table=object_identifier(valid_schema, "schema_versions")),
+            (component, SCHEMA_VERSION),
+        )
+    except Exception:
+        if not connection.autocommit:
+            connection.rollback()
+        raise
+    finally:
+        connection.execute(
+            "SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (lock_name,)
+        )
 
 
-def ensure_database_schema(connection: Any, dsn: str, schema: str, flat_table: str) -> None:
+def create_schema_version_table(connection: Any, schema: str) -> None:
+    connection.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {table} (
+                component text PRIMARY KEY,
+                version integer NOT NULL,
+                updated_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        ).format(table=object_identifier(schema, "schema_versions"))
+    )
+
+
+def ensure_database_schema(
+    connection: Any, dsn: str, schema: str, flat_table: str
+) -> None:
     valid_schema = sql_name(schema or DEFAULT_POSTGRES_SCHEMA, "PostgreSQL schema")
     valid_table = sql_name(flat_table or DEFAULT_POSTGRES_TABLE, "PostgreSQL table")
     key = (hashlib.sha256(dsn.encode("utf-8")).hexdigest(), valid_schema, valid_table)
@@ -869,7 +1066,9 @@ def create_flat_table(connection: Any, schema: str, table: str) -> None:
     )
     for column, definition in FLAT_TABLE_MIGRATIONS:
         connection.execute(
-            sql.SQL("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {definition}").format(
+            sql.SQL(
+                "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {definition}"
+            ).format(
                 table=target,
                 column=sql.Identifier(column),
                 definition=sql.SQL(definition),
@@ -879,10 +1078,19 @@ def create_flat_table(connection: Any, schema: str, table: str) -> None:
         connection,
         schema,
         table,
-        ("owner_user_id", "provider", "organization", "project", "repo_name", "branch_name"),
+        (
+            "owner_user_id",
+            "provider",
+            "organization",
+            "project",
+            "repo_name",
+            "branch_name",
+        ),
     )
     connection.execute(
-        sql.SQL("CREATE INDEX IF NOT EXISTS {index} ON {table} USING GIN (inventory_types)").format(
+        sql.SQL(
+            "CREATE INDEX IF NOT EXISTS {index} ON {table} USING GIN (inventory_types)"
+        ).format(
             index=sql.Identifier(f"{index_prefix}_inventory_types_idx"),
             table=target,
         )
@@ -894,13 +1102,17 @@ def create_flat_table(connection: Any, schema: str, table: str) -> None:
         )
     )
     connection.execute(
-        sql.SQL("CREATE INDEX IF NOT EXISTS {index} ON {table} USING GIN (categories)").format(
+        sql.SQL(
+            "CREATE INDEX IF NOT EXISTS {index} ON {table} USING GIN (categories)"
+        ).format(
             index=sql.Identifier(f"{index_prefix}_categories_idx"),
             table=target,
         )
     )
     connection.execute(
-        sql.SQL("CREATE INDEX IF NOT EXISTS {index} ON {table} USING GIN (web_domains)").format(
+        sql.SQL(
+            "CREATE INDEX IF NOT EXISTS {index} ON {table} USING GIN (web_domains)"
+        ).format(
             index=sql.Identifier(f"{index_prefix}_web_domains_idx"),
             table=target,
         )
@@ -980,6 +1192,10 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
                 store_platforms text,
                 row_data jsonb NOT NULL,
                 detection_evidence jsonb,
+                search_document text NOT NULL DEFAULT '',
+                search_vector tsvector GENERATED ALWAYS AS (
+                    to_tsvector('simple'::regconfig, search_document)
+                ) STORED,
                 scan_started_at timestamptz NOT NULL,
                 synced_at timestamptz NOT NULL DEFAULT now(),
                 UNIQUE (repository_id, branch_name, owner_user_id)
@@ -990,6 +1206,18 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
             repositories=object_identifier(schema, "repositories"),
             scan_runs=object_identifier(schema, "scan_runs"),
         )
+    )
+    branch_inventory = object_identifier(schema, "branch_inventory")
+    connection.execute(
+        sql.SQL(
+            "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS search_document text NOT NULL DEFAULT ''"
+        ).format(table=branch_inventory)
+    )
+    connection.execute(
+        sql.SQL(
+            "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS search_vector tsvector "
+            "GENERATED ALWAYS AS (to_tsvector('simple'::regconfig, search_document)) STORED"
+        ).format(table=branch_inventory)
     )
     connection.execute(
         sql.SQL(
@@ -1088,6 +1316,35 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
         )
     )
     migrate_repository_scope(connection, schema)
+    connection.execute(
+        sql.SQL(
+            """
+            UPDATE {branch_inventory} branch
+            SET search_document = concat_ws(
+                ' ',
+                repository.provider,
+                repository.organization,
+                repository.project,
+                repository.repo_name,
+                branch.owner_user_login,
+                branch.branch_name,
+                branch.inventory_name,
+                branch.inventory_version,
+                branch.primary_language,
+                branch.mobile_name,
+                branch.mobile_version,
+                branch.mobile_identifier,
+                branch.row_data::text
+            )
+            FROM {repositories} repository
+            WHERE repository.repository_id = branch.repository_id
+              AND branch.search_document = ''
+            """
+        ).format(
+            branch_inventory=branch_inventory,
+            repositories=object_identifier(schema, "repositories"),
+        )
+    )
     for table_name, column_name in (
         ("repositories", "owner_user_id"),
         ("repositories", "provider"),
@@ -1103,26 +1360,68 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
                 column=sql.Identifier(column_name),
             )
         )
+    connection.execute(
+        sql.SQL(
+            "CREATE INDEX IF NOT EXISTS {index} ON {table} USING GIN (search_vector)"
+        ).format(
+            index=sql.Identifier(f"{schema}_branch_inventory_search_vector_idx"[:63]),
+            table=branch_inventory,
+        )
+    )
+    connection.execute(
+        sql.SQL(
+            "CREATE INDEX IF NOT EXISTS {index} ON {table} (owner_user_id, last_updated DESC)"
+        ).format(
+            index=sql.Identifier(f"{schema}_branch_inventory_owner_updated_idx"[:63]),
+            table=branch_inventory,
+        )
+    )
+    for table_name, column_name in (
+        ("inventory_types", "inventory_type"),
+        ("inventory_categories", "category"),
+        ("branch_contributors", "developer"),
+        ("web_domains", "confidence"),
+        ("store_listings", "validation_passed"),
+    ):
+        connection.execute(
+            sql.SQL(
+                "CREATE INDEX IF NOT EXISTS {index} ON {table} ({column}, branch_inventory_id)"
+            ).format(
+                index=sql.Identifier(
+                    f"{schema}_{table_name}_{column_name}_lookup_idx"[:63]
+                ),
+                table=object_identifier(schema, table_name),
+                column=sql.Identifier(column_name),
+            )
+        )
 
 
 def migrate_repository_scope(connection: Any, schema: str) -> None:
-    owner_scope_columns = ("owner_user_id", "provider", "organization", "project", "repo_name")
+    owner_scope_columns = (
+        "owner_user_id",
+        "provider",
+        "organization",
+        "project",
+        "repo_name",
+    )
     if any(
         existing_columns == owner_scope_columns
-        for _, _, existing_columns in constraint_columns(connection, schema, "repositories", {"u"})
+        for _, _, existing_columns in constraint_columns(
+            connection, schema, "repositories", {"u"}
+        )
     ):
         return
     repositories = object_identifier(schema, "repositories")
     branch_inventory = object_identifier(schema, "branch_inventory")
     connection.execute(
-        sql.SQL("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS owner_user_id text NOT NULL DEFAULT 'anonymous'").format(
-            table=repositories
-        )
+        sql.SQL(
+            "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS owner_user_id text NOT NULL DEFAULT 'anonymous'"
+        ).format(table=repositories)
     )
     connection.execute(
-        sql.SQL("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS owner_user_login text NOT NULL DEFAULT 'anonymous'").format(
-            table=repositories
-        )
+        sql.SQL(
+            "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS owner_user_login text NOT NULL DEFAULT 'anonymous'"
+        ).format(table=repositories)
     )
     drop_unique_constraint(
         connection,
@@ -1210,7 +1509,9 @@ def migrate_repository_scope(connection: Any, schema: str) -> None:
     )
 
 
-def ensure_primary_key(connection: Any, schema: str, table: str, columns: tuple[str, ...]) -> None:
+def ensure_primary_key(
+    connection: Any, schema: str, table: str, columns: tuple[str, ...]
+) -> None:
     constraints = constraint_columns(connection, schema, table, {"p"})
     if any(existing_columns == columns for _, _, existing_columns in constraints):
         return
@@ -1222,7 +1523,9 @@ def ensure_primary_key(connection: Any, schema: str, table: str, columns: tuple[
             )
         )
     connection.execute(
-        sql.SQL("ALTER TABLE {table} ADD CONSTRAINT {constraint} PRIMARY KEY ({columns})").format(
+        sql.SQL(
+            "ALTER TABLE {table} ADD CONSTRAINT {constraint} PRIMARY KEY ({columns})"
+        ).format(
             table=object_identifier(schema, table),
             constraint=sql.Identifier(f"{table}_pkey"[:63]),
             columns=sql.SQL(", ").join(sql.Identifier(column) for column in columns),
@@ -1230,12 +1533,16 @@ def ensure_primary_key(connection: Any, schema: str, table: str, columns: tuple[
     )
 
 
-def ensure_unique_constraint(connection: Any, schema: str, table: str, columns: tuple[str, ...]) -> None:
+def ensure_unique_constraint(
+    connection: Any, schema: str, table: str, columns: tuple[str, ...]
+) -> None:
     constraints = constraint_columns(connection, schema, table, {"u"})
     if any(existing_columns == columns for _, _, existing_columns in constraints):
         return
     connection.execute(
-        sql.SQL("ALTER TABLE {table} ADD CONSTRAINT {constraint} UNIQUE ({columns})").format(
+        sql.SQL(
+            "ALTER TABLE {table} ADD CONSTRAINT {constraint} UNIQUE ({columns})"
+        ).format(
             table=object_identifier(schema, table),
             constraint=sql.Identifier(f"{table}_owner_scope_key"[:63]),
             columns=sql.SQL(", ").join(sql.Identifier(column) for column in columns),
@@ -1243,8 +1550,12 @@ def ensure_unique_constraint(connection: Any, schema: str, table: str, columns: 
     )
 
 
-def drop_unique_constraint(connection: Any, schema: str, table: str, columns: tuple[str, ...]) -> None:
-    for name, _, existing_columns in constraint_columns(connection, schema, table, {"u"}):
+def drop_unique_constraint(
+    connection: Any, schema: str, table: str, columns: tuple[str, ...]
+) -> None:
+    for name, _, existing_columns in constraint_columns(
+        connection, schema, table, {"u"}
+    ):
         if existing_columns != columns:
             continue
         connection.execute(
@@ -1314,7 +1625,9 @@ def create_observability_table(connection: Any, schema: str) -> None:
     ):
         connection.execute(
             sql.SQL("CREATE INDEX IF NOT EXISTS {index} ON {table} ({column})").format(
-                index=sql.Identifier(f"{schema}_observability_events_{index_name}"[:63]),
+                index=sql.Identifier(
+                    f"{schema}_observability_events_{index_name}"[:63]
+                ),
                 table=object_identifier(schema, "observability_events"),
                 column=sql.Identifier(columns),
             )
@@ -1381,27 +1694,28 @@ def create_export_view(connection: Any, schema: str) -> None:
                 COALESCE(domains.web_urls, '') AS web_urls,
                 COALESCE(domains.web_domain_status, 'not_detected') AS web_domain_status,
                 COALESCE(domains.web_domain_sources, '') AS web_domain_sources,
-                COALESCE(domains.web_domain_evidence, '[]'::jsonb) AS web_domain_evidence
+                COALESCE(domains.web_domain_evidence, '[]'::jsonb) AS web_domain_evidence,
+                b.branch_inventory_id,
+                b.search_vector
             FROM {branch_inventory} b
             JOIN {repositories} r ON r.repository_id = b.repository_id
-            LEFT JOIN (
-                SELECT branch_inventory_id, string_agg(inventory_type, '; ' ORDER BY inventory_type) AS inventory_types
+            LEFT JOIN LATERAL (
+                SELECT string_agg(inventory_type, '; ' ORDER BY inventory_type) AS inventory_types
                 FROM {inventory_types}
-                GROUP BY branch_inventory_id
-            ) types ON types.branch_inventory_id = b.branch_inventory_id
-            LEFT JOIN (
-                SELECT branch_inventory_id, string_agg(category, '; ' ORDER BY category) AS categories
+                WHERE branch_inventory_id = b.branch_inventory_id
+            ) types ON true
+            LEFT JOIN LATERAL (
+                SELECT string_agg(category, '; ' ORDER BY category) AS categories
                 FROM {inventory_categories}
-                GROUP BY branch_inventory_id
-            ) categories ON categories.branch_inventory_id = b.branch_inventory_id
-            LEFT JOIN (
-                SELECT branch_inventory_id, string_agg(developer, '; ' ORDER BY developer) AS contributing_developers
+                WHERE branch_inventory_id = b.branch_inventory_id
+            ) categories ON true
+            LEFT JOIN LATERAL (
+                SELECT string_agg(developer, '; ' ORDER BY developer) AS contributing_developers
                 FROM {branch_contributors}
-                GROUP BY branch_inventory_id
-            ) contributors ON contributors.branch_inventory_id = b.branch_inventory_id
-            LEFT JOIN (
+                WHERE branch_inventory_id = b.branch_inventory_id
+            ) contributors ON true
+            LEFT JOIN LATERAL (
                 SELECT
-                    d.branch_inventory_id,
                     COALESCE(
                         max(d.domain) FILTER (WHERE d.is_primary),
                         (array_agg(d.domain ORDER BY d.is_primary DESC, d.domain))[1]
@@ -1426,13 +1740,13 @@ def create_export_view(connection: Any, schema: str) -> None:
                         ) ORDER BY d.is_primary DESC, d.domain
                     ) AS web_domain_evidence
                 FROM {web_domains} d
-                LEFT JOIN (
-                    SELECT web_domain_id, array_agg(source ORDER BY source) AS sources
+                LEFT JOIN LATERAL (
+                    SELECT array_agg(source ORDER BY source) AS sources
                     FROM {web_domain_sources}
-                    GROUP BY web_domain_id
-                ) domain_sources ON domain_sources.web_domain_id = d.web_domain_id
-                GROUP BY d.branch_inventory_id
-            ) domains ON domains.branch_inventory_id = b.branch_inventory_id
+                    WHERE web_domain_id = d.web_domain_id
+                ) domain_sources ON true
+                WHERE d.branch_inventory_id = b.branch_inventory_id
+            ) domains ON true
             LEFT JOIN {store_listings} apple ON apple.branch_inventory_id = b.branch_inventory_id AND apple.platform = 'apple_app_store'
             LEFT JOIN {store_listings} google ON google.branch_inventory_id = b.branch_inventory_id AND google.platform = 'google_play'
             """
@@ -1450,18 +1764,36 @@ def create_export_view(connection: Any, schema: str) -> None:
     )
 
 
-def database_status(dsn: str, schema: str = DEFAULT_POSTGRES_SCHEMA, table: str = DEFAULT_POSTGRES_TABLE, owner_user_id: str = "") -> dict[str, Any]:
+def database_status(
+    dsn: str,
+    schema: str = DEFAULT_POSTGRES_SCHEMA,
+    table: str = DEFAULT_POSTGRES_TABLE,
+    owner_user_id: str = "",
+) -> dict[str, Any]:
+    started = time.perf_counter()
     if psycopg is None:
-        return {"connected": False, "status": "missing_dependency", "message": MISSING_PSYCOPG_MESSAGE}
+        return {
+            "connected": False,
+            "status": "missing_dependency",
+            "message": MISSING_PSYCOPG_MESSAGE,
+        }
     if not dsn:
-        return {"connected": False, "status": "missing_dsn", "message": "PostgreSQL DSN is required."}
+        return {
+            "connected": False,
+            "status": "missing_dsn",
+            "message": "PostgreSQL DSN is required.",
+        }
     try:
         resolved_schema, resolved_table = schema_table_parts(schema, table)
         with psycopg.connect(dsn, autocommit=True, connect_timeout=3) as connection:
             ensure_database_schema(connection, dsn, resolved_schema, resolved_table)
             database = connection.execute("SELECT current_database()").fetchone()[0]
-            branch_count = normalized_row_count(connection, resolved_schema, owner_user_id)
-            flat_count = flat_row_count(connection, resolved_schema, resolved_table, owner_user_id)
+            branch_count = normalized_row_count(
+                connection, resolved_schema, owner_user_id
+            )
+            flat_count = flat_row_count(
+                connection, resolved_schema, resolved_table, owner_user_id
+            )
             return {
                 "connected": True,
                 "status": "connected",
@@ -1469,13 +1801,23 @@ def database_status(dsn: str, schema: str = DEFAULT_POSTGRES_SCHEMA, table: str 
                 "database": database,
                 "schema": resolved_schema,
                 "flatTable": resolved_table,
-            "normalizedTables": list(NORMALIZED_TABLES),
-            "branchRows": branch_count,
-            "flatRows": flat_count,
-            "observabilityRows": observability_row_count(connection, resolved_schema),
-        }
+                "normalizedTables": list(NORMALIZED_TABLES),
+                "branchRows": branch_count,
+                "flatRows": flat_count,
+                "observabilityRows": observability_row_count(
+                    connection, resolved_schema
+                ),
+                "checkedAt": datetime.now(timezone.utc).isoformat(),
+                "latencyMs": round((time.perf_counter() - started) * 1000, 2),
+            }
     except Exception as exc:
-        return {"connected": False, "status": "unavailable", "message": postgres_error_message(exc)}
+        return {
+            "connected": False,
+            "status": "unavailable",
+            "message": postgres_error_message(exc),
+            "checkedAt": datetime.now(timezone.utc).isoformat(),
+            "latencyMs": round((time.perf_counter() - started) * 1000, 2),
+        }
 
 
 def export_inventory_rows(
@@ -1485,31 +1827,66 @@ def export_inventory_rows(
     limit: int = 50000,
     query: str = "",
     table: str = DEFAULT_POSTGRES_TABLE,
+    filters: dict[str, Any] | InventorySearchCriteria | None = None,
 ) -> list[dict[str, Any]]:
+    return render_inventory_export(
+        dsn,
+        schema=schema,
+        owner_user_id=owner_user_id,
+        limit=limit,
+        query=query,
+        table=table,
+        filters=filters,
+        renderer=list,
+    )
+
+
+def render_inventory_export(
+    dsn: str,
+    schema: str,
+    owner_user_id: str,
+    limit: int,
+    query: str,
+    table: str,
+    filters: dict[str, Any] | InventorySearchCriteria | None,
+    renderer: Callable[[Iterable[dict[str, Any]]], Any],
+) -> Any:
     if psycopg is None:
         raise RuntimeError(MISSING_PSYCOPG_MESSAGE)
+    if not dsn:
+        raise ValueError("PostgreSQL DSN is required.")
     resolved_schema = sql_name(schema or DEFAULT_POSTGRES_SCHEMA, "PostgreSQL schema")
-    with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as connection:
+    with psycopg.connect(dsn, connect_timeout=5) as connection:
         ensure_database_schema(connection, dsn, resolved_schema, table)
-        where_clause, parameters = inventory_search_filter(owner_user_id, query)
-        rows = connection.execute(
-            sql.SQL(
-                """
-                SELECT {columns}
-                FROM {view}
-                WHERE {where_clause}
-                ORDER BY organization, project, repo_name, branch_name
-                LIMIT %s
-                """
-            ).format(
-                columns=sql.SQL(", ").join(sql.Identifier(column) for column in EXPORT_COLUMNS),
-                view=object_identifier(resolved_schema, "inventory_export"),
-                where_clause=where_clause,
-            ),
-            (*parameters, bounded_limit(limit, 50000, 250000)),
+        criteria = resolve_inventory_criteria(query, filters)
+        where_clause, parameters = inventory_search_filter(
+            owner_user_id,
+            criteria=criteria,
+            schema=resolved_schema,
         )
-        columns = [column.name for column in rows.description]
-        return [dict(zip(columns, row)) for row in rows.fetchall()]
+        statement = sql.SQL(
+            """
+            SELECT {columns}
+            FROM {view} AS inventory
+            WHERE {where_clause}
+            ORDER BY {order_by}
+            LIMIT %s
+            """
+        ).format(
+            columns=inventory_export_columns(),
+            view=object_identifier(resolved_schema, "inventory_export"),
+            where_clause=where_clause,
+            order_by=inventory_order_by(criteria),
+        )
+        with connection.cursor(name=f"inventory_export_{uuid.uuid4().hex}") as cursor:
+            cursor.itersize = 1000
+            cursor.execute(
+                statement,
+                (*parameters, bounded_limit(limit, 50000, 250000)),
+            )
+            columns = [column.name for column in cursor.description]
+            rows = (dict(zip(columns, row)) for row in cursor)
+            return renderer(rows)
 
 
 def search_inventory(
@@ -1520,6 +1897,7 @@ def search_inventory(
     limit: int = 100,
     offset: int = 0,
     table: str = DEFAULT_POSTGRES_TABLE,
+    filters: dict[str, Any] | InventorySearchCriteria | None = None,
 ) -> dict[str, Any]:
     if psycopg is None:
         raise RuntimeError(MISSING_PSYCOPG_MESSAGE)
@@ -1528,13 +1906,19 @@ def search_inventory(
     resolved_schema = sql_name(schema or DEFAULT_POSTGRES_SCHEMA, "PostgreSQL schema")
     resolved_limit = bounded_limit(limit, 100, 500)
     resolved_offset = non_negative_int(offset)
-    resolved_query = normalize_search_query(query)
+    criteria = resolve_inventory_criteria(query, filters)
     with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as connection:
         ensure_database_schema(connection, dsn, resolved_schema, table)
-        where_clause, parameters = inventory_search_filter(owner_user_id, resolved_query)
+        where_clause, parameters = inventory_search_filter(
+            owner_user_id,
+            criteria=criteria,
+            schema=resolved_schema,
+        )
         total = int(
             connection.execute(
-                sql.SQL("SELECT count(*) FROM {view} WHERE {where_clause}").format(
+                sql.SQL(
+                    "SELECT count(*) FROM {view} AS inventory WHERE {where_clause}"
+                ).format(
                     view=object_identifier(resolved_schema, "inventory_export"),
                     where_clause=where_clause,
                 ),
@@ -1545,15 +1929,16 @@ def search_inventory(
             sql.SQL(
                 """
                 SELECT {columns}
-                FROM {view}
+                FROM {view} AS inventory
                 WHERE {where_clause}
-                ORDER BY organization, project, repo_name, branch_name
+                ORDER BY {order_by}
                 LIMIT %s OFFSET %s
                 """
             ).format(
-                columns=sql.SQL(", ").join(sql.Identifier(column) for column in EXPORT_COLUMNS),
+                columns=inventory_export_columns(),
                 view=object_identifier(resolved_schema, "inventory_export"),
                 where_clause=where_clause,
+                order_by=inventory_order_by(criteria),
             ),
             (*parameters, resolved_limit, resolved_offset),
         )
@@ -1563,7 +1948,8 @@ def search_inventory(
             for row in cursor.fetchall()
         ]
     return {
-        "query": resolved_query,
+        "query": criteria.text,
+        "filters": criteria.as_dict(),
         "rows": rows,
         "total": total,
         "limit": resolved_limit,
@@ -1578,21 +1964,18 @@ def export_inventory_csv(
     limit: int = 50000,
     query: str = "",
     table: str = DEFAULT_POSTGRES_TABLE,
+    filters: dict[str, Any] | InventorySearchCriteria | None = None,
 ) -> bytes:
-    rows = export_inventory_rows(
+    return render_inventory_export(
         dsn,
         schema=schema,
         owner_user_id=owner_user_id,
         limit=limit,
         query=query,
         table=table,
+        filters=filters,
+        renderer=lambda rows: rows_to_csv(rows, EXPORT_COLUMNS),
     )
-    buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=list(EXPORT_COLUMNS), extrasaction="ignore")
-    writer.writeheader()
-    for row in rows:
-        writer.writerow({column: export_cell(row.get(column)) for column in EXPORT_COLUMNS})
-    return buffer.getvalue().encode("utf-8")
 
 
 def export_inventory_json(
@@ -1602,39 +1985,197 @@ def export_inventory_json(
     limit: int = 50000,
     query: str = "",
     table: str = DEFAULT_POSTGRES_TABLE,
+    filters: dict[str, Any] | InventorySearchCriteria | None = None,
 ) -> bytes:
-    rows = export_inventory_rows(
+    return render_inventory_export(
         dsn,
         schema=schema,
         owner_user_id=owner_user_id,
         limit=limit,
         query=query,
         table=table,
+        filters=filters,
+        renderer=rows_to_json,
     )
-    return json.dumps(rows, default=export_cell, indent=2).encode("utf-8")
 
 
-def inventory_search_filter(owner_user_id: str, query: str) -> tuple[Any, list[Any]]:
-    clauses = [sql.SQL("(%s = '' OR owner_user_id = %s)")]
+def export_inventory_xlsx(
+    dsn: str,
+    schema: str = DEFAULT_POSTGRES_SCHEMA,
+    owner_user_id: str = "",
+    limit: int = 50000,
+    query: str = "",
+    table: str = DEFAULT_POSTGRES_TABLE,
+    filters: dict[str, Any] | InventorySearchCriteria | None = None,
+) -> bytes:
+    return render_inventory_export(
+        dsn,
+        schema=schema,
+        owner_user_id=owner_user_id,
+        limit=limit,
+        query=query,
+        table=table,
+        filters=filters,
+        renderer=lambda rows: rows_to_xlsx(rows, EXPORT_COLUMNS),
+    )
+
+
+def inventory_search_filter(
+    owner_user_id: str,
+    query: str = "",
+    filters: dict[str, Any] | InventorySearchCriteria | None = None,
+    *,
+    criteria: InventorySearchCriteria | None = None,
+    schema: str = DEFAULT_POSTGRES_SCHEMA,
+) -> tuple[Any, list[Any]]:
+    resolved = criteria or resolve_inventory_criteria(query, filters)
+    clauses = [sql.SQL("(%s = '' OR inventory.owner_user_id = %s)")]
     parameters: list[Any] = [text_value(owner_user_id), text_value(owner_user_id)]
-    search_expression = sql.SQL("concat_ws(' ', {values})").format(
-        values=sql.SQL(", ").join(
-            sql.SQL("COALESCE({column}::text, '')").format(column=sql.Identifier(column))
-            for column in SEARCHABLE_EXPORT_COLUMNS
+    if resolved.text:
+        clauses.append(
+            sql.SQL(
+                "inventory.search_vector @@ websearch_to_tsquery('simple'::regconfig, %s)"
+            )
         )
+        parameters.append(resolved.text)
+    for expression, value in (
+        (
+            sql.SQL(
+                "COALESCE(inventory.inventory_name, inventory.mobile_name, inventory.repo_name, '')"
+            ),
+            resolved.application_search,
+        ),
+        (sql.SQL("COALESCE(inventory.repo_name, '')"), resolved.repository_search),
+        (sql.SQL("COALESCE(inventory.branch_name, '')"), resolved.branch_search),
+        (
+            sql.SQL("COALESCE(inventory.primary_web_domain, '')"),
+            resolved.domain_search,
+        ),
+    ):
+        if value:
+            clauses.append(
+                sql.SQL("{expression} ILIKE %s ESCAPE E'\\\\'").format(
+                    expression=expression
+                )
+            )
+            parameters.append(contains_pattern(value))
+    for column, values in (
+        ("provider", resolved.providers),
+        ("organization", resolved.organizations),
+        ("project", resolved.projects),
+        ("repo_name", resolved.repositories),
+        ("primary_language", resolved.languages),
+        ("confidence", resolved.confidences),
+        ("web_domain_status", resolved.domain_statuses),
+    ):
+        if values:
+            clauses.append(
+                sql.SQL(
+                    "lower(COALESCE(inventory.{column}, '')) = ANY(%s::text[])"
+                ).format(column=sql.Identifier(column))
+            )
+            parameters.append([value.lower() for value in values])
+    if resolved.application_types:
+        clauses.append(
+            sql.SQL(
+                "EXISTS (SELECT 1 FROM {types} AS selected_type "
+                "WHERE selected_type.branch_inventory_id = inventory.branch_inventory_id "
+                "AND selected_type.inventory_type = ANY(%s::text[]))"
+            ).format(
+                types=object_identifier(
+                    sql_name(schema, "PostgreSQL schema"), "inventory_types"
+                )
+            )
+        )
+        parameters.append(list(resolved.application_types))
+    updated_at = sql.SQL(
+        "COALESCE(inventory.branch_last_updated, inventory.last_updated)"
     )
-    for token in search_tokens(query):
-        clauses.append(sql.SQL("{search_expression} ILIKE %s").format(search_expression=search_expression))
-        parameters.append(f"%{token}%")
+    if resolved.updated_within_days is not None:
+        clauses.append(
+            sql.SQL("{updated_at} >= now() - (%s * interval '1 day')").format(
+                updated_at=updated_at
+            )
+        )
+        parameters.append(resolved.updated_within_days)
+    if resolved.older_than_days is not None:
+        clauses.append(
+            sql.SQL("{updated_at} < now() - (%s * interval '1 day')").format(
+                updated_at=updated_at
+            )
+        )
+        parameters.append(resolved.older_than_days)
+    for expression, value in (
+        (
+            sql.SQL("COALESCE(inventory.primary_web_domain, '') <> ''"),
+            resolved.has_domain,
+        ),
+        (
+            sql.SQL("COALESCE(inventory.mobile_identifier, '') <> ''"),
+            resolved.has_mobile_identifier,
+        ),
+    ):
+        if value is not None:
+            clauses.append(sql.SQL("({expression}) = %s").format(expression=expression))
+            parameters.append(value)
+    if resolved.store_validation_passed is not None:
+        clauses.append(sql.SQL("inventory.store_validation_passed = %s"))
+        parameters.append(resolved.store_validation_passed)
     return sql.SQL(" AND ").join(clauses), parameters
+
+
+def resolve_inventory_criteria(
+    query: str = "",
+    filters: dict[str, Any] | InventorySearchCriteria | None = None,
+) -> InventorySearchCriteria:
+    if isinstance(filters, InventorySearchCriteria):
+        return filters.with_text(query) if query else filters
+    return InventorySearchCriteria.from_mapping(filters, text=query)
+
+
+def inventory_export_columns() -> Any:
+    return sql.SQL(", ").join(
+        sql.SQL("inventory.{column}").format(column=sql.Identifier(column))
+        for column in EXPORT_COLUMNS
+    )
+
+
+def inventory_order_by(criteria: InventorySearchCriteria) -> Any:
+    expressions = {
+        "updated": sql.SQL(
+            "COALESCE(inventory.branch_last_updated, inventory.last_updated)"
+        ),
+        "application": sql.SQL(
+            "COALESCE(inventory.inventory_name, inventory.mobile_name, inventory.repo_name)"
+        ),
+        "repository": sql.SQL("inventory.repo_name"),
+        "branch": sql.SQL("inventory.branch_name"),
+        "domain": sql.SQL("inventory.primary_web_domain"),
+        "source": sql.SQL("inventory.provider"),
+        "types": sql.SQL("inventory.inventory_types"),
+        "confidence": sql.SQL(
+            "CASE lower(COALESCE(inventory.confidence, '')) "
+            "WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END"
+        ),
+    }
+    direction = sql.SQL("ASC") if criteria.sort_direction == "asc" else sql.SQL("DESC")
+    return sql.SQL(
+        "{primary} {direction} NULLS LAST, inventory.organization, inventory.project, "
+        "inventory.repo_name, inventory.branch_name"
+    ).format(primary=expressions[criteria.sort_by], direction=direction)
+
+
+def contains_pattern(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 def normalized_row_count(connection: Any, schema: str, owner_user_id: str) -> int:
     return int(
         connection.execute(
-            sql.SQL("SELECT count(*) FROM {table} WHERE (%s = '' OR owner_user_id = %s)").format(
-                table=object_identifier(schema, "branch_inventory")
-            ),
+            sql.SQL(
+                "SELECT count(*) FROM {table} WHERE (%s = '' OR owner_user_id = %s)"
+            ).format(table=object_identifier(schema, "branch_inventory")),
             (owner_user_id, owner_user_id),
         ).fetchone()[0]
     )
@@ -1643,9 +2184,9 @@ def normalized_row_count(connection: Any, schema: str, owner_user_id: str) -> in
 def flat_row_count(connection: Any, schema: str, table: str, owner_user_id: str) -> int:
     return int(
         connection.execute(
-            sql.SQL("SELECT count(*) FROM {table} WHERE (%s = '' OR owner_user_id = %s)").format(
-                table=object_identifier(schema, table)
-            ),
+            sql.SQL(
+                "SELECT count(*) FROM {table} WHERE (%s = '' OR owner_user_id = %s)"
+            ).format(table=object_identifier(schema, table)),
             (owner_user_id, owner_user_id),
         ).fetchone()[0]
     )
@@ -1661,7 +2202,14 @@ def observability_row_count(connection: Any, schema: str) -> int:
     )
 
 
-PRIMARY_KEY_COLUMNS = ("owner_user_id", "provider", "organization", "project", "repo_name", "branch_name")
+PRIMARY_KEY_COLUMNS = (
+    "owner_user_id",
+    "provider",
+    "organization",
+    "project",
+    "repo_name",
+    "branch_name",
+)
 
 POSTGRES_COLUMNS = (
     "provider",
@@ -1759,7 +2307,17 @@ def store_listing_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
         app_version = text_value(result.get(f"{platform}_version"))
         last_updated = text_value(result.get(f"{platform}_last_updated"))
         validation_passed = bool_value(result.get(f"{platform}_validation_passed"))
-        if not any((lookup_status, app_name, app_identifier, app_url, app_version, last_updated, validation_passed is not None)):
+        if not any(
+            (
+                lookup_status,
+                app_name,
+                app_identifier,
+                app_url,
+                app_version,
+                last_updated,
+                validation_passed is not None,
+            )
+        ):
             continue
         rows.append(
             {
@@ -1785,13 +2343,17 @@ def web_domain_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         confidence = normalized_confidence(item.get("confidence"))
-        normalized = normalize_web_endpoint(item.get("url") or item.get("domain"), confidence)
+        normalized = normalize_web_endpoint(
+            item.get("url") or item.get("domain"), confidence
+        )
         if normalized is None:
             continue
         domain, url, confidence = normalized
         raw_sources = item.get("sources")
         if isinstance(raw_sources, (list, tuple, set)):
-            sources = sorted({text_value(source) for source in raw_sources if text_value(source)})
+            sources = sorted(
+                {text_value(source) for source in raw_sources if text_value(source)}
+            )
         else:
             sources = semicolon_values(raw_sources)
         rows[domain] = {
@@ -1799,7 +2361,8 @@ def web_domain_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
             "url": url,
             "confidence": confidence,
             "environment": text_value(item.get("environment")),
-            "is_primary": domain == primary_domain or (not primary_domain and index == 0),
+            "is_primary": domain == primary_domain
+            or (not primary_domain and index == 0),
             "sources": sources,
         }
     if not rows:
@@ -1813,10 +2376,13 @@ def web_domain_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
                 "url": url,
                 "confidence": confidence,
                 "environment": "",
-                "is_primary": domain == primary_domain or (not primary_domain and index == 0),
+                "is_primary": domain == primary_domain
+                or (not primary_domain and index == 0),
                 "sources": [],
             }
-    ordered = sorted(rows.values(), key=lambda row: (not row["is_primary"], row["domain"]))
+    ordered = sorted(
+        rows.values(), key=lambda row: (not row["is_primary"], row["domain"])
+    )
     if ordered and not any(row["is_primary"] for row in ordered):
         ordered[0]["is_primary"] = True
     return ordered
@@ -1826,10 +2392,16 @@ def schema_table_parts(schema: str, table: str) -> tuple[str, str]:
     table_value = text_value(table) or DEFAULT_POSTGRES_TABLE
     parts = [part for part in table_value.split(".") if part]
     if len(parts) == 2:
-        return sql_name(parts[0], "PostgreSQL schema"), sql_name(parts[1], "PostgreSQL table")
+        return sql_name(parts[0], "PostgreSQL schema"), sql_name(
+            parts[1], "PostgreSQL table"
+        )
     if len(parts) != 1:
-        raise ValueError("PostgreSQL table must be a valid table name or schema-qualified table name.")
-    return sql_name(schema or DEFAULT_POSTGRES_SCHEMA, "PostgreSQL schema"), sql_name(parts[0], "PostgreSQL table")
+        raise ValueError(
+            "PostgreSQL table must be a valid table name or schema-qualified table name."
+        )
+    return sql_name(schema or DEFAULT_POSTGRES_SCHEMA, "PostgreSQL schema"), sql_name(
+        parts[0], "PostgreSQL table"
+    )
 
 
 def table_identifier(table: str, schema: str = DEFAULT_POSTGRES_SCHEMA) -> Any:
@@ -1840,13 +2412,17 @@ def table_identifier(table: str, schema: str = DEFAULT_POSTGRES_SCHEMA) -> Any:
 def object_identifier(schema: str, name: str) -> Any:
     if sql is None:
         raise SystemExit(MISSING_PSYCOPG_MESSAGE)
-    return sql.Identifier(sql_name(schema, "PostgreSQL schema"), sql_name(name, "PostgreSQL object"))
+    return sql.Identifier(
+        sql_name(schema, "PostgreSQL schema"), sql_name(name, "PostgreSQL object")
+    )
 
 
 def sql_name(value: str, label: str) -> str:
     text = text_value(value)
     if not text or not SQL_NAME_RE.match(text):
-        raise ValueError(f"{label} must use letters, numbers, and underscores and cannot start with a number.")
+        raise ValueError(
+            f"{label} must use letters, numbers, and underscores and cannot start with a number."
+        )
     return text
 
 
@@ -1897,7 +2473,9 @@ def json_value(value: Any) -> Any:
 
 def postgres_json_value(value: Any) -> Any:
     if isinstance(value, dict):
-        return {text_value(key): postgres_json_value(item) for key, item in value.items()}
+        return {
+            text_value(key): postgres_json_value(item) for key, item in value.items()
+        }
     if isinstance(value, (list, tuple)):
         return [postgres_json_value(item) for item in value]
     if isinstance(value, str):
@@ -1905,22 +2483,17 @@ def postgres_json_value(value: Any) -> Any:
     return value
 
 
-def export_cell(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, (datetime,)):
-        return value.isoformat()
-    if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
-    if isinstance(value, (dict, list, tuple)):
-        return json.dumps(value, default=export_cell, sort_keys=True)
-    return text_value(value)
-
-
-def json_cell(value: Any) -> Any:
-    if isinstance(value, datetime):
-        return value.isoformat()
-    return value
+def inventory_search_document(
+    result: dict[str, Any], owner_user_login: str = ""
+) -> str:
+    values: list[str] = [text_value(owner_user_login)]
+    for column in SEARCHABLE_EXPORT_COLUMNS:
+        value = result.get(column)
+        if isinstance(value, (dict, list, tuple)):
+            values.append(json.dumps(postgres_json_value(value), sort_keys=True))
+        else:
+            values.append(text_value(value))
+    return " ".join(value for value in values if value)[:65_535]
 
 
 def normalize_search_query(value: Any) -> str:
@@ -1949,7 +2522,11 @@ def non_negative_int(value: Any) -> int:
 
 def postgres_error_message(error: Exception) -> str:
     detail = str(error).lower()
-    if "connection refused" in detail or "could not connect" in detail or "connection failed" in detail:
+    if (
+        "connection refused" in detail
+        or "could not connect" in detail
+        or "connection failed" in detail
+    ):
         return "PostgreSQL is not running or is not reachable on the configured host and port."
     if "password authentication failed" in detail:
         return "PostgreSQL rejected the configured user or password."

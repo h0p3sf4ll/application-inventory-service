@@ -45,9 +45,12 @@ const logsElement = document.querySelector("#logs");
 const toast = document.querySelector("#toast");
 const formStatus = document.querySelector("#formStatus");
 const checkDatabaseButton = document.querySelector("#checkDatabase");
+const databaseReadyBadge = document.querySelector("#databaseReadyBadge");
+const exportDatabaseXlsxButton = document.querySelector("#exportDatabaseXlsx");
 const exportDatabaseCsvButton = document.querySelector("#exportDatabaseCsv");
 const exportDatabaseJsonButton = document.querySelector("#exportDatabaseJson");
 const databaseStatus = document.querySelector("#databaseStatus");
+const databaseLiveStatus = document.querySelector("#databaseLiveStatus");
 const databaseSearchQuery = document.querySelector("#databaseSearchQuery");
 const searchDatabaseButton = document.querySelector("#searchDatabase");
 const clearDatabaseSearchButton = document.querySelector("#clearDatabaseSearch");
@@ -56,6 +59,26 @@ const databaseResultRows = document.querySelector("#databaseResultRows");
 const databasePreviousButton = document.querySelector("#databasePrevious");
 const databaseNextButton = document.querySelector("#databaseNext");
 const databasePageSummary = document.querySelector("#databasePageSummary");
+const inventoryFilterButtons = document.querySelectorAll("[data-inventory-filter]");
+const databaseSortButtons = document.querySelectorAll("[data-database-sort]");
+const databaseColumnFilters = {
+  application: document.querySelector("#filterApplication"),
+  repository: document.querySelector("#filterRepository"),
+  branch: document.querySelector("#filterBranch"),
+  domain: document.querySelector("#filterDomain"),
+  updated: document.querySelector("#filterUpdated"),
+  confidence: document.querySelector("#filterConfidence"),
+  source: document.querySelector("#filterSource"),
+  type: document.querySelector("#filterType"),
+};
+const localLlmStatus = document.querySelector("#localLlmStatus");
+const inventoryAssistantQuery = document.querySelector("#inventoryAssistantQuery");
+const askInventoryButton = document.querySelector("#askInventory");
+const inventoryAssistantSummary = document.querySelector("#inventoryAssistantSummary");
+const inventoryRecordDialog = document.querySelector("#inventoryRecordDialog");
+const inventoryRecordTitle = document.querySelector("#inventoryRecordTitle");
+const inventoryRecordDetails = document.querySelector("#inventoryRecordDetails");
+const closeInventoryRecordButton = document.querySelector("#closeInventoryRecord");
 const tabButtons = document.querySelectorAll("[data-view]");
 const createScheduleButton = document.querySelector("#createSchedule");
 const scheduleName = document.querySelector("#scheduleName");
@@ -72,7 +95,11 @@ const state = {
   timer: null,
   session: null,
   database: null,
-  databaseSearch: {query: "", rows: [], total: 0, limit: 100, offset: 0, loaded: false},
+  databaseSearch: {query: "", filters: {}, rows: [], total: 0, limit: 100, offset: 0, loaded: false},
+  databaseSearchBusy: false,
+  databaseConfigDirty: true,
+  databaseRefreshTimer: null,
+  localLlm: null,
   githubUrls: [],
   adoOrgPats: [],
   sourceTargets: [],
@@ -104,7 +131,7 @@ const defaultValues = {
   postgresPort: "5432",
   postgresDatabase: "postgres",
   postgresUser: "postgres",
-  postgresPassword: "",
+  postgresPassword: "postgres",
   postgresSchema: "application_inventory",
   postgresTable: "application_inventory_assets",
   verbose: false,
@@ -150,7 +177,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadSession();
   showAuthResult();
   if (isLoggedIn()) {
-    await Promise.all([loadScans(), loadSchedules()]);
+    await Promise.all([loadScans(), loadSchedules(), initializeDatabase()]);
   } else {
     renderAll();
   }
@@ -164,6 +191,8 @@ async function loadBackendConfig() {
     if (response.ok && data.defaults) {
       Object.assign(defaultValues, data.defaults);
     }
+    state.database = data.database || null;
+    state.localLlm = data.localLlm || null;
   } catch (error) {
     return;
   }
@@ -179,7 +208,13 @@ function bindEvents() {
     syncMobileOptions();
     saveForm();
   });
-  form.addEventListener("input", saveForm);
+  form.addEventListener("input", (event) => {
+    saveForm();
+    if (databaseFieldChanged(event.target)) {
+      state.databaseConfigDirty = true;
+      scheduleDatabaseConnectionCheck();
+    }
+  });
   startScanButton.addEventListener("click", startScan);
   startScanFormButton.addEventListener("click", startScan);
   stopScanButton.addEventListener("click", stopScan);
@@ -207,11 +242,12 @@ function bindEvents() {
     renderLogs();
   });
   downloadLogsButton.addEventListener("click", downloadLogs);
-  checkDatabaseButton.addEventListener("click", checkDatabase);
+  checkDatabaseButton.addEventListener("click", () => checkDatabase());
   searchDatabaseButton.addEventListener("click", () => searchDatabase(0, databaseSearchQuery.value));
   clearDatabaseSearchButton.addEventListener("click", () => {
     databaseSearchQuery.value = "";
-    searchDatabase(0, "");
+    resetDatabaseColumnFilters();
+    activateInventoryFilter("all");
   });
   databaseSearchQuery.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -221,14 +257,39 @@ function bindEvents() {
   });
   databasePreviousButton.addEventListener("click", () => {
     const search = state.databaseSearch;
-    searchDatabase(Math.max(0, search.offset - search.limit), search.query);
+    searchDatabase(Math.max(0, search.offset - search.limit), search.query, {filters: search.filters});
   });
   databaseNextButton.addEventListener("click", () => {
     const search = state.databaseSearch;
-    searchDatabase(search.offset + search.limit, search.query);
+    searchDatabase(search.offset + search.limit, search.query, {filters: search.filters});
   });
+  exportDatabaseXlsxButton.addEventListener("click", () => exportDatabase("xlsx"));
   exportDatabaseCsvButton.addEventListener("click", () => exportDatabase("csv"));
   exportDatabaseJsonButton.addEventListener("click", () => exportDatabase("json"));
+  inventoryFilterButtons.forEach((button) => {
+    button.addEventListener("click", () => activateInventoryFilter(button.dataset.inventoryFilter));
+  });
+  databaseSortButtons.forEach((button) => {
+    button.addEventListener("click", () => sortDatabase(button.dataset.databaseSort));
+  });
+  Object.values(databaseColumnFilters).forEach((control) => {
+    control.addEventListener(control.matches("select") ? "change" : "input", scheduleColumnFilterSearch);
+    control.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        applyDatabaseColumnFilters();
+      }
+    });
+  });
+  askInventoryButton.addEventListener("click", askInventory);
+  inventoryAssistantQuery.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      askInventory();
+    }
+  });
+  databaseResultRows.addEventListener("click", openInventoryRecordFromEvent);
+  closeInventoryRecordButton.addEventListener("click", () => inventoryRecordDialog.close());
   tabButtons.forEach((button) => {
     button.addEventListener("click", () => setActiveView(button.dataset.view));
   });
@@ -250,6 +311,12 @@ async function startScan() {
   const payload = formPayload();
   setBusy(true);
   try {
+    if (payload.postgresEnabled && (state.databaseConfigDirty || !state.database || !state.database.connected)) {
+      const connected = await checkDatabase({silent: true});
+      if (!connected) {
+        throw new Error("PostgreSQL must be connected before this scan can start.");
+      }
+    }
     const response = await fetch("/api/scans", {
       method: "POST",
       headers: authHeaders(true),
@@ -326,8 +393,10 @@ async function logout() {
     state.activeScan = null;
     state.logs = [];
     state.database = null;
-    state.databaseSearch = {query: "", rows: [], total: 0, limit: 100, offset: 0, loaded: false};
+    state.databaseSearch = {query: "", filters: {}, rows: [], total: 0, limit: 100, offset: 0, loaded: false};
     databaseSearchQuery.value = "";
+    resetDatabaseColumnFilters();
+    setActiveInventoryFilterButton("all");
     state.githubUrls = [...defaultValues.githubUrls];
     state.adoOrgPats = [];
     clearDiscoveredTargets({silent: true});
@@ -408,6 +477,9 @@ function listenToScan(scanId) {
       } else {
         appendLogLine(data.line);
       }
+      if (/\b(detected|confirmed|match)\b|found \d+ inventory/i.test(data.line)) {
+        scheduleDatabaseRefresh();
+      }
     }
   });
   source.addEventListener("done", async (event) => {
@@ -415,6 +487,7 @@ function listenToScan(scanId) {
     mergeScan(state.activeScan);
     closeEventSource();
     await loadScans(state.activeScan.id);
+    await searchDatabase(0, state.databaseSearch.query, {filters: state.databaseSearch.filters, silent: true});
     notify(`Scan ${state.activeScan.status}.`);
   });
 }
@@ -454,6 +527,7 @@ function renderAll() {
   renderSchedules();
   renderDatabaseStatus();
   renderDatabaseResults();
+  renderLocalLlmStatus();
   renderLogs();
 }
 
@@ -671,56 +745,67 @@ function setDefaultScheduleTime() {
 }
 
 function renderDatabaseStatus() {
+  const enabled = form.elements.postgresEnabled.checked;
   const database = state.database;
+  if (!enabled) {
+    databaseReadyBadge.className = "status-chip idle";
+    databaseReadyBadge.textContent = "Sync off";
+    databaseStatus.className = "database-status";
+    databaseStatus.innerHTML = "<strong>Database sync is off</strong><span>Enable sync to test PostgreSQL.</span>";
+    return;
+  }
   if (!database) {
+    databaseReadyBadge.className = "status-chip status-running";
+    databaseReadyBadge.textContent = "Checking";
     databaseStatus.className = "database-status";
     databaseStatus.innerHTML = `
-      <strong>Not checked</strong>
-      <span>Schema: ${escapeHtml(form.elements.postgresSchema.value || defaultValues.postgresSchema)}</span>
+      <strong>Checking connection</strong>
+      <span>${escapeHtml(form.elements.postgresSchema.value || defaultValues.postgresSchema)}</span>
     `;
     return;
   }
   const connected = Boolean(database.connected);
+  databaseReadyBadge.className = `status-chip ${connected ? "status-succeeded" : "status-failed"}`;
+  databaseReadyBadge.textContent = connected ? "Ready" : "Unavailable";
   databaseStatus.className = `database-status ${connected ? "connected" : "failed"}`;
   databaseStatus.innerHTML = `
     <strong>${connected ? "Connected" : "Unavailable"}</strong>
     <span>${escapeHtml(database.message || database.status || "")}</span>
-    <span>Schema: ${escapeHtml(database.schema || form.elements.postgresSchema.value || defaultValues.postgresSchema)}</span>
-    <span>Branch rows: ${escapeHtml(String(database.branchRows ?? 0))}</span>
-    <span>Flat rows: ${escapeHtml(String(database.flatRows ?? 0))}</span>
+    <span>${escapeHtml(database.schema || form.elements.postgresSchema.value || defaultValues.postgresSchema)} · ${escapeHtml(String(database.branchRows ?? 0))} records${database.latencyMs ? ` · ${escapeHtml(String(database.latencyMs))} ms` : ""}</span>
   `;
 }
 
 function renderDatabaseResults() {
   const search = state.databaseSearch;
+  renderDatabaseSortHeaders(search.filters || {});
   if (!search.loaded) {
-    databaseResultSummary.textContent = "Search to view inventory records";
-    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="12">No search has been run.</td></tr>';
+    databaseResultSummary.textContent = "Loading inventory records";
+    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="8">Loading inventory records.</td></tr>';
     databasePageSummary.textContent = "Page 1";
     databasePreviousButton.disabled = true;
     databaseNextButton.disabled = true;
+    databaseLiveStatus.textContent = state.database && !state.database.connected ? "PostgreSQL is unavailable" : "Loading your inventory";
     return;
   }
   const start = search.total ? search.offset + 1 : 0;
   const end = Math.min(search.offset + search.rows.length, search.total);
   const filterLabel = search.query ? ` matching "${search.query}"` : "";
   databaseResultSummary.textContent = `Showing ${start}-${end} of ${search.total}${filterLabel}`;
+  databaseLiveStatus.textContent = scanIsActive()
+    ? "Updating as findings are committed"
+    : `Updated ${formatTime(search.refreshedAt || Date.now())}`;
   if (!search.rows.length) {
-    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="12">No inventory records match this search.</td></tr>';
+    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="8">No inventory records match these filters.</td></tr>';
   } else {
-    databaseResultRows.innerHTML = search.rows.map((row) => `
+    databaseResultRows.innerHTML = search.rows.map((row, index) => `
       <tr>
-        <td>${databaseCell(providerLabel(row.provider))}</td>
-        <td>${databaseCell(row.organization)}</td>
-        <td>${databaseCell(row.project)}</td>
-        <td>${databaseCell(row.repo_name)}</td>
+        <td>${databaseApplicationCell(row, index)}</td>
+        <td>${databaseRepositoryCell(row)}</td>
         <td>${databaseCell(row.branch_name)}</td>
         <td>${databaseDomainCell(row)}</td>
-        <td>${databaseCell(row.inventory_name || row.mobile_name)}</td>
-        <td>${databaseCell(row.inventory_version || row.mobile_version)}</td>
-        <td>${databaseCell(row.primary_language)}</td>
         <td>${databaseCell(formatDate(row.branch_last_updated || row.last_updated))}</td>
-        <td>${databaseCell(row.confidence)}</td>
+        <td>${confidenceCell(row.confidence)}</td>
+        <td>${databaseCell(providerLabel(row.provider))}</td>
         <td>${databaseCell(row.inventory_types)}</td>
       </tr>
     `).join("");
@@ -733,8 +818,27 @@ function renderDatabaseResults() {
 }
 
 function databaseCell(value) {
-  const text = String(value || "").trim();
+  const text = String(value ?? "").trim();
   return escapeHtml(text || "Not detected");
+}
+
+function databaseApplicationCell(row, index) {
+  const name = row.inventory_name || row.mobile_name || row.repo_name || "Not detected";
+  const metadata = [row.inventory_version || row.mobile_version, row.primary_language].filter(Boolean).join(" · ");
+  return `
+    <button class="inventory-record-link" type="button" data-record-index="${index}">${escapeHtml(name)}</button>
+    ${metadata ? `<small class="database-cell-meta">${escapeHtml(metadata)}</small>` : ""}
+  `;
+}
+
+function databaseRepositoryCell(row) {
+  const scope = [row.organization, row.project].filter(Boolean).join(" / ");
+  return `<strong class="database-cell-title">${databaseCell(row.repo_name)}</strong>${scope ? `<small class="database-cell-meta">${escapeHtml(scope)}</small>` : ""}`;
+}
+
+function confidenceCell(value) {
+  const confidence = String(value || "unknown").toLowerCase();
+  return `<span class="confidence-badge confidence-${escapeHtml(confidence)}">${escapeHtml(capitalize(confidence))}</span>`;
 }
 
 function databaseDomainCell(row) {
@@ -744,6 +848,51 @@ function databaseDomainCell(row) {
   }
   const status = String(row.web_domain_status || "configured").trim();
   return `<span class="database-domain-value">${escapeHtml(domain)}</span><small class="database-domain-status">${escapeHtml(capitalize(status))}</small>`;
+}
+
+function renderLocalLlmStatus() {
+  const localLlm = state.localLlm || {};
+  const available = Boolean(localLlm.enabled && localLlm.available);
+  localLlmStatus.className = `status-chip ${available ? "status-succeeded" : "idle"}`;
+  localLlmStatus.textContent = available ? `AI ready · ${localLlm.model || "Local model"}` : localLlm.message || "Local AI offline";
+  askInventoryButton.disabled = !available;
+  inventoryAssistantQuery.disabled = !available;
+}
+
+function openInventoryRecordFromEvent(event) {
+  const button = event.target.closest("[data-record-index]");
+  if (!button) {
+    return;
+  }
+  const row = state.databaseSearch.rows[Number(button.dataset.recordIndex)];
+  if (!row) {
+    return;
+  }
+  inventoryRecordTitle.textContent = row.inventory_name || row.mobile_name || row.repo_name || "Application details";
+  const fields = [
+    ["Source", providerLabel(row.provider)],
+    ["Organization", row.organization],
+    ["Project", row.project],
+    ["Repository", row.repo_name],
+    ["Branch", row.branch_name],
+    ["Application version", row.inventory_version || row.mobile_version],
+    ["Application types", row.inventory_types],
+    ["Language", row.primary_language],
+    ["Web domains", row.web_domains],
+    ["Domain status", row.web_domain_status],
+    ["Contributors", row.branch_contributing_developers],
+    ["Last updated", formatDate(row.branch_last_updated || row.last_updated)],
+    ["Confidence", row.confidence],
+    ["Mobile identifier", row.mobile_identifier],
+    ["Store platforms", row.store_platforms],
+    ["Store validation", row.store_validation_passed == null ? "" : row.store_validation_passed ? "Passed" : "Failed"],
+    ["Semgrep target", row.semgrep_target],
+    ["SonarQube key", row.sonarqube_project_key],
+  ].filter(([, value]) => String(value ?? "").trim());
+  inventoryRecordDetails.innerHTML = fields.map(([label, value]) => `
+    <div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>
+  `).join("");
+  inventoryRecordDialog.showModal();
 }
 
 function renderLogs() {
@@ -785,8 +934,22 @@ function logTone(line) {
   return "";
 }
 
-async function checkDatabase() {
-  setDatabaseBusy(true);
+async function initializeDatabase() {
+  renderDatabaseStatus();
+  renderLocalLlmStatus();
+  if (!form.elements.postgresEnabled.checked) {
+    return;
+  }
+  const connected = await checkDatabase({silent: true});
+  if (connected) {
+    await searchDatabase(0, "", {filters: {}, silent: true});
+  }
+}
+
+async function checkDatabase({silent = false} = {}) {
+  if (!silent) {
+    setDatabaseBusy(true);
+  }
   try {
     const response = await fetch("/api/database/status", {
       method: "POST",
@@ -798,36 +961,59 @@ async function checkDatabase() {
       throw new Error(data.error || "Database check failed.");
     }
     state.database = data.database;
+    state.databaseConfigDirty = false;
     renderDatabaseStatus();
-    notify(data.database && data.database.connected ? "Database connected." : "Database unavailable.");
+    if (!silent) {
+      notify(data.database && data.database.connected ? "Database connected." : "Database unavailable.");
+    }
+    return Boolean(data.database && data.database.connected);
   } catch (error) {
     state.database = {connected: false, message: error.message || "Database check failed."};
     renderDatabaseStatus();
-    notify(error.message || "Database check failed.");
+    if (!silent) {
+      notify(error.message || "Database check failed.");
+    }
+    return false;
   } finally {
-    setDatabaseBusy(false);
+    if (!silent) {
+      setDatabaseBusy(false);
+    }
   }
 }
 
-async function searchDatabase(offset = 0, query = "") {
-  setDatabaseBusy(true);
+async function searchDatabase(offset = 0, query = "", {filters = state.databaseSearch.filters || {}, silent = false} = {}) {
+  if (state.databaseSearchBusy) {
+    return false;
+  }
+  state.databaseSearchBusy = true;
+  if (!silent) {
+    setDatabaseBusy(true);
+  }
   try {
     const response = await fetch("/api/database/search", {
       method: "POST",
       headers: authHeaders(true),
-      body: JSON.stringify({...databasePayload(), query, offset, limit: state.databaseSearch.limit}),
+      body: JSON.stringify({...databasePayload(), query, filters, offset, limit: state.databaseSearch.limit}),
     });
     const data = await response.json();
     if (!response.ok) {
       throw new Error(data.error || "Database search failed.");
     }
-    state.databaseSearch = {...data.search, loaded: true};
+    state.databaseSearch = {...data.search, loaded: true, refreshedAt: Date.now()};
     databaseSearchQuery.value = data.search.query || "";
     renderDatabaseResults();
+    return true;
   } catch (error) {
-    notify(error.message || "Database search failed.");
+    databaseLiveStatus.textContent = error.message || "Database search failed";
+    if (!silent) {
+      notify(error.message || "Database search failed.");
+    }
+    return false;
   } finally {
-    setDatabaseBusy(false);
+    state.databaseSearchBusy = false;
+    if (!silent) {
+      setDatabaseBusy(false);
+    }
   }
 }
 
@@ -837,7 +1023,12 @@ async function exportDatabase(format) {
     const response = await fetch("/api/database/export", {
       method: "POST",
       headers: authHeaders(true),
-      body: JSON.stringify({...databasePayload(), format, query: state.databaseSearch.query}),
+      body: JSON.stringify({
+        ...databasePayload(),
+        format,
+        query: state.databaseSearch.query,
+        filters: state.databaseSearch.filters || {},
+      }),
     });
     const contentType = response.headers.get("Content-Type") || "";
     if (!response.ok) {
@@ -855,6 +1046,209 @@ async function exportDatabase(format) {
   } finally {
     setDatabaseBusy(false);
   }
+}
+
+async function askInventory() {
+  const question = inventoryAssistantQuery.value.trim();
+  if (!question) {
+    inventoryAssistantQuery.focus();
+    return;
+  }
+  askInventoryButton.disabled = true;
+  inventoryAssistantSummary.textContent = "AI is interpreting your request";
+  try {
+    const response = await fetch("/api/database/interpret", {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify({question}),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "The local model could not interpret that request.");
+    }
+    const plan = data.plan || {};
+    const filters = plan.filters || {};
+    const query = filters.text || "";
+    databaseSearchQuery.value = query;
+    inventoryAssistantSummary.textContent = plan.summary || "Query ready";
+    setActiveInventoryFilterButton("");
+    populateDatabaseColumnFilters(filters);
+    await searchDatabase(0, query, {filters});
+    if (plan.action === "export") {
+      await exportDatabase(plan.exportFormat || "xlsx");
+    }
+  } catch (error) {
+    inventoryAssistantSummary.textContent = error.message || "The local model could not interpret that request.";
+    notify(inventoryAssistantSummary.textContent);
+  } finally {
+    renderLocalLlmStatus();
+  }
+}
+
+function activateInventoryFilter(name) {
+  resetDatabaseColumnFilters();
+  const current = state.databaseSearch.filters || {};
+  const filters = {
+    ...inventoryFilterCriteria(name),
+    sort_by: current.sort_by || "updated",
+    sort_direction: current.sort_direction || "desc",
+  };
+  setActiveInventoryFilterButton(name);
+  inventoryAssistantSummary.textContent = "";
+  searchDatabase(0, databaseSearchQuery.value, {filters});
+}
+
+function inventoryFilterCriteria(name) {
+  const filters = {
+    active: {updated_within_days: 90},
+    older: {older_than_days: 90},
+    "has-domain": {has_domain: true},
+    "missing-domain": {has_domain: false},
+    "mobile-app": {application_types: ["mobile_app"]},
+    "web-app": {application_types: ["web_app"]},
+    "api-service": {application_types: ["api_service"]},
+    microservice: {application_types: ["microservice"]},
+    middleware: {application_types: ["middleware"]},
+    serverless: {application_types: ["serverless"]},
+    library: {application_types: ["library"]},
+    infrastructure: {application_types: ["infrastructure"]},
+    "ai-enabled": {application_types: ["ai_enabled"]},
+    "ml-enabled": {application_types: ["ml_enabled"]},
+  };
+  return filters[name] || {};
+}
+
+function sortDatabase(column) {
+  const filters = {...(state.databaseSearch.filters || {})};
+  const currentColumn = filters.sort_by || "updated";
+  const defaultDirection = ["updated", "confidence"].includes(column) ? "desc" : "asc";
+  filters.sort_by = column;
+  filters.sort_direction = currentColumn === column
+    ? (filters.sort_direction === "asc" ? "desc" : "asc")
+    : defaultDirection;
+  searchDatabase(0, state.databaseSearch.query, {filters});
+}
+
+function renderDatabaseSortHeaders(filters) {
+  const column = filters.sort_by || "updated";
+  const direction = filters.sort_direction || "desc";
+  databaseSortButtons.forEach((button) => {
+    const active = button.dataset.databaseSort === column;
+    const header = button.closest("th");
+    button.classList.toggle("active", active);
+    button.querySelector(".sort-indicator").textContent = active ? (direction === "asc" ? "↑" : "↓") : "↕";
+    header.setAttribute("aria-sort", active ? (direction === "asc" ? "ascending" : "descending") : "none");
+  });
+}
+
+function scheduleColumnFilterSearch(event) {
+  event.stopPropagation();
+  setActiveInventoryFilterButton("");
+  window.clearTimeout(scheduleColumnFilterSearch.timeout);
+  if (event.currentTarget.matches("select")) {
+    applyDatabaseColumnFilters();
+    return;
+  }
+  scheduleColumnFilterSearch.timeout = window.setTimeout(applyDatabaseColumnFilters, 350);
+}
+
+function applyDatabaseColumnFilters() {
+  window.clearTimeout(scheduleColumnFilterSearch.timeout);
+  const filters = {...(state.databaseSearch.filters || {})};
+  for (const key of [
+    "application_search",
+    "repository_search",
+    "branch_search",
+    "has_domain",
+    "updated_within_days",
+    "older_than_days",
+    "confidences",
+    "providers",
+    "application_types",
+  ]) {
+    delete filters[key];
+  }
+  Object.assign(filters, databaseColumnFilterCriteria());
+  searchDatabase(0, databaseSearchQuery.value, {filters});
+}
+
+function databaseColumnFilterCriteria() {
+  const filters = {};
+  const application = databaseColumnFilters.application.value.trim();
+  const repository = databaseColumnFilters.repository.value.trim();
+  const branch = databaseColumnFilters.branch.value.trim();
+  if (application) {
+    filters.application_search = application;
+  }
+  if (repository) {
+    filters.repository_search = repository;
+  }
+  if (branch) {
+    filters.branch_search = branch;
+  }
+  if (databaseColumnFilters.domain.value) {
+    filters.has_domain = databaseColumnFilters.domain.value === "has";
+  }
+  if (databaseColumnFilters.updated.value === "active") {
+    filters.updated_within_days = 90;
+  } else if (databaseColumnFilters.updated.value === "older") {
+    filters.older_than_days = 90;
+  }
+  if (databaseColumnFilters.confidence.value) {
+    filters.confidences = [databaseColumnFilters.confidence.value];
+  }
+  if (databaseColumnFilters.source.value) {
+    filters.providers = [databaseColumnFilters.source.value];
+  }
+  if (databaseColumnFilters.type.value) {
+    filters.application_types = [databaseColumnFilters.type.value];
+  }
+  return filters;
+}
+
+function populateDatabaseColumnFilters(filters = {}) {
+  databaseColumnFilters.application.value = filters.application_search || "";
+  databaseColumnFilters.repository.value = filters.repository_search || "";
+  databaseColumnFilters.branch.value = filters.branch_search || "";
+  databaseColumnFilters.domain.value = filters.has_domain === true ? "has" : filters.has_domain === false ? "missing" : "";
+  databaseColumnFilters.updated.value = filters.updated_within_days ? "active" : filters.older_than_days ? "older" : "";
+  databaseColumnFilters.confidence.value = filters.confidences && filters.confidences.length === 1 ? filters.confidences[0] : "";
+  databaseColumnFilters.source.value = filters.providers && filters.providers.length === 1 ? filters.providers[0] : "";
+  databaseColumnFilters.type.value = filters.application_types && filters.application_types.length === 1 ? filters.application_types[0] : "";
+}
+
+function resetDatabaseColumnFilters() {
+  Object.values(databaseColumnFilters).forEach((control) => {
+    control.value = "";
+  });
+}
+
+function setActiveInventoryFilterButton(name) {
+  inventoryFilterButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.inventoryFilter === name);
+  });
+}
+
+function scheduleDatabaseRefresh() {
+  if (!state.databaseSearch.loaded || !form.elements.postgresEnabled.checked) {
+    return;
+  }
+  window.clearTimeout(state.databaseRefreshTimer);
+  state.databaseRefreshTimer = window.setTimeout(() => {
+    searchDatabase(0, state.databaseSearch.query, {filters: state.databaseSearch.filters, silent: true});
+  }, 800);
+}
+
+function scheduleDatabaseConnectionCheck() {
+  if (!isLoggedIn() || !form.elements.postgresEnabled.checked) {
+    return;
+  }
+  window.clearTimeout(scheduleDatabaseConnectionCheck.timeout);
+  scheduleDatabaseConnectionCheck.timeout = window.setTimeout(() => checkDatabase({silent: true}), 700);
+}
+
+function databaseFieldChanged(target) {
+  return Boolean(target && target.name && target.name.startsWith("postgres"));
 }
 
 function formPayload() {
@@ -1460,8 +1854,23 @@ function setDatabaseBusy(isBusy) {
   checkDatabaseButton.disabled = isBusy;
   searchDatabaseButton.disabled = isBusy;
   clearDatabaseSearchButton.disabled = isBusy;
+  exportDatabaseXlsxButton.disabled = isBusy;
   exportDatabaseCsvButton.disabled = isBusy;
   exportDatabaseJsonButton.disabled = isBusy;
+  inventoryFilterButtons.forEach((button) => {
+    button.disabled = isBusy;
+  });
+  databaseSortButtons.forEach((button) => {
+    button.disabled = isBusy;
+  });
+  Object.values(databaseColumnFilters).forEach((control) => {
+    control.disabled = isBusy;
+  });
+  if (isBusy) {
+    askInventoryButton.disabled = true;
+  } else {
+    renderLocalLlmStatus();
+  }
   if (isBusy) {
     databasePreviousButton.disabled = true;
     databaseNextButton.disabled = true;
@@ -1591,10 +2000,17 @@ function tick() {
     runtimeValue.textContent = scanRuntime(state.activeScan);
   }
   state.pollTicks += 1;
+  if (state.pollTicks % 2 === 0 && scanIsActive()) {
+    scheduleDatabaseRefresh();
+  }
   if (state.pollTicks >= 30 && !document.hidden) {
     state.pollTicks = 0;
     refreshData();
   }
+}
+
+function scanIsActive() {
+  return Boolean(state.activeScan && ["running", "paused"].includes(state.activeScan.status));
 }
 
 function scanRuntime(scan) {
@@ -1701,6 +2117,11 @@ function formatDate(value) {
   }
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
+}
+
+function formatTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "just now" : date.toLocaleTimeString([], {hour: "numeric", minute: "2-digit", second: "2-digit"});
 }
 
 function formatBytes(value) {

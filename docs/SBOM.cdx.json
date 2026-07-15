@@ -15,8 +15,8 @@
     "component": {
       "type": "application",
       "name": "application-inventory-service",
-      "version": "1.6.9",
-      "purl": "pkg:pypi/application-inventory-service@1.6.9",
+      "version": "1.6.10",
+      "purl": "pkg:pypi/application-inventory-service@1.6.10",
       "licenses": [
         {
           "license": {
@@ -128,7 +128,7 @@
   ],
   "dependencies": [
     {
-        "ref": "pkg:pypi/application-inventory-service@1.6.9",
+        "ref": "pkg:pypi/application-inventory-service@1.6.10",
       "dependsOn": [
         "pkg:pypi/cryptography@49.0.0",
         "pkg:pypi/defusedxml@0.7.1",

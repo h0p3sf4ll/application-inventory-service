@@ -94,6 +94,8 @@ For GitHub Enterprise scans, the UI uses service-managed GitHub App credentials 
 
 The Runs page controls the selected subprocess. Pause and resume use POSIX process-group signals, which cover the scanner and any child processes. This is supported on Linux and macOS, including the Docker image. Stop works for queued, running, and paused scans.
 
+Closing the browser or signing out does not stop a scan. Each running scan uses a detached worker, a private durable log, and encrypted run state. When the UI service restarts on the same host, it verifies the original process group, restores the owning user, reconnects log delivery, and exposes the run after that user signs in again. Keep the reports and service-state directories on durable storage and keep `APPLICATION_INVENTORY_SERVICE_SECRET_KEY` stable. Stopping a container, VM, or host still terminates its operating-system processes.
+
 The Schedules page creates a schedule from the current Scan setup. Schedule definitions and embedded source credentials are encrypted in `schedules.json.enc` under the service state directory. Schedules are scoped to the signed-in user and survive service restarts when the state directory and `APPLICATION_INVENTORY_SERVICE_SECRET_KEY` remain stable.
 
 Available frequencies are once, daily, and weekly. Each schedule can be run immediately, disabled, enabled, or deleted. `APPLICATION_INVENTORY_SERVICE_MAX_CONCURRENT_SCANS` limits aggregate scan pressure from interactive and scheduled runs.
@@ -107,7 +109,7 @@ docker run --rm \
   -p 48731:48731 \
   --env-file .env \
   -v "$PWD/reports:/reports" \
-  h0p3sf4ll/application-inventory-service:1.6.9 \
+  h0p3sf4ll/application-inventory-service:1.6.10 \
   ui \
   --host 0.0.0.0 \
   --port 48731 \
@@ -257,9 +259,13 @@ application-inventory-service \
   --out-dir reports
 ```
 
-The service creates normalized inventory tables and `application_inventory.observability_events`. Inventory identity is scoped by signed-in user, provider, organization, project, repository, and branch. Repeated scans update the current row and synchronize child values instead of inserting duplicate inventory records. Repository records use the same user scope, and unreferenced internal scan records are removed after successful writes.
+The local defaults are host `localhost`, port `5432`, database `postgres`, user `postgres`, and password `postgres`. The password is editable on the **Database** page and is not stored in browser storage. Change every default credential outside local development.
 
-The **Database** page searches repository, application, branch, type, developer, language, category, and mobile/store identifiers. Search results and CSV or JSON exports are restricted to the signed-in user. Exports preserve the active search filter. Operational scan and observability records remain event-based because each execution and log entry is new audit data.
+At startup, the service tests PostgreSQL and applies versioned, advisory-lock-protected schema migrations before accepting scan work. Unchanged schemas take the fast readiness path. A scan with database sync enabled is rejected if its configured database is unavailable. Findings commit at least once per second while a scan is active, and the **Database** table refreshes as those transactions become visible.
+
+The schema separates repositories, branch inventory, application types, categories, contributors, web domains, domain evidence, store listings, scan runs, and observability events. Inventory identity is scoped by signed-in user, provider, organization, project, repository, and branch. Repeated scans update current rows and synchronize child values instead of inserting duplicate records. Full-text search uses a PostgreSQL GIN index; common type, owner, activity, domain, and validation filters use selective indexes.
+
+The **Database** page provides sortable columns, per-column filters, full-text search, activity/domain/type quick filters, record details, and XLSX, CSV, or JSON exports. Results and exports use the same filters, sort order, and signed-in user scope. XLSX, CSV, and JSON exports consume a server-side database cursor to bound application memory. Operational scan and observability records remain event-based because each execution and log entry is a distinct audit record.
 
 Structured events include service lifecycle, HTTP request timing, scan lifecycle, provider, user scope, status, and sanitized metadata. The UI exposes database-backed health at `/api/health` and operational counters at `/api/metrics`.
 
@@ -275,6 +281,17 @@ docker run --name application-inventory-postgres \
   -p 5432:5432 \
   -d postgres:16-alpine
 ```
+
+### Local inventory assistant
+
+The optional inventory assistant converts plain-language requests into allowlisted search filters and export actions. It uses a local Ollama API and never sends inventory rows, credentials, or SQL to the model.
+
+```bash
+ollama pull llama3.1
+ollama serve
+```
+
+The UI detects Ollama at `http://127.0.0.1:11434` and defaults to `llama3.1:latest`. Example requests include `show web apps updated in 90 days without a domain` and `export high-confidence mobile apps to xlsx`. The model produces a bounded query plan; PostgreSQL still applies parameterized SQL and user scoping.
 
 ## Environment Variables
 
@@ -310,8 +327,15 @@ docker run --name application-inventory-postgres \
 | `APPLICATION_INVENTORY_GITHUB_REPOSITORIES` | Optional JSON, comma-separated, or newline-separated `OWNER=REPOSITORY` defaults for GitHub scans |
 | `APPLICATION_INVENTORY_TARGET_FILTERS` | JSON or repeated `[ORG=]PROJECT_OR_REPO` filters |
 | `APPLICATION_INVENTORY_POSTGRES_DSN` | PostgreSQL DSN |
+| `APPLICATION_INVENTORY_POSTGRES_HOST` | PostgreSQL host when a DSN is not supplied; defaults to `localhost` |
+| `APPLICATION_INVENTORY_POSTGRES_PASSWORD` | PostgreSQL password; local default is `postgres` |
 | `APPLICATION_INVENTORY_POSTGRES_SCHEMA` | PostgreSQL schema |
 | `APPLICATION_INVENTORY_POSTGRES_TABLE` | Flat compatibility table |
+| `APPLICATION_INVENTORY_LOCAL_LLM_ENABLED` | Enables the local inventory assistant; defaults to `true` |
+| `APPLICATION_INVENTORY_LOCAL_LLM_URL` | Ollama origin; defaults to `http://127.0.0.1:11434` |
+| `APPLICATION_INVENTORY_LOCAL_LLM_MODEL` | Ollama model; defaults to `llama3.1:latest` |
+| `APPLICATION_INVENTORY_LOCAL_LLM_TIMEOUT` | Local model request timeout in seconds; defaults to `30` |
+| `APPLICATION_INVENTORY_LOCAL_LLM_ALLOW_REMOTE` | Allows a non-loopback model endpoint; defaults to `false` |
 | `APPLICATION_INVENTORY_ADO_REQUESTS_PER_SECOND` | Azure DevOps request pace per scanner process; defaults to `6` |
 | `APPLICATION_INVENTORY_ADO_MAX_RETRIES` | Azure DevOps retry count for throttled or transient reads; defaults to `8` |
 | `APPLICATION_INVENTORY_ADO_POOL_SIZE` | Azure DevOps per-thread connection pool size; defaults to `4` |
@@ -325,7 +349,7 @@ docker run --name application-inventory-postgres \
 | `APPLICATION_INVENTORY_XLSX_MAX_CHECKPOINT_ROWS` | Maximum adaptive XLSX checkpoint interval; defaults to `5000` |
 | `APPLICATION_INVENTORY_XLSX_CHECKPOINT_SECONDS` | Maximum seconds between XLSX checkpoints while findings arrive; defaults to `30` |
 | `APPLICATION_INVENTORY_POSTGRES_COMMIT_ROWS` | Findings per PostgreSQL transaction; defaults to `50` |
-| `APPLICATION_INVENTORY_POSTGRES_COMMIT_SECONDS` | Maximum seconds between PostgreSQL commits while findings arrive; defaults to `2` |
+| `APPLICATION_INVENTORY_POSTGRES_COMMIT_SECONDS` | Maximum seconds before pending findings become visible; defaults to `1` |
 
 Legacy `APPSEC_INVENTORY_*` and `APPSEC_INVENTORY_SERVICE_*` variables remain supported.
 
@@ -396,7 +420,7 @@ application-inventory-service \
   --out-dir reports
 ```
 
-For long commit histories, contributor extraction consumes provider pages as an iterator instead of retaining every commit in memory. Source and repository discovery run concurrently, GitHub installation tokens and throttles are shared across owners, manifest work uses bounded backpressure, PostgreSQL commits are batched, and CLI findings stream without accumulating a result list. Generated dependency directories and unused lockfiles are excluded from content retrieval.
+For long commit histories, contributor extraction consumes provider pages as an iterator instead of retaining every commit in memory. Source and repository discovery run concurrently, GitHub installation tokens and throttles are shared across owners, manifest work uses bounded backpressure, PostgreSQL commits are batched, database exports use server-side cursors, and CLI findings stream without accumulating a result list. Generated dependency directories and unused lockfiles are excluded from content retrieval.
 
 GitHub domain attribution reads at most 30 recent deployments, inspects no more than two deployments per environment, and caps the environment count with `APPLICATION_INVENTORY_GITHUB_DOMAIN_ENVIRONMENTS`. Deployment lookups run only for network-deployable inventory types.
 

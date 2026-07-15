@@ -91,7 +91,7 @@ aws ecr create-repository \
 aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 
-IMAGE_TAG=1.6.9
+IMAGE_TAG=1.6.10
 docker build -t "$REPO:$IMAGE_TAG" .
 docker tag "$REPO:$IMAGE_TAG" "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:$IMAGE_TAG"
 docker push "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:$IMAGE_TAG"
@@ -172,7 +172,7 @@ Environment:
 | `APPLICATION_INVENTORY_XLSX_MAX_CHECKPOINT_ROWS` | `5000` |
 | `APPLICATION_INVENTORY_XLSX_CHECKPOINT_SECONDS` | `30` |
 | `APPLICATION_INVENTORY_POSTGRES_COMMIT_ROWS` | `50` |
-| `APPLICATION_INVENTORY_POSTGRES_COMMIT_SECONDS` | `2` |
+| `APPLICATION_INVENTORY_POSTGRES_COMMIT_SECONDS` | `1` |
 | `APPLICATION_INVENTORY_POSTGRES_SCHEMA` | `application_inventory` |
 | `APPLICATION_INVENTORY_POSTGRES_TABLE` | `application_inventory_assets` |
 
