@@ -88,6 +88,7 @@ class ScanRun:
     paused_monotonic: float = 0.0
     paused_seconds: float = 0.0
     _log_offset: int = 0
+    _log_sequence: int = 0
     _report_cache: list[dict[str, Any]] = field(default_factory=list)
     _report_cache_at: float = 0.0
 
@@ -97,6 +98,8 @@ class ScanRun:
             return
         failure = is_failure_log_line(clean_line)
         with self.lock:
+            self._log_sequence += 1
+            sequence = self._log_sequence
             self.logs.append(clean_line)
             self.log_tail.append(clean_line)
             if failure:
@@ -109,7 +112,10 @@ class ScanRun:
                 append_scan_log(self.failure_log_path, clean_line)
             except OSError:
                 LOGGER.exception("Could not write scan failure log scan_id=%s", self.id)
-        self.publish("log", {"line": clean_line, "failure": failure})
+        self.publish(
+            "log",
+            {"line": clean_line, "failure": failure, "sequence": sequence},
+        )
 
     def set_status(self, status: str, exit_code: int | None = None) -> None:
         now = time.monotonic()
@@ -255,6 +261,7 @@ class ScanRun:
                 "exitCode": self.exit_code,
                 "detectedCount": self.detected_count,
                 "failureCount": self.failure_count,
+                "logSequence": self._log_sequence,
                 "progress": dict(self.progress),
                 "activeSeconds": self.active_seconds(),
                 "reportsDir": str(self.reports_dir),

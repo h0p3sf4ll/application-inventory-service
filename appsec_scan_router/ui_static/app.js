@@ -104,8 +104,13 @@ const state = {
   scans: [],
   activeScan: null,
   eventSource: null,
+  eventSourceScanId: "",
+  eventSourceStartedAt: 0,
+  eventSourceLastEventAt: 0,
   logs: [],
   failures: [],
+  logSequence: 0,
+  failureSequence: 0,
   timer: null,
   session: null,
   database: null,
@@ -338,6 +343,12 @@ function bindEvents() {
       }
     });
   });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && isLoggedIn()) {
+      refreshData();
+      ensureScanEventStream();
+    }
+  });
   askInventoryButton.addEventListener("click", askInventory);
   inventoryAssistantQuery.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -384,8 +395,7 @@ async function startScan() {
       throw new Error(data.error || "Scan could not be started.");
     }
     state.activeScan = stampScan(data.scan);
-    state.logs = data.scan.logsTail || [];
-    state.failures = data.scan.failuresTail || state.logs.filter(isFailureLogLine);
+    replaceScanOutput(state.activeScan);
     await loadScans(data.scan.id);
     listenToScan(data.scan.id);
     setActiveView("runsView");
@@ -449,8 +459,11 @@ async function logout() {
     state.session = data.session || null;
     state.scans = [];
     state.activeScan = null;
+    closeEventSource();
     state.logs = [];
     state.failures = [];
+    state.logSequence = 0;
+    state.failureSequence = 0;
     state.database = null;
     state.databaseSearch = {query: "", filters: {}, rows: [], total: 0, limit: 100, offset: 0, loaded: false};
     resetDatabaseFacets();
@@ -482,18 +495,23 @@ async function loadScans(preferredId = "") {
   try {
     const response = await fetch("/api/scans");
     const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Could not refresh scans.");
+    }
     state.scans = (data.scans || []).map(stampScan);
     if (preferredId) {
       const selected = state.scans.find((scan) => scan.id === preferredId);
       if (selected) {
-        selectScan(selected, false);
+        await selectScan(selected, false);
       }
     } else if (!state.activeScan && state.scans.length) {
-      selectScan(state.scans[0], false);
+      await selectScan(state.scans[0]);
     } else if (state.activeScan) {
       const refreshed = state.scans.find((scan) => scan.id === state.activeScan.id);
       if (refreshed) {
+        syncScanOutput(refreshed);
         state.activeScan = refreshed;
+        ensureScanEventStream(refreshed);
       }
     }
     renderAll();
@@ -506,12 +524,14 @@ async function selectScan(scan, connect = true) {
   try {
     const response = await fetch(`/api/scans/${scan.id}`);
     const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Could not open scan.");
+    }
     state.activeScan = stampScan(data.scan || scan);
-    state.logs = state.activeScan.logsTail || [];
-    state.failures = state.activeScan.failuresTail || state.logs.filter(isFailureLogLine);
+    replaceScanOutput(state.activeScan);
     renderAll();
     if (connect && ["running", "paused"].includes(state.activeScan.status)) {
-      listenToScan(state.activeScan.id);
+      ensureScanEventStream(state.activeScan);
     } else if (connect) {
       closeEventSource();
     }
@@ -521,18 +541,33 @@ async function selectScan(scan, connect = true) {
 }
 
 function listenToScan(scanId) {
+  if (!scanEventStreamNeedsReconnect(scanId)) {
+    return;
+  }
   closeEventSource();
   const source = new EventSource(`/api/scans/${scanId}/events`);
   state.eventSource = source;
+  state.eventSourceScanId = scanId;
+  state.eventSourceStartedAt = Date.now();
+  source.addEventListener("open", markScanEventReceived);
   source.addEventListener("status", (event) => {
-    state.activeScan = stampScan(JSON.parse(event.data));
+    markScanEventReceived();
+    const scan = stampScan(JSON.parse(event.data));
+    syncScanOutput(scan);
+    state.activeScan = scan;
     mergeScan(state.activeScan);
     renderAll();
   });
   source.addEventListener("log", (event) => {
+    markScanEventReceived();
     const data = JSON.parse(event.data);
     if (data.line) {
+      const sequence = nonNegativeInteger(data.sequence);
+      if (sequence && sequence <= state.logSequence) {
+        return;
+      }
       state.logs.push(data.line);
+      state.logSequence = sequence || state.logSequence + 1;
       if (state.logs.length > 1300) {
         state.logs = state.logs.slice(-1200);
         renderLogs();
@@ -541,6 +576,7 @@ function listenToScan(scanId) {
       }
       if (data.failure === true || isFailureLogLine(data.line)) {
         state.failures.push(data.line);
+        state.failureSequence += 1;
         state.activeScan.failureCount = Number(state.activeScan.failureCount || 0) + 1;
         if (state.failures.length > 1300) {
           state.failures = state.failures.slice(-1200);
@@ -555,6 +591,7 @@ function listenToScan(scanId) {
     }
   });
   source.addEventListener("done", async (event) => {
+    markScanEventReceived();
     state.activeScan = stampScan(JSON.parse(event.data));
     mergeScan(state.activeScan);
     closeEventSource();
@@ -563,6 +600,41 @@ function listenToScan(scanId) {
     await searchDatabase(0, state.databaseSearch.query, {filters: state.databaseSearch.filters, silent: true});
     notify(`Scan ${state.activeScan.status}.`);
   });
+  source.addEventListener("error", () => {
+    if (state.eventSource === source && source.readyState === EventSource.CLOSED) {
+      closeEventSource();
+      loadSession();
+    }
+  });
+}
+
+function ensureScanEventStream(scan = state.activeScan) {
+  if (!scan || !["running", "paused"].includes(scan.status)) {
+    if (scan && state.eventSourceScanId === scan.id) {
+      closeEventSource();
+    }
+    return;
+  }
+  listenToScan(scan.id);
+}
+
+function scanEventStreamNeedsReconnect(scanId) {
+  if (!state.eventSource || state.eventSourceScanId !== scanId) {
+    return true;
+  }
+  if (state.eventSource.readyState === EventSource.CLOSED) {
+    return true;
+  }
+  const lastActivity = Math.max(
+    state.eventSourceStartedAt,
+    state.eventSourceLastEventAt,
+  );
+  return state.eventSource.readyState === EventSource.CONNECTING
+    && Date.now() - lastActivity >= 10000;
+}
+
+function markScanEventReceived() {
+  state.eventSourceLastEventAt = Date.now();
 }
 
 function closeEventSource() {
@@ -570,6 +642,40 @@ function closeEventSource() {
     state.eventSource.close();
     state.eventSource = null;
   }
+  state.eventSourceScanId = "";
+  state.eventSourceStartedAt = 0;
+  state.eventSourceLastEventAt = 0;
+}
+
+function replaceScanOutput(scan) {
+  state.logs = Array.isArray(scan.logsTail) ? scan.logsTail.slice(-1200) : [];
+  state.failures = Array.isArray(scan.failuresTail)
+    ? scan.failuresTail.slice(-1200)
+    : state.logs.filter(isFailureLogLine);
+  state.logSequence = nonNegativeInteger(scan.logSequence);
+  state.failureSequence = nonNegativeInteger(scan.failureCount);
+}
+
+function syncScanOutput(scan) {
+  const logSequence = nonNegativeInteger(scan.logSequence);
+  if (logSequence > state.logSequence) {
+    const tail = Array.isArray(scan.logsTail) ? scan.logsTail : [];
+    const missing = Math.min(logSequence - state.logSequence, tail.length);
+    state.logs = [...state.logs, ...tail.slice(-missing)].slice(-1200);
+    state.logSequence = logSequence;
+  }
+  const failureSequence = nonNegativeInteger(scan.failureCount);
+  if (failureSequence > state.failureSequence) {
+    const tail = Array.isArray(scan.failuresTail) ? scan.failuresTail : [];
+    const missing = Math.min(failureSequence - state.failureSequence, tail.length);
+    state.failures = [...state.failures, ...tail.slice(-missing)].slice(-1200);
+    state.failureSequence = failureSequence;
+  }
+}
+
+function nonNegativeInteger(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 ? number : 0;
 }
 
 function mergeScan(scan) {
@@ -2332,6 +2438,9 @@ function tick() {
   }
   if (state.activeScan) {
     runtimeValue.textContent = scanRuntime(state.activeScan);
+  }
+  if (scanIsActive()) {
+    ensureScanEventStream();
   }
   state.pollTicks += 1;
   if (state.pollTicks % 2 === 0 && scanIsActive()) {

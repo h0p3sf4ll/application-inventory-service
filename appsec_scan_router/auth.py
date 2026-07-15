@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 import threading
@@ -21,6 +22,8 @@ except ImportError:
 SESSION_COOKIE_NAME = "application_inventory_session"
 SESSION_TTL_SECONDS = 43200
 OAUTH_STATE_TTL_SECONDS = 600
+MAX_PERSISTED_SESSIONS = 1000
+SESSION_STORE_VERSION = 1
 PROVIDER_NAMES = ("azure-devops", "github-enterprise")
 TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 FALSE_VALUES = frozenset({"0", "false", "no", "off"})
@@ -243,9 +246,15 @@ class CredentialStore:
 
 
 class SessionStore:
-    def __init__(self) -> None:
+    def __init__(self, state_dir: Path) -> None:
         self.sessions: dict[str, SessionRecord] = {}
         self.lock = threading.RLock()
+        self.store = EncryptedJsonStore(
+            state_dir,
+            "sessions.json.enc",
+            lambda: {"version": SESSION_STORE_VERSION, "sessions": {}},
+        )
+        self._load()
 
     def create(self, user: AuthenticatedUser) -> SessionRecord:
         record = SessionRecord(
@@ -255,22 +264,79 @@ class SessionStore:
             expires_at=time.time() + SESSION_TTL_SECONDS,
         )
         with self.lock:
-            self.sessions[record.id] = record
+            self.sessions[session_key(record.id)] = record
+            self._prune()
+            self._persist()
         return record
 
     def get(self, session_id: str) -> SessionRecord | None:
+        key = session_key(session_id)
+        if not key:
+            return None
         with self.lock:
-            record = self.sessions.get(clean_value(session_id))
+            record = self.sessions.get(key)
             if not record:
                 return None
             if not record.active():
-                self.sessions.pop(record.id, None)
+                self.sessions.pop(key, None)
+                self._persist()
                 return None
             return record
 
     def delete(self, session_id: str) -> None:
+        key = session_key(session_id)
+        if not key:
+            return
         with self.lock:
-            self.sessions.pop(clean_value(session_id), None)
+            if self.sessions.pop(key, None) is not None:
+                self._persist()
+
+    def _load(self) -> None:
+        data = self.store.read()
+        entries = data.get("sessions", {})
+        if not isinstance(entries, dict):
+            return
+        changed = False
+        now = time.time()
+        for key, value in entries.items():
+            record = session_record(value)
+            if not record or not record.active(now) or session_key(record.id) != key:
+                changed = True
+                continue
+            self.sessions[key] = record
+        changed = self._prune(now) or changed
+        if changed:
+            self._persist()
+
+    def _prune(self, now: float | None = None) -> bool:
+        current_time = time.time() if now is None else now
+        active = {
+            key: record
+            for key, record in self.sessions.items()
+            if record.active(current_time)
+        }
+        if len(active) > MAX_PERSISTED_SESSIONS:
+            active = dict(
+                sorted(
+                    active.items(),
+                    key=lambda item: item[1].expires_at,
+                    reverse=True,
+                )[:MAX_PERSISTED_SESSIONS]
+            )
+        changed = active.keys() != self.sessions.keys()
+        self.sessions = active
+        return changed
+
+    def _persist(self) -> None:
+        self.store.write(
+            {
+                "version": SESSION_STORE_VERSION,
+                "sessions": {
+                    key: session_record_data(record)
+                    for key, record in self.sessions.items()
+                },
+            }
+        )
 
 
 class GitHubOAuthService:
@@ -345,7 +411,7 @@ class GitHubOAuthService:
                     "Accept": "application/vnd.github+json",
                     "Authorization": f"Bearer {access_token}",
                     "X-GitHub-Api-Version": "2022-11-28",
-                    "User-Agent": "application-inventory-service/1.6.17",
+                    "User-Agent": "application-inventory-service/1.6.18",
                 },
                 timeout=20,
             )
@@ -448,7 +514,7 @@ class GoogleOAuthService:
                 headers={
                     "Accept": "application/json",
                     "Authorization": f"Bearer {access_token}",
-                    "User-Agent": "application-inventory-service/1.6.17",
+                    "User-Agent": "application-inventory-service/1.6.18",
                 },
                 timeout=20,
             )
@@ -485,7 +551,8 @@ class GoogleOAuthService:
 
 class AuthManager:
     def __init__(self, reports_root: Path) -> None:
-        self.sessions = SessionStore()
+        state_dir = auth_state_dir(reports_root)
+        self.sessions = SessionStore(state_dir)
         self.github_enterprise_oauth = GitHubOAuthService(
             GitHubEnterpriseOAuthConfig.from_env(),
             provider="github-enterprise",
@@ -493,7 +560,7 @@ class AuthManager:
         )
         self.google_oauth = GoogleOAuthService(GoogleOAuthConfig.from_env())
         self.test_login = TestLoginConfig.from_env()
-        self.credentials = CredentialStore(auth_state_dir(reports_root))
+        self.credentials = CredentialStore(state_dir)
 
     def session(self, cookie_header: str) -> SessionRecord | None:
         return self.sessions.get(cookie_value(cookie_header, SESSION_COOKIE_NAME))
@@ -643,6 +710,48 @@ def provider_name(value: Any) -> str:
     if provider not in PROVIDER_NAMES:
         raise ValueError("Unknown provider.")
     return provider
+
+
+def session_key(session_id: str) -> str:
+    value = clean_value(session_id)
+    return hashlib.sha256(value.encode("utf-8")).hexdigest() if value else ""
+
+
+def session_record_data(record: SessionRecord) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "user": record.user.as_dict(),
+        "csrfToken": record.csrf_token,
+        "expiresAt": record.expires_at,
+    }
+
+
+def session_record(value: Any) -> SessionRecord | None:
+    if not isinstance(value, dict) or not isinstance(value.get("user"), dict):
+        return None
+    user_data = value["user"]
+    session_id = clean_value(value.get("id"))
+    csrf_token = clean_value(value.get("csrfToken"))
+    user_id = clean_value(user_data.get("id"))
+    login = clean_value(user_data.get("login"))
+    try:
+        expires_at = float(value.get("expiresAt", 0))
+    except (TypeError, ValueError):
+        return None
+    if not session_id or not csrf_token or not user_id or not login or expires_at <= 0:
+        return None
+    return SessionRecord(
+        id=session_id,
+        user=AuthenticatedUser(
+            id=user_id,
+            login=login,
+            name=clean_value(user_data.get("name")),
+            avatar_url=clean_value(user_data.get("avatarUrl")),
+            provider=clean_value(user_data.get("provider")),
+        ),
+        csrf_token=csrf_token,
+        expires_at=expires_at,
+    )
 
 
 def cookie_value(cookie_header: str, name: str) -> str:

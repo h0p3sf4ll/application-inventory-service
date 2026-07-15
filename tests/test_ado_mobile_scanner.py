@@ -1,4 +1,5 @@
 import json
+import stat
 import tempfile
 import time
 import unittest
@@ -365,6 +366,35 @@ class AuthTests(unittest.TestCase):
         self.assertIn("HttpOnly", expired)
         self.assertIn("SameSite=Lax", expired)
         self.assertIn("Secure", expired)
+
+    def test_sessions_survive_restart_in_encrypted_state(self):
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            reports_root = Path(tmpdir)
+            first_manager = AuthManager(reports_root)
+            created = first_manager.create_test_session()
+            session_path = (
+                reports_root
+                / ".application_inventory_service"
+                / "sessions.json.enc"
+            )
+
+            second_manager = AuthManager(reports_root)
+            recovered = second_manager.sessions.get(created.id)
+
+            self.assertIsNotNone(recovered)
+            self.assertEqual(recovered.user, created.user)
+            self.assertEqual(recovered.csrf_token, created.csrf_token)
+            encrypted = session_path.read_bytes()
+            self.assertNotIn(created.id.encode(), encrypted)
+            self.assertNotIn(created.csrf_token.encode(), encrypted)
+            self.assertEqual(stat.S_IMODE(session_path.stat().st_mode), 0o600)
+
+            second_manager.logout(created.id)
+            third_manager = AuthManager(reports_root)
+            self.assertIsNone(third_manager.sessions.get(created.id))
 
     def test_security_headers_include_browser_defenses(self):
         with patch.dict(

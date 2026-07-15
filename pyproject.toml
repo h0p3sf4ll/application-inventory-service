@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=80.0.0"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "application-inventory-service"
-version = "1.6.17"
+version = "1.6.18"
 description = "SDK, CLI, UI, Excel reports, and scanner-ready targets for application inventory across Azure DevOps and GitHub Enterprise"
 readme = "README.md"
 requires-python = ">=3.10"

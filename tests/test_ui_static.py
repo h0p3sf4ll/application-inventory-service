@@ -119,6 +119,20 @@ class UiStaticTests(unittest.TestCase):
         self.assertIn("Number(search.total).toLocaleString()", javascript)
         self.assertIn(".database-page-summary", stylesheet)
 
+    def test_active_scan_reconnects_and_merges_missed_console_output(self):
+        static_root = (
+            Path(__file__).resolve().parents[1] / "appsec_scan_router" / "ui_static"
+        )
+        javascript = (static_root / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("await selectScan(state.scans[0]);", javascript)
+        self.assertIn("syncScanOutput(refreshed);", javascript)
+        self.assertIn("ensureScanEventStream(refreshed);", javascript)
+        self.assertIn("state.eventSourceScanId !== scanId", javascript)
+        self.assertIn("sequence <= state.logSequence", javascript)
+        self.assertIn("scanEventStreamNeedsReconnect(scanId)", javascript)
+        self.assertIn("Date.now() - lastActivity >= 10000", javascript)
+
     def test_record_details_gate_mobile_fields_and_separate_scanner_targets(self):
         static_root = (
             Path(__file__).resolve().parents[1] / "appsec_scan_router" / "ui_static"

@@ -57,7 +57,13 @@ from .postgres import (
     export_inventory_xlsx,
     search_inventory,
 )
-from .runtime import REPORT_EXTENSIONS, SCAN_STATUSES_DONE, ScanManager, ScanRun
+from .runtime import (
+    REPORT_EXTENSIONS,
+    SCAN_STATUSES_DONE,
+    ScanManager,
+    ScanRun,
+    is_failure_log_line,
+)
 from .scan_request import (
     build_scan_command,
     normalize_database_config,
@@ -759,11 +765,21 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         try:
-            self.write_event("status", run.summary())
-            for line in run.summary()["logsTail"]:
-                self.write_event("log", {"line": line})
+            summary = run.summary()
+            self.write_event("status", summary)
+            log_tail = summary["logsTail"]
+            first_sequence = max(1, summary["logSequence"] - len(log_tail) + 1)
+            for sequence, line in enumerate(log_tail, start=first_sequence):
+                self.write_event(
+                    "log",
+                    {
+                        "line": line,
+                        "failure": is_failure_log_line(line),
+                        "sequence": sequence,
+                    },
+                )
             if run.status in SCAN_STATUSES_DONE:
-                self.write_event("done", run.summary())
+                self.write_event("done", summary)
                 return
             while True:
                 try:

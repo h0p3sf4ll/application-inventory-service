@@ -21,6 +21,7 @@ from appsec_scan_router.runtime import (
     rebuild_failure_log,
 )
 from appsec_scan_router.scanner import collect_targets
+from appsec_scan_router.ui import ApplicationInventoryServiceHandler
 
 
 class RuntimeTests(unittest.TestCase):
@@ -53,7 +54,9 @@ class RuntimeTests(unittest.TestCase):
             )
             self.assertTrue(is_failure_log_line("Status: 503"))
             self.assertTrue(event["data"]["failure"])
+            self.assertEqual(event["data"]["sequence"], 2)
             self.assertEqual(summary["failureCount"], 2)
+            self.assertEqual(summary["logSequence"], 3)
             self.assertEqual(
                 summary["failuresTail"],
                 [
@@ -105,9 +108,38 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(len(run.logs), 5000)
         self.assertEqual(len(summary["logsTail"]), 300)
+        self.assertEqual(summary["logSequence"], 5102)
         self.assertEqual(summary["detectedCount"], 1)
         self.assertEqual(summary["progress"]["repositoriesPrepared"], 10)
         self.assertEqual(summary["progress"]["branchesScanned"], 7)
+
+    def test_event_stream_replays_log_tail_with_sequence_numbers(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run = ScanRun(
+                "scan-1",
+                {},
+                (),
+                (),
+                Path(tmpdir),
+                status="succeeded",
+            )
+            run.append_log("ready")
+            run.append_log("ERROR provider unavailable")
+            handler = object.__new__(ApplicationInventoryServiceHandler)
+            handler.send_response = Mock()
+            handler.send_header = Mock()
+            handler.end_headers = Mock()
+            handler.write_event = Mock()
+
+            handler.stream_scan_events(run)
+
+        events = [call.args for call in handler.write_event.call_args_list]
+        log_events = [data for event, data in events if event == "log"]
+        self.assertEqual([event["sequence"] for event in log_events], [1, 2])
+        self.assertFalse(log_events[0]["failure"])
+        self.assertTrue(log_events[1]["failure"])
+        self.assertEqual(events[0][0], "status")
+        self.assertEqual(events[-1][0], "done")
 
     def test_scan_manager_pauses_and_resumes_running_process(self):
         with tempfile.TemporaryDirectory() as tmpdir:
