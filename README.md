@@ -109,7 +109,7 @@ docker run --rm \
   -p 48731:48731 \
   --env-file .env \
   -v "$PWD/reports:/reports" \
-  h0p3sf4ll/application-inventory-service:1.6.14 \
+  h0p3sf4ll/application-inventory-service:1.6.15 \
   ui \
   --host 0.0.0.0 \
   --port 48731 \
@@ -363,9 +363,11 @@ With the default prefix and no application type filter, the service writes:
 
 When application types are selected, the type label is added to the output name, for example `application_inventory_service_mobile_app_api_service.xlsx`.
 
-XLSX and database exports place source, ownership, activity, and scanner-routing fields first. Application classifications follow those fields. Mobile metadata and app-store validation columns are placed at the far right.
+XLSX and database exports place source, ownership, activity, and scanner-routing fields first. Application classifications follow those fields. Mobile metadata and app-store validation columns are placed at the far right. Store fields remain empty for non-mobile records.
 
 The target files are intended for downstream orchestration with Semgrep, SonarQube, SCA tools, custom security scanners, or pipeline automation.
+
+Mobile records also include `nowsecure_target`, which identifies the source repository and branch that must produce the mobile binary. Downstream automation combines that target with the detected application identifier, version, and platform, then supplies the compiled Android or iOS binary, NowSecure group ID, and platform token. Those deployment-specific values are not stored in inventory. The official [NowSecure upload action](https://github.com/nowsecure/nowsecure-action/tree/main/upload-app) accepts the binary and group configuration.
 
 ## SDK
 

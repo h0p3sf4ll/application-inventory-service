@@ -309,6 +309,7 @@ MOBILE_FIELDNAMES = (
     "mobile_identifier",
     "mobile_identifier_source",
     "mobile_identifier_status",
+    "nowsecure_target",
     *STORE_FIELDNAMES,
 )
 

@@ -50,7 +50,7 @@ class AzureDevOpsClient:
         self._headers = {
             "Authorization": self._auth_header_value(pat),
             "Accept": "application/json",
-            "User-Agent": "application-inventory-service/1.6.14",
+            "User-Agent": "application-inventory-service/1.6.15",
         }
         self._retry = Retry(
             total=positive_int_env("APPLICATION_INVENTORY_ADO_MAX_RETRIES", DEFAULT_ADO_MAX_RETRIES),

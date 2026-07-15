@@ -85,6 +85,26 @@ class UiStaticTests(unittest.TestCase):
         self.assertIn("filters.languages = languages", javascript)
         self.assertIn('input[name="databaseFilterLanguage"]', javascript)
 
+    def test_record_details_gate_mobile_fields_and_separate_scanner_targets(self):
+        static_root = (
+            Path(__file__).resolve().parents[1] / "appsec_scan_router" / "ui_static"
+        )
+        javascript = (static_root / "app.js").read_text(encoding="utf-8")
+        stylesheet = (static_root / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'const isMobileApp = inventoryRecordHasType(row, "mobile_app")',
+            javascript,
+        )
+        self.assertIn(
+            '{label: "Store validation", value: storeValidationDetailValue(row)}',
+            javascript,
+        )
+        self.assertIn('{label: "NowSecure target"', javascript)
+        self.assertIn('class="inventory-detail-target"', javascript)
+        self.assertIn(".inventory-dialog .inventory-detail-target", stylesheet)
+        self.assertIn("grid-column: 1 / -1", stylesheet)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2132,14 +2132,14 @@ button:focus-visible {
 .inventory-dialog dl {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0;
+  column-gap: 28px;
   margin: 0;
   padding: 6px 18px 18px;
 }
 
 .inventory-dialog dl > div {
   min-width: 0;
-  padding: 12px 0;
+  padding: 14px 2px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -2154,6 +2154,22 @@ button:focus-visible {
   margin: 4px 0 0;
   color: var(--text);
   font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.inventory-dialog .inventory-detail-target {
+  grid-column: 1 / -1;
+  padding: 16px 2px;
+}
+
+.inventory-dialog .inventory-detail-target dd {
+  margin-top: 8px;
+  padding: 11px 12px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 

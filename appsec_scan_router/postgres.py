@@ -16,6 +16,7 @@ from .constants import (
     DEFAULT_POSTGRES_SCHEMA,
     DEFAULT_POSTGRES_TABLE,
     MISSING_PSYCOPG_MESSAGE,
+    STORE_FIELDNAMES,
 )
 from .domains import normalize_web_endpoint, normalized_confidence
 from .inventory_exports import json_cell, rows_to_csv, rows_to_json, rows_to_xlsx
@@ -36,8 +37,9 @@ CONTROL_CHARACTER_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 SQL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SCHEMA_READY_LOCK = threading.Lock()
 SCHEMA_READY: set[tuple[str, str, str]] = set()
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SCHEMA_VERSION_COMPONENT = "inventory"
+MOBILE_ROUTING_FIELDS = ("nowsecure_target", *STORE_FIELDNAMES)
 
 NORMALIZED_TABLES = (
     "schema_versions",
@@ -92,6 +94,7 @@ EXPORT_COLUMNS = (
     "mobile_identifier",
     "mobile_identifier_source",
     "mobile_identifier_status",
+    "nowsecure_target",
     "store_lookup_status",
     "store_validation_passed",
     "store_platforms",
@@ -134,6 +137,7 @@ SEARCHABLE_EXPORT_COLUMNS = (
     "mobile_name",
     "mobile_version",
     "mobile_identifier",
+    "nowsecure_target",
     "store_platforms",
     "apple_app_store_name",
     "apple_app_store_identifier",
@@ -502,6 +506,7 @@ class PostgresInventoryWriter:
                     semgrep_target,
                     sonarqube_project_key,
                     sonarqube_project_name,
+                    nowsecure_target,
                     mobile_name,
                     mobile_version,
                     mobile_identifier,
@@ -521,7 +526,7 @@ class PostgresInventoryWriter:
                 )
                 VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()
                 )
                 ON CONFLICT (repository_id, branch_name, owner_user_id)
                 DO UPDATE SET
@@ -536,6 +541,7 @@ class PostgresInventoryWriter:
                     semgrep_target = EXCLUDED.semgrep_target,
                     sonarqube_project_key = EXCLUDED.sonarqube_project_key,
                     sonarqube_project_name = EXCLUDED.sonarqube_project_name,
+                    nowsecure_target = EXCLUDED.nowsecure_target,
                     mobile_name = EXCLUDED.mobile_name,
                     mobile_version = EXCLUDED.mobile_version,
                     mobile_identifier = EXCLUDED.mobile_identifier,
@@ -570,6 +576,7 @@ class PostgresInventoryWriter:
                 text_value(result.get("semgrep_target")),
                 text_value(result.get("sonarqube_project_key")),
                 text_value(result.get("sonarqube_project_name")),
+                text_value(result.get("nowsecure_target")),
                 text_value(result.get("mobile_name")),
                 text_value(result.get("mobile_version")),
                 text_value(result.get("mobile_identifier")),
@@ -858,6 +865,7 @@ class PostgresInventoryWriter:
             "semgrep_target": text_value(result.get("semgrep_target")),
             "sonarqube_project_key": text_value(result.get("sonarqube_project_key")),
             "sonarqube_project_name": text_value(result.get("sonarqube_project_name")),
+            "nowsecure_target": text_value(result.get("nowsecure_target")),
             "mobile_name": text_value(result.get("mobile_name")),
             "mobile_version": text_value(result.get("mobile_version")),
             "mobile_identifier": text_value(result.get("mobile_identifier")),
@@ -1027,6 +1035,7 @@ def create_flat_table(connection: Any, schema: str, table: str) -> None:
                 semgrep_target text,
                 sonarqube_project_key text,
                 sonarqube_project_name text,
+                nowsecure_target text,
                 mobile_name text,
                 mobile_version text,
                 mobile_identifier text,
@@ -1074,6 +1083,7 @@ def create_flat_table(connection: Any, schema: str, table: str) -> None:
                 definition=sql.SQL(definition),
             )
         )
+    migrate_flat_mobile_fields(connection, target)
     ensure_primary_key(
         connection,
         schema,
@@ -1179,6 +1189,7 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
                 semgrep_target text,
                 sonarqube_project_key text,
                 sonarqube_project_name text,
+                nowsecure_target text,
                 mobile_name text,
                 mobile_version text,
                 mobile_identifier text,
@@ -1211,6 +1222,11 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
     connection.execute(
         sql.SQL(
             "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS search_document text NOT NULL DEFAULT ''"
+        ).format(table=branch_inventory)
+    )
+    connection.execute(
+        sql.SQL(
+            "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS nowsecure_target text"
         ).format(table=branch_inventory)
     )
     connection.execute(
@@ -1316,6 +1332,7 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
         )
     )
     migrate_repository_scope(connection, schema)
+    migrate_normalized_mobile_fields(connection, schema)
     connection.execute(
         sql.SQL(
             """
@@ -1402,6 +1419,110 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
                 column=sql.Identifier(column_name),
             )
         )
+
+
+def migrate_flat_mobile_fields(connection: Any, table: Any) -> None:
+    connection.execute(
+        sql.SQL(
+            """
+            UPDATE {table}
+            SET nowsecure_target = scanner_target,
+                row_data = row_data || jsonb_build_object('nowsecure_target', scanner_target)
+            WHERE 'mobile_app' = ANY(inventory_types)
+            """
+        ).format(table=table)
+    )
+    connection.execute(
+        sql.SQL(
+            """
+            UPDATE {table}
+            SET nowsecure_target = NULL,
+                {store_assignments},
+                row_data = row_data - %s::text[]
+            WHERE NOT ('mobile_app' = ANY(inventory_types))
+            """
+        ).format(
+            table=table,
+            store_assignments=null_assignments(STORE_FIELDNAMES),
+        ),
+        (list(MOBILE_ROUTING_FIELDS),),
+    )
+
+
+def migrate_normalized_mobile_fields(connection: Any, schema: str) -> None:
+    branch_inventory = object_identifier(schema, "branch_inventory")
+    inventory_types = object_identifier(schema, "inventory_types")
+    store_listings = object_identifier(schema, "store_listings")
+    connection.execute(
+        sql.SQL(
+            """
+            UPDATE {branch_inventory} branch
+            SET nowsecure_target = branch.scanner_target,
+                row_data = branch.row_data || jsonb_build_object(
+                    'nowsecure_target', branch.scanner_target
+                )
+            WHERE EXISTS (
+                SELECT 1
+                FROM {inventory_types} types
+                WHERE types.branch_inventory_id = branch.branch_inventory_id
+                  AND types.inventory_type = 'mobile_app'
+            )
+            """
+        ).format(
+            branch_inventory=branch_inventory,
+            inventory_types=inventory_types,
+        )
+    )
+    connection.execute(
+        sql.SQL(
+            """
+            UPDATE {branch_inventory} branch
+            SET nowsecure_target = NULL,
+                {store_assignments},
+                row_data = branch.row_data - %s::text[]
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM {inventory_types} types
+                WHERE types.branch_inventory_id = branch.branch_inventory_id
+                  AND types.inventory_type = 'mobile_app'
+            )
+            """
+        ).format(
+            branch_inventory=branch_inventory,
+            inventory_types=inventory_types,
+            store_assignments=null_assignments(STORE_FIELDNAMES[:3]),
+        ),
+        (list(MOBILE_ROUTING_FIELDS),),
+    )
+    connection.execute(
+        sql.SQL(
+            """
+            DELETE FROM {store_listings} listing
+            WHERE EXISTS (
+                SELECT 1
+                FROM {branch_inventory} branch
+                WHERE branch.branch_inventory_id = listing.branch_inventory_id
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM {inventory_types} types
+                      WHERE types.branch_inventory_id = branch.branch_inventory_id
+                        AND types.inventory_type = 'mobile_app'
+                  )
+            )
+            """
+        ).format(
+            store_listings=store_listings,
+            branch_inventory=branch_inventory,
+            inventory_types=inventory_types,
+        )
+    )
+
+
+def null_assignments(columns: Iterable[str]) -> Any:
+    return sql.SQL(", ").join(
+        sql.SQL("{column} = NULL").format(column=sql.Identifier(column))
+        for column in columns
+    )
 
 
 def migrate_repository_scope(connection: Any, schema: str) -> None:
@@ -1704,7 +1825,8 @@ def create_export_view(connection: Any, schema: str) -> None:
                 COALESCE(domains.web_domain_sources, '') AS web_domain_sources,
                 COALESCE(domains.web_domain_evidence, '[]'::jsonb) AS web_domain_evidence,
                 b.branch_inventory_id,
-                b.search_vector
+                b.search_vector,
+                b.nowsecure_target
             FROM {branch_inventory} b
             JOIN {repositories} r ON r.repository_id = b.repository_id
             LEFT JOIN LATERAL (
@@ -2145,6 +2267,17 @@ def inventory_search_filter(
     if resolved.store_validation_passed is not None:
         clauses.append(sql.SQL("inventory.store_validation_passed = %s"))
         parameters.append(resolved.store_validation_passed)
+        clauses.append(
+            sql.SQL(
+                "EXISTS (SELECT 1 FROM {types} AS mobile_type "
+                "WHERE mobile_type.branch_inventory_id = inventory.branch_inventory_id "
+                "AND mobile_type.inventory_type = 'mobile_app')"
+            ).format(
+                types=object_identifier(
+                    sql_name(schema, "PostgreSQL schema"), "inventory_types"
+                )
+            )
+        )
     return sql.SQL(" AND ").join(clauses), parameters
 
 
@@ -2284,6 +2417,7 @@ POSTGRES_COLUMNS = (
     "semgrep_target",
     "sonarqube_project_key",
     "sonarqube_project_name",
+    "nowsecure_target",
     "branch_contributing_developers",
     "contributing_developers",
     "last_updated",
@@ -2328,6 +2462,7 @@ FLAT_TABLE_MIGRATIONS = (
     ("web_domain_status", "text"),
     ("web_domain_sources", "text"),
     ("web_domain_evidence", "jsonb"),
+    ("nowsecure_target", "text"),
     ("apple_app_store_name", "text"),
     ("apple_app_store_identifier", "text"),
     ("apple_app_store_url", "text"),

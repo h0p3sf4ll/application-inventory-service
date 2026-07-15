@@ -638,11 +638,16 @@ def build_scan_row(
 ) -> dict[str, Any]:
     repo = target.repo
     age_bucket = branch_age_bucket(activity.last_updated, branch_age_days)
-    store_metadata = store_columns(metadata.identifier, categories, store_client)
     source_url = repo_source_url(repo)
     inventory_name = inventory_name_from_metadata(metadata, contents, repo.get("name", ""))
     inventory_version = inventory_version_from_metadata(metadata, contents)
     inventory_types = inventory_types_from_categories(categories)
+    is_mobile_app = "mobile_app" in inventory_types
+    store_metadata = (
+        store_columns(metadata.identifier, categories, store_client)
+        if is_mobile_app
+        else {}
+    )
     primary_language = primary_language_for_branch(contents, paths, categories)
     scanner_target = scanner_target_ref(source_url, branch_name)
     sonarqube_project_key = sonar_project_key(target.project_name, repo.get("name", ""), branch_name)
@@ -677,6 +682,7 @@ def build_scan_row(
         "mobile_identifier": metadata.identifier,
         "mobile_identifier_source": metadata.identifier_source,
         "mobile_identifier_status": identifier_status(metadata.identifier),
+        "nowsecure_target": scanner_target if is_mobile_app else "",
         "branch_contributing_developers": branch_contributing_developers,
         "contributing_developers": branch_contributing_developers,
         "last_updated": activity.last_updated,

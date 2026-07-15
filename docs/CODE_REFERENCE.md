@@ -85,7 +85,7 @@ The report writer creates all output files at scan start. Text targets flush per
 6. Detection produces evidence, categories, confidence, and score.
 7. Metadata and commit iterators produce names, versions, identifiers, contributors, and timestamps.
 8. Deployable types combine provider deployment URLs, repository metadata, and structured source configuration into ranked domain evidence.
-9. Optional store validation runs only when mobile scanning and lookup are enabled.
+9. Mobile findings receive NowSecure routing metadata; optional store validation runs only when lookup is enabled.
 10. Findings stream to reports and PostgreSQL. SDK list-returning calls retain rows; CLI and `scan_reports` calls retain only a count.
 
 ## Concurrency Controls

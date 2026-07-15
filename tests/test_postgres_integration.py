@@ -81,7 +81,7 @@ class PostgresInventoryIntegrationTests(unittest.TestCase):
                 )
             ).fetchone()
 
-        self.assertEqual(counts, (1, 1, 1, 1, 2, 2, 2, 2, 2))
+        self.assertEqual(counts, (1, 1, 1, 1, 3, 2, 2, 2, 2))
         search = search_inventory(
             POSTGRES_TEST_DSN,
             schema=self.schema,
@@ -92,6 +92,10 @@ class PostgresInventoryIntegrationTests(unittest.TestCase):
         self.assertEqual(search["rows"][0]["inventory_version"], "1.1.0")
         self.assertEqual(
             search["rows"][0]["primary_web_domain"], "inventory.example.engineering"
+        )
+        self.assertEqual(
+            search["rows"][0]["nowsecure_target"],
+            "https://example.test/inventory.git#branch=main",
         )
         faceted = search_inventory(
             POSTGRES_TEST_DSN,
@@ -257,8 +261,9 @@ class PostgresInventoryIntegrationTests(unittest.TestCase):
             "inventory_name": "Inventory Service",
             "inventory_version": version,
             "primary_language": "Python",
-            "inventory_types": "api_service; microservice",
-            "categories": "python; fastapi",
+            "nowsecure_target": "https://example.test/inventory.git#branch=main",
+            "inventory_types": "api_service; microservice; mobile_app",
+            "categories": "android; python; fastapi",
             "branch_contributing_developers": "Alice <alice@example.com>; Bob <bob@example.com>",
             "confidence": "high",
             "score": 12,

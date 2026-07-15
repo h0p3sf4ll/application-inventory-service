@@ -2383,6 +2383,7 @@ class OutputTests(unittest.TestCase):
             "mobile_identifier": "com.fabrikam.agsnap",
             "mobile_identifier_source": "Gradle applicationId/namespace",
             "mobile_identifier_status": "found",
+            "nowsecure_target": "https://example.invalid/repo.git#branch=main",
             "branch_contributing_developers": "Alice Adams <alice@example.com>; Bob Brown <bob@example.com>",
             "contributing_developers": "Alice Adams <alice@example.com>; Bob Brown <bob@example.com>",
             "last_updated": "2024-05-02T08:30:15Z",
@@ -2464,6 +2465,57 @@ class OutputTests(unittest.TestCase):
                 ),
                 "Alice Adams <alice@example.com>; Bob Brown <bob@example.com>",
             )
+            self.assertEqual(
+                workbook_value(
+                    workbook[scanner.ACTIVE_SHEET_NAME], "nowsecure_target", 2
+                ),
+                "https://example.invalid/repo.git#branch=main",
+            )
+
+    def test_mobile_routing_and_store_metadata_only_apply_to_mobile_apps(self):
+        class FailingStoreClient:
+            def lookup(self, identifier, categories):
+                raise AssertionError("non-mobile applications must not query stores")
+
+        target = scanner.RepoScanTarget(
+            project_name="Project",
+            repo={
+                "name": "service",
+                "remoteUrl": "https://example.invalid/service.git",
+            },
+        )
+        common = {
+            "target": target,
+            "branch_name": "main",
+            "contents": {},
+            "paths": [],
+            "activity": scanner.RepoActivityMetadata(),
+            "confidence": "high",
+            "score": 3,
+            "evidence": [],
+            "branch_age_days": 90,
+        }
+
+        service = scanner_module.build_scan_row(
+            **common,
+            metadata=scanner.MobileAppMetadata(identifier="com.fabrikam.service"),
+            categories=["microservice"],
+            store_client=FailingStoreClient(),
+        )
+        mobile = scanner_module.build_scan_row(
+            **common,
+            metadata=scanner.MobileAppMetadata(identifier="com.fabrikam.mobile"),
+            categories=["android"],
+            store_client=None,
+        )
+
+        self.assertEqual(service["nowsecure_target"], "")
+        self.assertNotIn("store_validation_passed", service)
+        self.assertEqual(
+            mobile["nowsecure_target"],
+            "https://example.invalid/service.git#branch=main",
+        )
+        self.assertEqual(mobile["store_lookup_status"], "disabled")
 
     def test_cli_report_path_streams_without_retaining_result_rows(self):
         with tempfile.TemporaryDirectory() as tmpdir:

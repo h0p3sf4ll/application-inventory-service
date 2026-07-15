@@ -945,31 +945,64 @@ function openInventoryRecordFromEvent(event) {
   if (!row) {
     return;
   }
+  const isMobileApp = inventoryRecordHasType(row, "mobile_app");
   inventoryRecordTitle.textContent = row.inventory_name || row.mobile_name || row.repo_name || "Application details";
   const fields = [
-    ["Source", providerLabel(row.provider)],
-    ["Organization", row.organization],
-    ["Project", row.project],
-    ["Repository", row.repo_name],
-    ["Branch", row.branch_name],
-    ["Application version", row.inventory_version || row.mobile_version],
-    ["Application types", row.inventory_types],
-    ["Language", row.primary_language],
-    ["Web domains", row.web_domains],
-    ["Domain status", row.web_domain_status],
-    ["Contributors", row.branch_contributing_developers],
-    ["Last updated", formatDate(row.branch_last_updated || row.last_updated)],
-    ["Confidence", row.confidence],
-    ["Mobile identifier", row.mobile_identifier],
-    ["Store platforms", row.store_platforms],
-    ["Store validation", row.store_validation_passed == null ? "" : row.store_validation_passed ? "Passed" : "Failed"],
-    ["Semgrep target", row.semgrep_target],
-    ["SonarQube key", row.sonarqube_project_key],
-  ].filter(([, value]) => String(value ?? "").trim());
-  inventoryRecordDetails.innerHTML = fields.map(([label, value]) => `
-    <div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>
+    {label: "Source", value: providerLabel(row.provider)},
+    {label: "Organization", value: row.organization},
+    {label: "Project", value: row.project},
+    {label: "Repository", value: row.repo_name},
+    {label: "Branch", value: row.branch_name},
+    {label: "Application version", value: row.inventory_version || row.mobile_version},
+    {label: "Application types", value: row.inventory_types},
+    {label: "Language", value: row.primary_language},
+    {label: "Web domains", value: row.web_domains},
+    {label: "Domain status", value: row.web_domain_status},
+    {label: "Contributors", value: row.branch_contributing_developers},
+    {label: "Last updated", value: formatDate(row.branch_last_updated || row.last_updated)},
+    {label: "Confidence", value: row.confidence},
+    ...(isMobileApp ? [
+      {label: "Mobile identifier", value: row.mobile_identifier},
+      {label: "Store platforms", value: row.store_platforms},
+      {label: "Store validation", value: storeValidationDetailValue(row)},
+    ] : []),
+    {label: "Semgrep target", value: row.semgrep_target, target: true},
+    {label: "SonarQube key", value: row.sonarqube_project_key, target: true},
+    ...(isMobileApp ? [
+      {label: "NowSecure target", value: row.nowsecure_target || row.scanner_target || row.semgrep_target, target: true},
+    ] : []),
+  ].filter(({value}) => String(value ?? "").trim());
+  inventoryRecordDetails.innerHTML = fields.map(({label, value, target}) => `
+    <div${target ? ' class="inventory-detail-target"' : ""}><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>
   `).join("");
   inventoryRecordDialog.showModal();
+}
+
+function inventoryRecordHasType(row, applicationType) {
+  const rawTypes = Array.isArray(row.inventory_types)
+    ? row.inventory_types
+    : String(row.inventory_types || "").split(/[;,]/);
+  return rawTypes.some((value) => String(value).trim().toLowerCase() === applicationType);
+}
+
+function storeValidationDetailValue(row) {
+  const status = String(row.store_lookup_status || "").trim().toLowerCase();
+  if (!status || ["disabled", "not_requested"].includes(status)) {
+    return "";
+  }
+  if (status === "identifier_missing") {
+    return "Not run: mobile identifier missing";
+  }
+  if (status === "identifier_invalid") {
+    return "Not run: mobile identifier invalid";
+  }
+  if (status === "error") {
+    return "Error";
+  }
+  if (row.store_validation_passed == null) {
+    return "";
+  }
+  return row.store_validation_passed ? "Passed" : "Failed";
 }
 
 function renderLogs() {
