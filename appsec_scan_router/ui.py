@@ -726,6 +726,9 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
 
     def send_report(self, run: ScanRun, filename: str) -> None:
         clean_name = Path(unquote(filename)).name
+        if clean_name.startswith("."):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
         path = (run.reports_dir / clean_name).resolve()
         try:
             path.relative_to(run.reports_dir.resolve())
@@ -1025,6 +1028,7 @@ def report_content_type(path: Path) -> str:
     return {
         ".csv": "text/csv",
         ".json": "application/json",
+        ".log": "text/plain",
         ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ".txt": "text/plain",
     }.get(path.suffix.lower(), "application/octet-stream")

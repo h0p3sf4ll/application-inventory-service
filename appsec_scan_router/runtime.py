@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import queue
+import re
 import signal
 import subprocess
 import sys
@@ -30,9 +31,24 @@ from .scan_persistence import ScanStateStore, valid_scan_id
 LOGGER = logging.getLogger("appsec_scan_router")
 MAX_LOG_LINES = 5000
 MAX_PERSISTED_SCANS = 500
-REPORT_EXTENSIONS = frozenset({".csv", ".json", ".xlsx", ".txt"})
+REPORT_EXTENSIONS = frozenset({".csv", ".json", ".log", ".xlsx", ".txt"})
 SCAN_STATUSES_DONE = frozenset({"succeeded", "failed", "stopped"})
 SCAN_STATUSES_ACTIVE = frozenset({"queued", "running", "paused"})
+FAILURE_LOG_PATTERN = re.compile(
+    r"\b(?:critical|errors?|failed|failures?|fatal|exception|traceback)\b"
+    r"|\bcould not\b|\bunable to\b|\bmissing\b.+\bconfiguration\b"
+    r"|\b(?:http|status)(?:\s+status)?[\s:=]+[45]\d{2}\b",
+    re.IGNORECASE,
+)
+NEGATED_FAILURE_PATTERN = re.compile(
+    r"\b(?:no|zero|0)\s+(?:errors?|failures?)\b"
+    r"|\b(?:errors?|failures?)\s*[:=]\s*0\b",
+    re.IGNORECASE,
+)
+CONFIRMED_FINDING_PATTERN = re.compile(
+    r"\bDETECTED\s+(?:asset|app)=|\bfound\s+\d+\s+inventory\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -52,11 +68,14 @@ class ScanRun:
     process_group_id: int | None = None
     recovered: bool = False
     log_path: Path | None = None
+    failure_log_path: Path | None = None
     logs: deque[str] = field(default_factory=lambda: deque(maxlen=MAX_LOG_LINES))
     log_tail: deque[str] = field(default_factory=lambda: deque(maxlen=300))
+    failure_tail: deque[str] = field(default_factory=lambda: deque(maxlen=300))
     listeners: list[queue.Queue[dict[str, Any] | None]] = field(default_factory=list)
     lock: threading.RLock = field(default_factory=threading.RLock)
     detected_count: int = 0
+    failure_count: int = 0
     progress: dict[str, int] = field(
         default_factory=lambda: {
             "repositoriesPrepared": 0,
@@ -68,18 +87,29 @@ class ScanRun:
     started_monotonic: float = 0.0
     paused_monotonic: float = 0.0
     paused_seconds: float = 0.0
+    _log_offset: int = 0
     _report_cache: list[dict[str, Any]] = field(default_factory=list)
     _report_cache_at: float = 0.0
 
-    def append_log(self, line: str) -> None:
+    def append_log(self, line: str, persist_failure: bool = True) -> None:
         clean_line = line.rstrip("\n")
         if not clean_line:
             return
+        failure = is_failure_log_line(clean_line)
         with self.lock:
             self.logs.append(clean_line)
             self.log_tail.append(clean_line)
+            if failure:
+                self.failure_tail.append(clean_line)
+                self.failure_count += 1
+                self._report_cache_at = 0.0
             self._record_log_metrics(clean_line)
-        self.publish("log", {"line": clean_line})
+        if failure and persist_failure and self.failure_log_path is not None:
+            try:
+                append_scan_log(self.failure_log_path, clean_line)
+            except OSError:
+                LOGGER.exception("Could not write scan failure log scan_id=%s", self.id)
+        self.publish("log", {"line": clean_line, "failure": failure})
 
     def set_status(self, status: str, exit_code: int | None = None) -> None:
         now = time.monotonic()
@@ -150,7 +180,11 @@ class ScanRun:
         reports: list[dict[str, Any]] = []
         if self.reports_dir.exists():
             for path in sorted(self.reports_dir.iterdir()):
-                if not path.is_file() or path.suffix.lower() not in REPORT_EXTENSIONS:
+                if (
+                    path.name.startswith(".")
+                    or not path.is_file()
+                    or path.suffix.lower() not in REPORT_EXTENSIONS
+                ):
                     continue
                 stat = path.stat()
                 reports.append(
@@ -220,6 +254,7 @@ class ScanRun:
                 "endedAt": self.ended_at,
                 "exitCode": self.exit_code,
                 "detectedCount": self.detected_count,
+                "failureCount": self.failure_count,
                 "progress": dict(self.progress),
                 "activeSeconds": self.active_seconds(),
                 "reportsDir": str(self.reports_dir),
@@ -228,6 +263,7 @@ class ScanRun:
                 "recovered": self.recovered,
                 "reports": reports,
                 "logsTail": list(self.log_tail),
+                "failuresTail": list(self.failure_tail),
             }
 
     def _record_log_metrics(self, line: str) -> None:
@@ -326,6 +362,7 @@ class ScanManager:
             display_command=tuple(self.redact_command(command)),
             reports_dir=reports_dir,
             log_path=reports_dir / ".scan.log",
+            failure_log_path=reports_dir / "failures.log",
         )
         self.state_store.remove_completion(scan_id)
         with self.lock:
@@ -533,7 +570,7 @@ class ScanManager:
 
     def _monitor_recovered_scan(self, run: ScanRun, acquired: bool) -> None:
         try:
-            self._monitor_scan(run, None, scan_log_size(run.log_path))
+            self._monitor_scan(run, None, run._log_offset)
         finally:
             if acquired:
                 self._slots.release()
@@ -668,10 +705,21 @@ class ScanManager:
             process_group_id=positive_optional_int(record.get("processGroupId")),
             recovered=status in {"running", "paused"},
             log_path=reports_dir / ".scan.log",
+            failure_log_path=reports_dir / "failures.log",
             paused_seconds=non_negative_float(record.get("pausedSeconds")),
         )
-        for line in scan_log_lines(run.log_path):
-            run.append_log(line)
+        snapshot_size = scan_log_size(run.log_path)
+        for offset, line in scan_log_entries(run.log_path, snapshot_size):
+            run._log_offset = offset
+            run.append_log(line, persist_failure=False)
+        try:
+            rebuild_failure_log(
+                run.log_path,
+                run.failure_log_path,
+                byte_limit=run._log_offset,
+            )
+        except OSError:
+            LOGGER.exception("Could not rebuild scan failure log scan_id=%s", run.id)
         return run
 
     def _persist_scans(self) -> None:
@@ -745,19 +793,92 @@ def read_scan_log(
     return offset + consumed, lines
 
 
-def scan_log_lines(path: Path | None) -> Iterable[str]:
+def scan_log_entries(
+    path: Path | None,
+    byte_limit: int | None = None,
+) -> Iterable[tuple[int, str]]:
     if path is None or not path.exists():
         return ()
 
-    def lines() -> Iterable[str]:
+    def entries() -> Iterable[tuple[int, str]]:
         try:
             with path.open("rb") as log_file:
-                for line in log_file:
-                    yield line.decode("utf-8", errors="replace").rstrip("\r\n")
+                while True:
+                    if byte_limit is None:
+                        line = log_file.readline()
+                    else:
+                        remaining = max(0, byte_limit - log_file.tell())
+                        if not remaining:
+                            return
+                        line = log_file.readline(remaining)
+                    if not line or not line.endswith(b"\n"):
+                        return
+                    yield (
+                        log_file.tell(),
+                        line.decode("utf-8", errors="replace").rstrip("\r\n"),
+                    )
         except OSError:
             return
 
-    return lines()
+    return entries()
+
+
+def scan_log_lines(
+    path: Path | None,
+    byte_limit: int | None = None,
+) -> Iterable[str]:
+    return (line for _, line in scan_log_entries(path, byte_limit))
+
+
+def is_failure_log_line(line: str) -> bool:
+    value = str(line or "").strip()
+    if not value or CONFIRMED_FINDING_PATTERN.search(value):
+        return False
+    return bool(FAILURE_LOG_PATTERN.search(NEGATED_FAILURE_PATTERN.sub("", value)))
+
+
+def rebuild_failure_log(
+    source_path: Path | None,
+    failure_path: Path | None,
+    byte_limit: int | None = None,
+) -> int:
+    return write_failure_log(
+        failure_path,
+        scan_log_lines(source_path, byte_limit),
+    )
+
+
+def write_failure_log(failure_path: Path | None, lines: Iterable[str]) -> int:
+    if failure_path is None:
+        return 0
+    failure_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = failure_path.with_name(
+        f".{failure_path.name}.{uuid.uuid4().hex}.tmp"
+    )
+    descriptor = os.open(
+        temporary_path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
+    count = 0
+    try:
+        with os.fdopen(descriptor, "wb") as failure_file:
+            for line in lines:
+                if not is_failure_log_line(line):
+                    continue
+                failure_file.write(
+                    f"{line.rstrip()}\n".encode("utf-8", errors="replace")
+                )
+                count += 1
+        if count:
+            os.replace(temporary_path, failure_path)
+        else:
+            temporary_path.unlink(missing_ok=True)
+            failure_path.unlink(missing_ok=True)
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
+    return count
 
 
 def run_state_record(run: ScanRun) -> dict[str, Any]:

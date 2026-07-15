@@ -419,6 +419,13 @@ button:not(:disabled):active {
   gap: 18px;
 }
 
+.scan-console-column {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 18px;
+}
+
 .app-nav,
 .view-tabs {
   display: inline-flex;
@@ -1471,6 +1478,42 @@ button:focus-visible {
   font-size: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
+}
+
+.failure-panel {
+  border-color: rgb(255 99 115 / 38%);
+}
+
+.failure-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+}
+
+.failure-count {
+  display: inline-grid;
+  min-width: 25px;
+  height: 25px;
+  padding: 0 7px;
+  place-items: center;
+  background: var(--danger-soft);
+  border: 1px solid rgb(255 99 115 / 32%);
+  border-radius: 8px;
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.failure-logs {
+  height: 210px;
+  background: rgb(27 12 18);
+  border: 1px solid rgb(255 99 115 / 22%);
+}
+
+.failure-logs:empty::before {
+  color: var(--muted);
+  content: "No failures detected.";
 }
 
 .database-actions {

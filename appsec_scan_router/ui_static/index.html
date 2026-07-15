@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Application Inventory Service</title>
-    <link rel="stylesheet" href="/static/styles.css?v=9">
+    <link rel="stylesheet" href="/static/styles.css?v=10">
   </head>
   <body class="login-mode">
     <main class="login-shell" id="loginPage">
@@ -633,16 +633,32 @@
                 <div class="run-list" id="runList"></div>
               </section>
 
-              <section class="panel log-panel">
-                <div class="section-heading">
-                  <h2>Console</h2>
-                  <div class="log-actions">
-                    <button class="ghost small" id="clearLogs" type="button">Clear</button>
-                    <button class="ghost small" id="downloadLogs" type="button" disabled>Download</button>
+              <div class="scan-console-column">
+                <section class="panel log-panel">
+                  <div class="section-heading">
+                    <h2>Console</h2>
+                    <div class="log-actions">
+                      <button class="ghost small" id="clearLogs" type="button">Clear</button>
+                      <button class="ghost small" id="downloadLogs" type="button" disabled>Download</button>
+                    </div>
                   </div>
-                </div>
-                <pre class="logs" id="logs"></pre>
-              </section>
+                  <pre class="logs" id="logs" aria-label="Scan console"></pre>
+                </section>
+
+                <section class="panel log-panel failure-panel">
+                  <div class="section-heading">
+                    <div class="failure-heading">
+                      <h2>Failures</h2>
+                      <span class="failure-count" id="failureCount">0</span>
+                    </div>
+                    <div class="log-actions">
+                      <button class="ghost small" id="clearFailures" type="button">Clear</button>
+                      <button class="ghost small" id="downloadFailures" type="button" disabled>Download</button>
+                    </div>
+                  </div>
+                  <pre class="logs failure-logs" id="failures" aria-label="Scan failures"></pre>
+                </section>
+              </div>
             </div>
           </section>
 
@@ -702,6 +718,6 @@
       </section>
     </main>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=9" type="module"></script>
+    <script src="/static/app.js?v=10" type="module"></script>
   </body>
 </html>

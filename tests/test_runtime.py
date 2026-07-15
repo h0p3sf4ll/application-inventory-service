@@ -1,4 +1,5 @@
 import os
+import stat
 import sys
 import tempfile
 import threading
@@ -13,11 +14,83 @@ from appsec_scan_router.constants import (
     MOBILE_FIELDNAMES,
 )
 from appsec_scan_router.postgres import EXPORT_COLUMNS
-from appsec_scan_router.runtime import ScanManager, ScanRun
+from appsec_scan_router.runtime import (
+    ScanManager,
+    ScanRun,
+    is_failure_log_line,
+    rebuild_failure_log,
+)
 from appsec_scan_router.scanner import collect_targets
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_scan_failures_are_isolated_and_persisted(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            reports_dir = Path(tmpdir)
+            failure_path = reports_dir / "failures.log"
+            run = ScanRun(
+                "scan-1",
+                {},
+                (),
+                (),
+                reports_dir,
+                failure_log_path=failure_path,
+            )
+            listener = run.add_listener()
+
+            run.append_log("Completed with 0 errors")
+            run.append_log("ERROR GitHub request could not be completed")
+            event = listener.get_nowait()
+            event = listener.get_nowait()
+            run.append_log("HTTP 404 from repository endpoint")
+            (reports_dir / ".scan.log").write_text("internal", encoding="utf-8")
+            summary = run.summary()
+
+            self.assertFalse(is_failure_log_line("Completed with no failures"))
+            self.assertFalse(is_failure_log_line("Errors: 0"))
+            self.assertFalse(
+                is_failure_log_line("DETECTED asset=errors-dashboard confidence=high")
+            )
+            self.assertTrue(is_failure_log_line("Status: 503"))
+            self.assertTrue(event["data"]["failure"])
+            self.assertEqual(summary["failureCount"], 2)
+            self.assertEqual(
+                summary["failuresTail"],
+                [
+                    "ERROR GitHub request could not be completed",
+                    "HTTP 404 from repository endpoint",
+                ],
+            )
+            self.assertEqual(
+                failure_path.read_text(encoding="utf-8").splitlines(),
+                summary["failuresTail"],
+            )
+            self.assertEqual(stat.S_IMODE(failure_path.stat().st_mode), 0o600)
+            self.assertEqual(
+                [report["name"] for report in run.report_files()],
+                ["failures.log"],
+            )
+
+    def test_failure_log_rebuild_replaces_stale_content(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / ".scan.log"
+            failures = root / "failures.log"
+            source.write_text(
+                "ready\nFailed repo A\nCompleted with no errors\nFatal: repo B\n",
+                encoding="utf-8",
+            )
+            failures.write_text("stale\n", encoding="utf-8")
+
+            count = rebuild_failure_log(source, failures)
+
+            self.assertEqual(count, 2)
+            self.assertEqual(
+                failures.read_text(encoding="utf-8").splitlines(),
+                ["Failed repo A", "Fatal: repo B"],
+            )
+            self.assertEqual(stat.S_IMODE(failures.stat().st_mode), 0o600)
+
     def test_scan_run_tracks_metrics_without_rescanning_logs(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             run = ScanRun("scan-1", {}, (), (), Path(tmpdir))

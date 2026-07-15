@@ -92,9 +92,9 @@ For GitHub Enterprise scans, the UI uses service-managed GitHub App credentials 
 
 ### Run control and scheduling
 
-The Runs page controls the selected subprocess. Pause and resume use POSIX process-group signals, which cover the scanner and any child processes. This is supported on Linux and macOS, including the Docker image. Stop works for queued, running, and paused scans.
+The Runs page controls the selected subprocess. Pause and resume use POSIX process-group signals, which cover the scanner and any child processes. This is supported on Linux and macOS, including the Docker image. Stop works for queued, running, and paused scans. The Console retains the complete live stream; the separate Failures console isolates error lines and writes them to a downloadable `failures.log` in the scan report directory. Report and failure logs are created with owner-only permissions.
 
-Closing the browser or signing out does not stop a scan. Each running scan uses a detached worker, a private durable log, and encrypted run state. When the UI service restarts on the same host, it verifies the original process group, restores the owning user, reconnects log delivery, and exposes the run after that user signs in again. Keep the reports and service-state directories on durable storage and keep `APPLICATION_INVENTORY_SERVICE_SECRET_KEY` stable. Stopping a container, VM, or host still terminates its operating-system processes.
+Closing the browser or signing out does not stop a scan. Each running scan uses a detached worker, a private durable log, and encrypted run state. When the UI service restarts on the same host, it verifies the original process group, restores the owning user, reconnects log delivery, rebuilds the failure-only log from durable output, and exposes the run after that user signs in again. Keep the reports and service-state directories on durable storage and keep `APPLICATION_INVENTORY_SERVICE_SECRET_KEY` stable. Stopping a container, VM, or host still terminates its operating-system processes.
 
 The Schedules page creates a schedule from the current Scan setup. Schedule definitions and embedded source credentials are encrypted in `schedules.json.enc` under the service state directory. Schedules are scoped to the signed-in user and survive service restarts when the state directory and `APPLICATION_INVENTORY_SERVICE_SECRET_KEY` remain stable.
 
@@ -109,7 +109,7 @@ docker run --rm \
   -p 48731:48731 \
   --env-file .env \
   -v "$PWD/reports:/reports" \
-  h0p3sf4ll/application-inventory-service:1.6.15 \
+  h0p3sf4ll/application-inventory-service:1.6.16 \
   ui \
   --host 0.0.0.0 \
   --port 48731 \

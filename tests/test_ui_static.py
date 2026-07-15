@@ -2,7 +2,7 @@ import unittest
 from html.parser import HTMLParser
 from pathlib import Path
 
-from appsec_scan_router.ui import static_cache_control
+from appsec_scan_router.ui import report_content_type, static_cache_control
 
 
 class UiStructureParser(HTMLParser):
@@ -52,6 +52,25 @@ class UiStaticTests(unittest.TestCase):
     def test_index_document_is_not_cached(self):
         self.assertEqual(static_cache_control("index.html"), "no-store, max-age=0")
         self.assertEqual(static_cache_control("styles.css"), "private, max-age=300")
+        self.assertEqual(report_content_type(Path("failures.log")), "text/plain")
+
+    def test_runs_view_has_a_dedicated_failure_console(self):
+        static_root = (
+            Path(__file__).resolve().parents[1] / "appsec_scan_router" / "ui_static"
+        )
+        html = (static_root / "index.html").read_text(encoding="utf-8")
+        javascript = (static_root / "app.js").read_text(encoding="utf-8")
+        stylesheet = (static_root / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('<h2>Failures</h2>', html)
+        self.assertIn('id="failureCount"', html)
+        self.assertIn('id="clearFailures"', html)
+        self.assertIn('id="downloadFailures"', html)
+        self.assertIn('id="failures"', html)
+        self.assertIn("data.failure === true || isFailureLogLine(data.line)", javascript)
+        self.assertIn('item.name === "failures.log"', javascript)
+        self.assertIn(".failure-panel", stylesheet)
+        self.assertIn(".failure-logs", stylesheet)
 
     def test_inventory_table_has_its_own_navigation_view(self):
         index_path = (

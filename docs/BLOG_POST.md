@@ -47,7 +47,7 @@ Inventory collection must respect provider limits. The service uses separate bou
 
 Domain discovery is similarly bounded. It runs only for network-deployable application types, limits recent deployment inspection, prioritizes production-like environments, and caps status lookups per environment.
 
-Operators can run scans interactively or on one-time, daily, and weekly schedules. Active scans can be paused, resumed, or stopped. Scheduled configurations and embedded credentials are encrypted, scoped to the signed-in user, and processed through the same concurrency controls as interactive scans.
+Operators can run scans interactively or on one-time, daily, and weekly schedules. Active scans can be paused, resumed, or stopped. Browser and service restarts do not terminate detached workers on the same host. The Runs page preserves the full console while isolating failures in a separate view and owner-only log file. Scheduled configurations and embedded credentials are encrypted, scoped to the signed-in user, and processed through the same concurrency controls as interactive scans.
 
 ## Durable, Searchable Results
 

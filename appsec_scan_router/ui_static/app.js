@@ -32,6 +32,8 @@ const testSsoStatus = document.querySelector("#testSsoStatus");
 const copyCommandButton = document.querySelector("#copyCommand");
 const clearLogsButton = document.querySelector("#clearLogs");
 const downloadLogsButton = document.querySelector("#downloadLogs");
+const clearFailuresButton = document.querySelector("#clearFailures");
+const downloadFailuresButton = document.querySelector("#downloadFailures");
 const activeStatus = document.querySelector("#activeStatus");
 const activeTitle = document.querySelector("#activeTitle");
 const detectedCount = document.querySelector("#detectedCount");
@@ -42,6 +44,8 @@ const reportList = document.querySelector("#reportList");
 const reportCount = document.querySelector("#reportCount");
 const scanCount = document.querySelector("#scanCount");
 const logsElement = document.querySelector("#logs");
+const failuresElement = document.querySelector("#failures");
+const failureCount = document.querySelector("#failureCount");
 const toast = document.querySelector("#toast");
 const formStatus = document.querySelector("#formStatus");
 const checkDatabaseButton = document.querySelector("#checkDatabase");
@@ -100,6 +104,7 @@ const state = {
   activeScan: null,
   eventSource: null,
   logs: [],
+  failures: [],
   timer: null,
   session: null,
   database: null,
@@ -252,6 +257,11 @@ function bindEvents() {
     renderLogs();
   });
   downloadLogsButton.addEventListener("click", downloadLogs);
+  clearFailuresButton.addEventListener("click", () => {
+    state.failures = [];
+    renderFailures();
+  });
+  downloadFailuresButton.addEventListener("click", downloadFailures);
   checkDatabaseButton.addEventListener("click", () => checkDatabase());
   searchDatabaseButton.addEventListener("click", () => searchDatabase(0, databaseSearchQuery.value));
   clearDatabaseSearchButton.addEventListener("click", () => {
@@ -374,6 +384,7 @@ async function startScan() {
     }
     state.activeScan = stampScan(data.scan);
     state.logs = data.scan.logsTail || [];
+    state.failures = data.scan.failuresTail || state.logs.filter(isFailureLogLine);
     await loadScans(data.scan.id);
     listenToScan(data.scan.id);
     setActiveView("runsView");
@@ -438,6 +449,7 @@ async function logout() {
     state.scans = [];
     state.activeScan = null;
     state.logs = [];
+    state.failures = [];
     state.database = null;
     state.databaseSearch = {query: "", filters: {}, rows: [], total: 0, limit: 100, offset: 0, loaded: false};
     resetDatabaseFacets();
@@ -462,6 +474,7 @@ async function loadScans(preferredId = "") {
     state.scans = [];
     state.activeScan = null;
     state.logs = [];
+    state.failures = [];
     renderAll();
     return;
   }
@@ -494,6 +507,7 @@ async function selectScan(scan, connect = true) {
     const data = await response.json();
     state.activeScan = stampScan(data.scan || scan);
     state.logs = state.activeScan.logsTail || [];
+    state.failures = state.activeScan.failuresTail || state.logs.filter(isFailureLogLine);
     renderAll();
     if (connect && ["running", "paused"].includes(state.activeScan.status)) {
       listenToScan(state.activeScan.id);
@@ -523,6 +537,16 @@ function listenToScan(scanId) {
         renderLogs();
       } else {
         appendLogLine(data.line);
+      }
+      if (data.failure === true || isFailureLogLine(data.line)) {
+        state.failures.push(data.line);
+        state.activeScan.failureCount = Number(state.activeScan.failureCount || 0) + 1;
+        if (state.failures.length > 1300) {
+          state.failures = state.failures.slice(-1200);
+          renderFailures();
+        } else {
+          appendFailureLine(data.line);
+        }
       }
       if (/\b(detected|confirmed|match)\b|found \d+ inventory/i.test(data.line)) {
         scheduleDatabaseRefresh();
@@ -577,6 +601,7 @@ function renderAll() {
   renderDatabaseResults();
   renderLocalLlmStatus();
   renderLogs();
+  renderFailures();
 }
 
 function renderActiveScan() {
@@ -595,6 +620,7 @@ function renderActiveScan() {
     pauseScanButton.classList.remove("hidden");
     stopScanButton.disabled = true;
     downloadLogsButton.disabled = true;
+    downloadFailuresButton.disabled = true;
     return;
   }
   activeStatus.textContent = capitalize(scan.status);
@@ -611,6 +637,7 @@ function renderActiveScan() {
   resumeScanButton.disabled = !paused;
   stopScanButton.disabled = !["queued", "running", "paused"].includes(scan.status);
   downloadLogsButton.disabled = state.logs.length === 0;
+  downloadFailuresButton.disabled = state.failures.length === 0;
 }
 
 function renderRuns() {
@@ -1033,9 +1060,54 @@ function appendLogLine(line) {
   downloadLogsButton.disabled = false;
 }
 
+function renderFailures() {
+  const fragment = document.createDocumentFragment();
+  state.failures.forEach((line, index) => {
+    if (index > 0) {
+      fragment.append(document.createTextNode("\n"));
+    }
+    const element = document.createElement("span");
+    element.className = "log-error";
+    element.textContent = line;
+    fragment.append(element);
+  });
+  failuresElement.replaceChildren(fragment);
+  failuresElement.scrollTop = failuresElement.scrollHeight;
+  failureCount.textContent = String(state.activeScan ? state.activeScan.failureCount || 0 : 0);
+  downloadFailuresButton.disabled = state.failures.length === 0;
+}
+
+function appendFailureLine(line) {
+  if (failuresElement.childNodes.length) {
+    failuresElement.append(document.createTextNode("\n"));
+  }
+  const element = document.createElement("span");
+  element.className = "log-error";
+  element.textContent = line;
+  failuresElement.append(element);
+  failuresElement.scrollTop = failuresElement.scrollHeight;
+  failureCount.textContent = String(state.activeScan ? state.activeScan.failureCount || 0 : state.failures.length);
+  downloadFailuresButton.disabled = false;
+}
+
+function isFailureLogLine(line) {
+  const value = String(line || "").trim().replace(/\b(?:no|zero|0)\s+(?:errors?|failures?)\b|\b(?:errors?|failures?)\s*[:=]\s*0\b/gi, "");
+  if (isConfirmedFindingLine(value)) {
+    return false;
+  }
+  return /\b(?:critical|errors?|failed|failures?|fatal|exception|traceback)\b|\bcould not\b|\bunable to\b|\bmissing\b.+\bconfiguration\b|\b(?:http|status)(?:\s+status)?[\s:=]+[45]\d{2}\b/i.test(value);
+}
+
+function isConfirmedFindingLine(line) {
+  return /\bDETECTED\s+(?:asset|app)=|\bfound\s+\d+\s+inventory\b/i.test(String(line || ""));
+}
+
 function logTone(line) {
   const value = String(line || "").toLowerCase();
-  if (/\b(error|failed|failure|exception|traceback|fatal)\b|could not|unable to|missing .* configuration/.test(value)) {
+  if (isConfirmedFindingLine(value)) {
+    return "log-success";
+  }
+  if (isFailureLogLine(value)) {
     return "log-error";
   }
   if (/\b(detected|confirmed|match)\b|found \d+ inventory/.test(value)) {
@@ -2069,6 +2141,21 @@ function downloadLogs() {
   }
   const blob = new Blob([state.logs.join("\n")], {type: "text/plain"});
   downloadBlob(blob, `${state.activeScan ? state.activeScan.id : "scan"}-logs.txt`);
+}
+
+function downloadFailures() {
+  if (!state.failures.length) {
+    return;
+  }
+  const report = state.activeScan && (state.activeScan.reports || []).find((item) => item.name === "failures.log");
+  if (state.activeScan) {
+    const link = document.createElement("a");
+    link.href = report ? report.url : `/api/scans/${encodeURIComponent(state.activeScan.id)}/reports/failures.log`;
+    link.click();
+    return;
+  }
+  const blob = new Blob([state.failures.join("\n")], {type: "text/plain"});
+  downloadBlob(blob, `${state.activeScan ? state.activeScan.id : "scan"}-failures.log`);
 }
 
 function downloadBlob(blob, filename) {
