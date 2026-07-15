@@ -8,6 +8,7 @@ flowchart LR
   Automation["CLI / SDK / Scheduler"] --> Core["Inventory Engine"]
   UI --> Core
   UI --> Scheduler["Encrypted Schedule Service"]
+  UI --> LLM["Local Ollama Query Planner"]
   Scheduler --> Runtime["Bounded Scan Runtime"]
   Runtime --> Core
   Core --> ADO["Azure DevOps API"]
@@ -16,7 +17,7 @@ flowchart LR
   Core --> Reports["XLSX / Semgrep Targets / SonarQube Targets"]
   Core --> DB["PostgreSQL Inventory Schema"]
   Reports --> Scanners["Semgrep / SonarQube / SCA / Custom Scanners"]
-  DB --> BI["Dashboards / Data Exports"]
+  DB --> BI["Live Table / Dashboards / Data Exports"]
 ```
 
 ## Runtime Components
@@ -24,7 +25,7 @@ flowchart LR
 | Component | Responsibility |
 | --- | --- |
 | UI service | Login, credential handling, scan configuration, live logs, report download, database export |
-| Scan runtime | Bounded subprocess admission, pause, resume, stop, event delivery, and process cleanup |
+| Scan runtime | Bounded subprocess admission, durable worker recovery, pause, resume, stop, and event delivery |
 | Scheduler | Encrypted user-scoped recurrence definitions and due-run dispatch |
 | Request compiler | Scan request validation, command construction, redaction, and restricted child environments |
 | Source discovery | Concurrent project and repository discovery for interactive filtering |
@@ -34,6 +35,8 @@ flowchart LR
 | Domain attribution | Normalized deployment, repository, and configuration evidence linked to source branches |
 | Report writer | Streaming XLSX inventory, Semgrep target, and SonarQube target outputs |
 | PostgreSQL writer | Current-state normalized upserts scoped by owner/user and source identity |
+| Inventory query service | Indexed full-text and structured user-scoped search with streaming exports |
+| Local query planner | Ollama-backed natural-language conversion into allowlisted filters; receives no inventory rows |
 | Store lookup client | Optional mobile app store validation |
 
 ## Data Flow
@@ -46,14 +49,15 @@ flowchart LR
 6. The engine reads repository trees and selected manifest/configuration files through a bounded queue.
 7. Detection evidence is converted into inventory types, categories, metadata, contributors, timestamps, and a provider value.
 8. Network-deployable findings collect bounded domain evidence and select a primary domain by evidence strength and environment.
-9. Results from every source stream through the same report writer and PostgreSQL writer. CLI runs do not retain a second in-memory result set.
-10. Scanner manifests are consumed by downstream security tooling.
+9. Results from every source stream through the same report writer and PostgreSQL writer. Pending rows commit on a bounded time interval and appear in the active UI table.
+10. Database search applies owner scope, indexed text search, structured filters, and a bounded result window. Exports stream through a server-side cursor.
+11. Scanner manifests are consumed by downstream security tooling.
 
 The service emits structured lifecycle, request, scan, and provider-authentication events to the configured PostgreSQL observability table. The UI exposes health and metrics endpoints without exposing provider secrets.
 
 ## Storage Model
 
-The UI writes reports, encrypted provider credentials, and encrypted schedules under the configured reports/state directory. The Fernet key must remain stable across restarts. Production deployments should mount durable encrypted storage such as Amazon EFS or Azure Files and store inventory data in managed PostgreSQL.
+The UI writes reports, private scan logs, encrypted run state, encrypted provider credentials, and encrypted schedules under the configured reports/state directory. The Fernet key must remain stable across restarts. A detached worker can outlive a local UI process and is reattached only after its PID and process group are verified. Production deployments should mount durable encrypted storage such as Amazon EFS or Azure Files and store inventory data in managed PostgreSQL.
 
 ## Security Model
 
@@ -61,10 +65,12 @@ The UI writes reports, encrypted provider credentials, and encrypted schedules u
 - GitHub App private keys remain in secret storage or a secret-mounted file and are never placed in generated scan commands.
 - Saved UI tokens are encrypted with Fernet.
 - Scheduled scan configuration and credentials are encrypted with Fernet and scoped by user.
+- Active and queued run configuration is encrypted with Fernet and never returned by the run API.
 - PostgreSQL inventory and repository keys are scoped by signed-in user.
 - Repeated findings update current-state rows; normalized child values are synchronized without duplicate insertion.
 - Domains and domain evidence sources use separate normalized child tables keyed to branch inventory.
 - Domain attribution never performs HTTP or DNS requests to discovered hosts.
 - Database search and filtered exports enforce the signed-in user scope in SQL.
+- The local query planner receives a question and field schema only. It cannot issue SQL or bypass database authorization.
 - OAuth should be configured with a dedicated callback domain.
 - Production secrets should be stored in AWS Secrets Manager and injected into ECS tasks.

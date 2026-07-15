@@ -25,7 +25,11 @@ from appsec_scan_router.auth import (
     expired_session_cookie,
     session_cookie,
 )
-from appsec_scan_router.github import GitHubAppCredentials, GitHubAppTokenProvider, normalize_github_api_url
+from appsec_scan_router.github import (
+    GitHubAppCredentials,
+    GitHubAppTokenProvider,
+    normalize_github_api_url,
+)
 from appsec_scan_router.postgres import (
     POSTGRES_COLUMNS,
     PRIMARY_KEY_COLUMNS,
@@ -53,7 +57,10 @@ class PublicApiTests(unittest.TestCase):
         self.assertTrue(callable(scanner.detect_inventory_repo))
         self.assertTrue(callable(scanner.discover_web_domains))
         self.assertTrue(callable(scanner.ApplicationInventoryService))
-        self.assertIs(scanner.ApplicationInventoryService, application_inventory_service.ApplicationInventoryService)
+        self.assertIs(
+            scanner.ApplicationInventoryService,
+            application_inventory_service.ApplicationInventoryService,
+        )
         self.assertTrue(callable(scanner.AppSecInventoryService))
         self.assertTrue(callable(scanner.AppSecScanRouter))
         self.assertTrue(callable(scanner.GitHubEnterpriseClient))
@@ -62,6 +69,7 @@ class PublicApiTests(unittest.TestCase):
         self.assertTrue(callable(scanner.export_inventory_csv))
         self.assertTrue(callable(scanner.export_inventory_json))
         self.assertTrue(callable(scanner.export_inventory_rows))
+        self.assertTrue(callable(scanner.export_inventory_xlsx))
         self.assertTrue(callable(scanner.search_inventory))
         self.assertIn("mobile_app", scanner.KNOWN_INVENTORY_TYPES)
         self.assertEqual(scanner.APPLICATION_TYPE_LABELS["ai_enabled"], "AI-enabled")
@@ -72,25 +80,44 @@ class PublicApiTests(unittest.TestCase):
         self.assertEqual(scanner.DEFAULT_GITHUB_APP_INSTALLATION_ID, "")
         self.assertTrue(callable(scanner.parse_ado_org_pat_values))
         self.assertTrue(callable(scanner.ado_org_pats_to_json))
-        self.assertEqual(scanner.parse_github_urls(["https://github.com/global-snt", "security-team"]), ("global-snt", "security-team"))
+        self.assertEqual(
+            scanner.parse_github_urls(
+                ["https://github.com/global-snt", "security-team"]
+            ),
+            ("global-snt", "security-team"),
+        )
         self.assertTrue(callable(scanner.parse_source_target_filter_values))
         self.assertTrue(callable(scanner.source_target_filters_to_json))
         self.assertIs(scanner.SourceTargetFilter, ado_mobile_scanner.SourceTargetFilter)
         org_pats = scanner.parse_ado_org_pat_values("FabrikamCloud=pat-a")
-        self.assertEqual([(item.org, item.pat) for item in org_pats], [("FabrikamCloud", "pat-a")])
-        target_filters = scanner.parse_source_target_filter_values("FabrikamCloud=Go_To_Market")
-        self.assertEqual([(item.org, item.project) for item in target_filters], [("FabrikamCloud", "Go_To_Market")])
+        self.assertEqual(
+            [(item.org, item.pat) for item in org_pats], [("FabrikamCloud", "pat-a")]
+        )
+        target_filters = scanner.parse_source_target_filter_values(
+            "FabrikamCloud=Go_To_Market"
+        )
+        self.assertEqual(
+            [(item.org, item.project) for item in target_filters],
+            [("FabrikamCloud", "Go_To_Market")],
+        )
 
     def test_report_file_stem_labels_selected_application_types(self):
-        self.assertEqual(scanner.report_file_stem("Inventory Scan", ("mobile_app", "api_service")), "inventory_scan_mobile_app_api_service")
-        self.assertEqual(scanner.report_file_stem("Inventory Scan", ()), "inventory_scan_all_types")
+        self.assertEqual(
+            scanner.report_file_stem("Inventory Scan", ("mobile_app", "api_service")),
+            "inventory_scan_mobile_app_api_service",
+        )
+        self.assertEqual(
+            scanner.report_file_stem("Inventory Scan", ()), "inventory_scan_all_types"
+        )
 
     def test_azure_throttle_honors_retry_after(self):
         class Response:
             headers = {"Retry-After": "1"}
             status_code = 200
 
-        throttle = azure_module.AzureDevOpsThrottle(requests_per_second=0, low_remaining_backoff_seconds=2)
+        throttle = azure_module.AzureDevOpsThrottle(
+            requests_per_second=0, low_remaining_backoff_seconds=2
+        )
         before = time.monotonic()
         throttle.observe(Response())
         self.assertGreaterEqual(throttle.block_until, before + 0.9)
@@ -100,7 +127,9 @@ class PublicApiTests(unittest.TestCase):
             headers = {"X-RateLimit-Remaining": "0"}
             status_code = 200
 
-        throttle = azure_module.AzureDevOpsThrottle(requests_per_second=0, low_remaining_backoff_seconds=2)
+        throttle = azure_module.AzureDevOpsThrottle(
+            requests_per_second=0, low_remaining_backoff_seconds=2
+        )
         before = time.monotonic()
         throttle.observe(Response())
         self.assertGreaterEqual(throttle.block_until, before + 1.9)
@@ -113,15 +142,21 @@ class PublicApiTests(unittest.TestCase):
             }
             status_code = 200
 
-        throttle = github_module.GitHubThrottle(requests_per_second=0, rate_limit_reserve=50)
+        throttle = github_module.GitHubThrottle(
+            requests_per_second=0, rate_limit_reserve=50
+        )
         before = time.monotonic()
         throttle.observe(Response())
         self.assertGreaterEqual(throttle.block_until, before + 59)
 
     def test_content_selection_excludes_dependency_artifacts(self):
         self.assertTrue(scanner.should_fetch_content("/services/api/package.json"))
-        self.assertFalse(scanner.should_fetch_content("/services/api/node_modules/pkg/package.json"))
-        self.assertFalse(scanner.should_fetch_content("/services/api/package-lock.json"))
+        self.assertFalse(
+            scanner.should_fetch_content("/services/api/node_modules/pkg/package.json")
+        )
+        self.assertFalse(
+            scanner.should_fetch_content("/services/api/package-lock.json")
+        )
 
 
 class AuthTests(unittest.TestCase):
@@ -164,8 +199,12 @@ class AuthTests(unittest.TestCase):
             config = GitHubEnterpriseOAuthConfig.from_env()
 
         self.assertTrue(config.enabled)
-        self.assertEqual(config.authorize_url, "https://ghe.example.com/login/oauth/authorize")
-        self.assertEqual(config.token_url, "https://ghe.example.com/login/oauth/access_token")
+        self.assertEqual(
+            config.authorize_url, "https://ghe.example.com/login/oauth/authorize"
+        )
+        self.assertEqual(
+            config.token_url, "https://ghe.example.com/login/oauth/access_token"
+        )
         self.assertEqual(config.user_url, "https://ghe.example.com/api/v3/user")
         self.assertEqual(config.scope, "read:user read:org")
 
@@ -226,17 +265,20 @@ class AuthTests(unittest.TestCase):
         self.assertFalse(config.enabled)
 
     def test_auth_status_lists_enterprise_and_google_sso(self):
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
-            "os.environ",
-            {
-                "APPLICATION_INVENTORY_SERVICE_GHE_BASE_URL": "https://github.enterprise.example",
-                "APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_ID": "github-client",
-                "APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_SECRET": "github-secret",
-                "APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_ID": "google-client",
-                "APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET": "google-secret",
-                "APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED": "true",
-            },
-            clear=False,
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(
+                "os.environ",
+                {
+                    "APPLICATION_INVENTORY_SERVICE_GHE_BASE_URL": "https://github.enterprise.example",
+                    "APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_ID": "github-client",
+                    "APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_SECRET": "github-secret",
+                    "APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_ID": "google-client",
+                    "APPLICATION_INVENTORY_SERVICE_GOOGLE_CLIENT_SECRET": "google-secret",
+                    "APPLICATION_INVENTORY_SERVICE_TEST_LOGIN_ENABLED": "true",
+                },
+                clear=False,
+            ),
         ):
             manager = AuthManager(Path(tmpdir))
             status = manager.status(None)
@@ -245,16 +287,24 @@ class AuthTests(unittest.TestCase):
         self.assertTrue(status["githubEnterpriseLoginEnabled"])
         self.assertTrue(status["googleLoginEnabled"])
         self.assertTrue(status["testLoginEnabled"])
-        self.assertEqual(providers["github-enterprise"]["startUrl"], "/api/auth/github-enterprise/start")
+        self.assertEqual(
+            providers["github-enterprise"]["startUrl"],
+            "/api/auth/github-enterprise/start",
+        )
         self.assertEqual(providers["google"]["startUrl"], "/api/auth/google/start")
         self.assertEqual(providers["test"]["startUrl"], "/api/auth/test/start")
 
     def test_default_ui_config_lists_sso_options(self):
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict("os.environ", {}, clear=True):
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict("os.environ", {}, clear=True),
+        ):
             config = default_ui_config(Path(tmpdir))
 
         provider_ids = [provider["id"] for provider in config["auth"]["authProviders"]]
-        application_type_ids = [choice["value"] for choice in config["defaults"]["applicationTypeChoices"]]
+        application_type_ids = [
+            choice["value"] for choice in config["defaults"]["applicationTypeChoices"]
+        ]
         self.assertEqual(provider_ids, ["github-enterprise", "google", "test"])
         self.assertIn("googleLoginEnabled", config["auth"])
         self.assertTrue(config["auth"]["testLoginEnabled"])
@@ -263,31 +313,45 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(config["defaults"]["githubUrls"], [])
         self.assertNotIn("baseUrl", config["defaults"])
         self.assertEqual(config["defaults"]["postgresHost"], "localhost")
+        self.assertEqual(config["defaults"]["postgresPassword"], "postgres")
         self.assertEqual(config["defaults"]["postgresSchema"], "application_inventory")
 
     def test_default_ui_config_reads_backend_github_scope(self):
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
-            "os.environ",
-            {
-                "APPLICATION_INVENTORY_GITHUB_URLS": "owner-a,owner-b",
-                "APPLICATION_INVENTORY_GITHUB_REPOSITORIES": "owner-a=payments-api,owner-b=identity-service",
-                "APPLICATION_INVENTORY_GITHUB_API_URL": "https://github.example.com/api/v3",
-            },
-            clear=True,
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(
+                "os.environ",
+                {
+                    "APPLICATION_INVENTORY_GITHUB_URLS": "owner-a,owner-b",
+                    "APPLICATION_INVENTORY_GITHUB_REPOSITORIES": "owner-a=payments-api,owner-b=identity-service",
+                    "APPLICATION_INVENTORY_GITHUB_API_URL": "https://github.example.com/api/v3",
+                },
+                clear=True,
+            ),
         ):
             config = default_ui_config(Path(tmpdir))
 
         self.assertEqual(config["defaults"]["githubUrls"], ["owner-a", "owner-b"])
-        self.assertEqual(config["defaults"]["githubRepositories"], ["owner-a=payments-api", "owner-b=identity-service"])
+        self.assertEqual(
+            config["defaults"]["githubRepositories"],
+            ["owner-a=payments-api", "owner-b=identity-service"],
+        )
         self.assertNotIn("baseUrl", config["defaults"])
 
     def test_github_enterprise_session_stores_token_for_scan(self):
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict("os.environ", {}, clear=True):
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict("os.environ", {}, clear=True),
+        ):
             manager = AuthManager(Path(tmpdir))
-            user = AuthenticatedUser(id="ghe-user", login="ghe.user", provider="github-enterprise")
+            user = AuthenticatedUser(
+                id="ghe-user", login="ghe.user", provider="github-enterprise"
+            )
             record = manager.create_session(user, provider_token="ghe-access-token")
 
-            payload = manager.apply_credentials({"provider": "github-enterprise"}, record)
+            payload = manager.apply_credentials(
+                {"provider": "github-enterprise"}, record
+            )
 
         self.assertEqual(payload["token"], "ghe-access-token")
 
@@ -303,7 +367,11 @@ class AuthTests(unittest.TestCase):
         self.assertIn("Secure", expired)
 
     def test_security_headers_include_browser_defenses(self):
-        with patch.dict("os.environ", {"APPLICATION_INVENTORY_SERVICE_COOKIE_SECURE": "true"}, clear=False):
+        with patch.dict(
+            "os.environ",
+            {"APPLICATION_INVENTORY_SERVICE_COOKIE_SECURE": "true"},
+            clear=False,
+        ):
             headers = ui_module.security_headers()
 
         self.assertIn("Content-Security-Policy", headers)
@@ -313,18 +381,30 @@ class AuthTests(unittest.TestCase):
         self.assertIn("Strict-Transport-Security", headers)
 
     def test_public_url_rejects_credentials_and_insecure_https_mode(self):
-        with patch.dict("os.environ", {"APPLICATION_INVENTORY_SERVICE_COOKIE_SECURE": "true"}, clear=False):
+        with patch.dict(
+            "os.environ",
+            {"APPLICATION_INVENTORY_SERVICE_COOKIE_SECURE": "true"},
+            clear=False,
+        ):
             with self.assertRaises(ValueError):
                 ui_module.safe_public_url("http://inventory.example.com")
             with self.assertRaises(ValueError):
                 ui_module.safe_public_url("https://user:pass@inventory.example.com")
 
-        self.assertEqual(ui_module.safe_public_url("https://inventory.example.com/app"), "https://inventory.example.com")
+        self.assertEqual(
+            ui_module.safe_public_url("https://inventory.example.com/app"),
+            "https://inventory.example.com",
+        )
 
     def test_request_base_url_rejects_header_injection_hosts(self):
-        self.assertEqual(ui_module.safe_request_base_url("https", "inventory.example.com"), "https://inventory.example.com")
+        self.assertEqual(
+            ui_module.safe_request_base_url("https", "inventory.example.com"),
+            "https://inventory.example.com",
+        )
         with self.assertRaises(ValueError):
-            ui_module.safe_request_base_url("https", "inventory.example.com\r\nX-Test: true")
+            ui_module.safe_request_base_url(
+                "https", "inventory.example.com\r\nX-Test: true"
+            )
         with self.assertRaises(ValueError):
             ui_module.safe_request_base_url("https", "inventory.example.com/path")
 
@@ -339,7 +419,13 @@ class AuthTests(unittest.TestCase):
             normalize_github_api_url("http://github.example.com/api/v3")
 
     def test_github_api_url_respects_allowed_host_list(self):
-        with patch.dict("os.environ", {"APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS": "github.allowed.example"}, clear=False):
+        with patch.dict(
+            "os.environ",
+            {
+                "APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS": "github.allowed.example"
+            },
+            clear=False,
+        ):
             self.assertEqual(
                 normalize_github_api_url("https://github.allowed.example"),
                 "https://github.allowed.example/api/v3",
@@ -367,13 +453,22 @@ class MultiOrganizationScanTests(unittest.TestCase):
         )
 
         def fake_scan(source_config, on_result=None):
-            return [{"provider": source_config.provider, "organization": source_config.org}]
+            return [
+                {"provider": source_config.provider, "organization": source_config.org}
+            ]
 
-        with patch.object(scanner_module, "scan_single_org", side_effect=fake_scan) as scan_single_org:
+        with patch.object(
+            scanner_module, "scan_single_org", side_effect=fake_scan
+        ) as scan_single_org:
             results = scanner.scan(config)
 
-        self.assertEqual([call.args[0].org for call in scan_single_org.call_args_list], ["global-snt", "security-team"])
-        self.assertEqual([row["organization"] for row in results], ["global-snt", "security-team"])
+        self.assertEqual(
+            [call.args[0].org for call in scan_single_org.call_args_list],
+            ["global-snt", "security-team"],
+        )
+        self.assertEqual(
+            [row["organization"] for row in results], ["global-snt", "security-team"]
+        )
 
     def test_scan_mixed_dispatches_all_configured_sources(self):
         config = scanner.ScanConfig(
@@ -403,14 +498,21 @@ class MultiOrganizationScanTests(unittest.TestCase):
                 }
             ]
 
-        with patch.object(scanner_module, "scan_single_org", side_effect=fake_scan) as scan_single_org:
+        with patch.object(
+            scanner_module, "scan_single_org", side_effect=fake_scan
+        ) as scan_single_org:
             results = scanner.scan(config)
 
         self.assertEqual(
-            [(call.args[0].provider, call.args[0].org) for call in scan_single_org.call_args_list],
+            [
+                (call.args[0].provider, call.args[0].org)
+                for call in scan_single_org.call_args_list
+            ],
             [("azure-devops", "FabrikamADO"), ("github-enterprise", "FabrikamGH")],
         )
-        self.assertEqual({row["provider"] for row in results}, {"azure-devops", "github-enterprise"})
+        self.assertEqual(
+            {row["provider"] for row in results}, {"azure-devops", "github-enterprise"}
+        )
 
     def test_mixed_scan_streams_both_sources_to_one_report_set(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -445,15 +547,27 @@ class MultiOrganizationScanTests(unittest.TestCase):
                 return [result]
 
             with patch.object(scanner_module, "scan_single_org", side_effect=fake_scan):
-                results, xlsx_path, semgrep_path, sonarqube_path = scanner.scan_to_reports(config)
+                results, xlsx_path, semgrep_path, sonarqube_path = (
+                    scanner.scan_to_reports(config)
+                )
 
             workbook = load_workbook(xlsx_path)
             self.assertEqual(len(results), 2)
             self.assertEqual(workbook[scanner.ACTIVE_SHEET_NAME].max_row, 3)
-            self.assertEqual(workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "provider", 2), "azure-devops")
-            self.assertEqual(workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "provider", 3), "github-enterprise")
-            self.assertEqual(len(semgrep_path.read_text(encoding="utf-8").splitlines()), 2)
-            self.assertEqual(len(sonarqube_path.read_text(encoding="utf-8").splitlines()), 3)
+            self.assertEqual(
+                workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "provider", 2),
+                "azure-devops",
+            )
+            self.assertEqual(
+                workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "provider", 3),
+                "github-enterprise",
+            )
+            self.assertEqual(
+                len(semgrep_path.read_text(encoding="utf-8").splitlines()), 2
+            )
+            self.assertEqual(
+                len(sonarqube_path.read_text(encoding="utf-8").splitlines()), 3
+            )
 
     def test_scan_dispatches_each_ado_org_pat(self):
         config = scanner.ScanConfig(
@@ -474,14 +588,31 @@ class MultiOrganizationScanTests(unittest.TestCase):
         )
 
         def fake_scan(org_config, on_result=None):
-            return [{"organization": org_config.org, "project": "", "repo_name": "", "branch_name": ""}]
+            return [
+                {
+                    "organization": org_config.org,
+                    "project": "",
+                    "repo_name": "",
+                    "branch_name": "",
+                }
+            ]
 
-        with patch.object(scanner_module, "scan_single_org", side_effect=fake_scan) as scan_single_org:
+        with patch.object(
+            scanner_module, "scan_single_org", side_effect=fake_scan
+        ) as scan_single_org:
             results = scanner.scan(config)
 
-        self.assertEqual([call.args[0].org for call in scan_single_org.call_args_list], ["FabrikamCloud", "ContosoApps"])
-        self.assertEqual([call.args[0].pat for call in scan_single_org.call_args_list], ["pat-a", "pat-b"])
-        self.assertEqual([row["organization"] for row in results], ["ContosoApps", "FabrikamCloud"])
+        self.assertEqual(
+            [call.args[0].org for call in scan_single_org.call_args_list],
+            ["FabrikamCloud", "ContosoApps"],
+        )
+        self.assertEqual(
+            [call.args[0].pat for call in scan_single_org.call_args_list],
+            ["pat-a", "pat-b"],
+        )
+        self.assertEqual(
+            [row["organization"] for row in results], ["ContosoApps", "FabrikamCloud"]
+        )
 
     def test_scan_skips_multi_orgs_without_matching_target_filters(self):
         config = scanner.ScanConfig(
@@ -503,12 +634,24 @@ class MultiOrganizationScanTests(unittest.TestCase):
         )
 
         def fake_scan(org_config, on_result=None):
-            return [{"organization": org_config.org, "project": org_config.target_filters[0].project, "repo_name": "", "branch_name": ""}]
+            return [
+                {
+                    "organization": org_config.org,
+                    "project": org_config.target_filters[0].project,
+                    "repo_name": "",
+                    "branch_name": "",
+                }
+            ]
 
-        with patch.object(scanner_module, "scan_single_org", side_effect=fake_scan) as scan_single_org:
+        with patch.object(
+            scanner_module, "scan_single_org", side_effect=fake_scan
+        ) as scan_single_org:
             results = scanner.scan(config)
 
-        self.assertEqual([call.args[0].org for call in scan_single_org.call_args_list], ["ContosoApps"])
+        self.assertEqual(
+            [call.args[0].org for call in scan_single_org.call_args_list],
+            ["ContosoApps"],
+        )
         self.assertEqual(results[0]["project"], "Payments")
 
 
@@ -522,7 +665,9 @@ class ProviderClientTests(unittest.TestCase):
 
     def test_github_tree_scan_uses_the_branch_ref_directly(self):
         client = object.__new__(github_module.GitHubEnterpriseClient)
-        client.get_json = Mock(return_value={"tree": [{"path": "package.json", "type": "blob"}]})
+        client.get_json = Mock(
+            return_value={"tree": [{"path": "package.json", "type": "blob"}]}
+        )
 
         items = client.list_repo_items("owner", "owner/repo", "release/prod")
 
@@ -538,7 +683,9 @@ class ProviderClientTests(unittest.TestCase):
     def test_github_app_token_provider_signs_jwt_and_caches_installation_token(self):
         private_key = "-----BEGIN PRIVATE KEY-----\nfake-key\n-----END PRIVATE KEY-----"
         credentials = GitHubAppCredentials("123", "456", private_key)
-        provider = GitHubAppTokenProvider("https://github.fabrikam.example/api/v3", credentials, 10)
+        provider = GitHubAppTokenProvider(
+            "https://github.fabrikam.example/api/v3", credentials, 10
+        )
         response = Mock()
         response.json.return_value = {
             "token": "installation-token",
@@ -552,7 +699,10 @@ class ProviderClientTests(unittest.TestCase):
         provider._session.post.assert_called_once()
         request_url = provider._session.post.call_args.args[0]
         request_headers = provider._session.post.call_args.kwargs["headers"]
-        self.assertEqual(request_url, "https://github.fabrikam.example/api/v3/app/installations/456/access_tokens")
+        self.assertEqual(
+            request_url,
+            "https://github.fabrikam.example/api/v3/app/installations/456/access_tokens",
+        )
         self.assertEqual(request_headers["Authorization"], "Bearer app-jwt")
         provider.close()
 
@@ -575,7 +725,10 @@ class ProviderClientTests(unittest.TestCase):
     def test_github_app_credentials_use_fixed_ids_with_key_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             key_path = Path(tmpdir) / "github-app.pem"
-            key_path.write_text("-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----", encoding="utf-8")
+            key_path.write_text(
+                "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----",
+                encoding="utf-8",
+            )
             with patch.dict(
                 "os.environ",
                 {
@@ -592,9 +745,13 @@ class ProviderClientTests(unittest.TestCase):
         self.assertEqual(credentials.installation_id, "456")
 
     def test_github_app_jwt_uses_string_issuer(self):
-        credentials = GitHubAppCredentials("123", "456", "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----")
+        credentials = GitHubAppCredentials(
+            "123", "456", "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----"
+        )
         provider = GitHubAppTokenProvider("https://api.github.com", credentials, 10)
-        with patch.object(github_module.jwt, "encode", return_value="app-jwt") as encode:
+        with patch.object(
+            github_module.jwt, "encode", return_value="app-jwt"
+        ) as encode:
             self.assertEqual(provider._app_jwt(), "app-jwt")
 
         claims = encode.call_args.args[0]
@@ -660,7 +817,9 @@ class ProviderClientTests(unittest.TestCase):
         self.assertEqual(config.org, "FabrikamCloud")
         self.assertEqual(config.project, "mobile-app")
         self.assertEqual(config.pat, "token")
-        self.assertEqual(config.application_types, ("mobile_app", "ai_enabled", "ml_enabled"))
+        self.assertEqual(
+            config.application_types, ("mobile_app", "ai_enabled", "ml_enabled")
+        )
 
     def test_parse_args_supports_github_app_authentication(self):
         with patch.dict(
@@ -716,7 +875,9 @@ class ProviderClientTests(unittest.TestCase):
             org = "FabrikamCloud"
 
             def list_projects(self):
-                raise AssertionError("project list should not be loaded when target filters are provided")
+                raise AssertionError(
+                    "project list should not be loaded when target filters are provided"
+                )
 
             def list_repos(self, project_name):
                 return [{"id": f"{project_name}-repo", "name": f"{project_name}-repo"}]
@@ -731,7 +892,10 @@ class ProviderClientTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual([(target.project_name, target.repo["name"]) for target in targets], [("Payments", "Payments-repo"), ("Shared", "Shared-repo")])
+        self.assertEqual(
+            [(target.project_name, target.repo["name"]) for target in targets],
+            [("Payments", "Payments-repo"), ("Shared", "Shared-repo")],
+        )
 
     def test_parse_args_supports_multiple_ado_org_pats(self):
         config = scanner.parse_args(
@@ -748,7 +912,10 @@ class ProviderClientTests(unittest.TestCase):
         self.assertEqual(config.provider, "azure-devops")
         self.assertEqual(config.org, "")
         self.assertEqual(config.pat, "")
-        self.assertEqual([(item.org, item.pat) for item in config.ado_org_pats], [("FabrikamCloud", "pat-a"), ("ContosoApps", "pat-b")])
+        self.assertEqual(
+            [(item.org, item.pat) for item in config.ado_org_pats],
+            [("FabrikamCloud", "pat-a"), ("ContosoApps", "pat-b")],
+        )
 
     def test_parse_args_supports_repeated_projects_as_target_filters(self):
         with patch.dict("os.environ", {"ADO_PAT": "token"}, clear=False):
@@ -766,7 +933,10 @@ class ProviderClientTests(unittest.TestCase):
             )
 
         self.assertIsNone(config.project)
-        self.assertEqual([(item.org, item.project) for item in config.target_filters], [("", "Payments"), ("", "Storefront")])
+        self.assertEqual(
+            [(item.org, item.project) for item in config.target_filters],
+            [("", "Payments"), ("", "Storefront")],
+        )
 
     def test_parse_args_supports_explicit_target_filters(self):
         config = scanner.parse_args(
@@ -792,30 +962,54 @@ class ProviderClientTests(unittest.TestCase):
     def test_parse_args_supports_ado_org_pats_from_json_environment(self):
         with patch.dict(
             "os.environ",
-            {"APPSEC_INVENTORY_ADO_ORG_PATS": json.dumps({"FabrikamCloud": "pat-a", "ContosoApps": "pat-b"})},
+            {
+                "APPSEC_INVENTORY_ADO_ORG_PATS": json.dumps(
+                    {"FabrikamCloud": "pat-a", "ContosoApps": "pat-b"}
+                )
+            },
             clear=False,
         ):
             config = scanner.parse_args(["--out-dir", "reports"])
 
-        self.assertEqual([(item.org, item.pat) for item in config.ado_org_pats], [("FabrikamCloud", "pat-a"), ("ContosoApps", "pat-b")])
+        self.assertEqual(
+            [(item.org, item.pat) for item in config.ado_org_pats],
+            [("FabrikamCloud", "pat-a"), ("ContosoApps", "pat-b")],
+        )
 
     def test_parse_args_supports_ado_org_pats_from_json_list_environment(self):
         with patch.dict(
             "os.environ",
-            {"APPSEC_INVENTORY_ADO_ORG_PATS": json.dumps([{"org": "FabrikamCloud", "pat": "pat-a"}, {"org": "ContosoApps", "pat": "pat-b"}])},
+            {
+                "APPSEC_INVENTORY_ADO_ORG_PATS": json.dumps(
+                    [
+                        {"org": "FabrikamCloud", "pat": "pat-a"},
+                        {"org": "ContosoApps", "pat": "pat-b"},
+                    ]
+                )
+            },
             clear=False,
         ):
             config = scanner.parse_args(["--out-dir", "reports"])
 
         self.assertEqual(config.org, "")
         self.assertEqual(config.pat, "")
-        self.assertEqual([(item.org, item.pat) for item in config.ado_org_pats], [("FabrikamCloud", "pat-a"), ("ContosoApps", "pat-b")])
+        self.assertEqual(
+            [(item.org, item.pat) for item in config.ado_org_pats],
+            [("FabrikamCloud", "pat-a"), ("ContosoApps", "pat-b")],
+        )
 
 
 class UiServiceTests(unittest.TestCase):
     def test_ui_hides_server_managed_github_app_credentials(self):
-        html = (Path(__file__).parents[1] / "appsec_scan_router" / "ui_static" / "index.html").read_text(encoding="utf-8")
-        javascript = (Path(__file__).parents[1] / "appsec_scan_router" / "ui_static" / "app.js").read_text(encoding="utf-8")
+        html = (
+            Path(__file__).parents[1]
+            / "appsec_scan_router"
+            / "ui_static"
+            / "index.html"
+        ).read_text(encoding="utf-8")
+        javascript = (
+            Path(__file__).parents[1] / "appsec_scan_router" / "ui_static" / "app.js"
+        ).read_text(encoding="utf-8")
 
         self.assertIn('class="provider-github github-app-status hidden full"', html)
         self.assertIn("Managed by service", html)
@@ -836,24 +1030,66 @@ class UiServiceTests(unittest.TestCase):
         self.assertIn('id="adoOrgRequirementBadge">Required</span>', html)
         self.assertNotIn("handleGithubAppPrivateKeyFileChange", javascript)
         self.assertNotIn("DEFAULT_GITHUB_APP_ID", javascript)
-        self.assertNotIn('"githubAppPrivateKey"', javascript.split("const persistedFields", 1)[1].split("];", 1)[0])
+        self.assertNotIn(
+            '"githubAppPrivateKey"',
+            javascript.split("const persistedFields", 1)[1].split("];", 1)[0],
+        )
         self.assertNotIn("syncCredentialFields", javascript)
         self.assertNotIn('id="loginGitHubSso"', html)
         self.assertNotIn("/api/auth/github/start", html)
         self.assertNotIn("loginGitHubSso", javascript)
         self.assertIn('id="loginGitHubEnterpriseSso"', html)
-        self.assertIn('".png": "image/png"', (Path(__file__).parents[1] / "appsec_scan_router" / "ui.py").read_text(encoding="utf-8"))
-        self.assertIn('".jpg": "image/jpeg"', (Path(__file__).parents[1] / "appsec_scan_router" / "ui.py").read_text(encoding="utf-8"))
-        self.assertIn('".svg": "image/svg+xml"', (Path(__file__).parents[1] / "appsec_scan_router" / "ui.py").read_text(encoding="utf-8"))
+        self.assertIn("Local AI inventory assistant", html)
+        self.assertIn('id="askInventory" type="button">Ask AI</button>', html)
+        self.assertIn('data-database-sort="confidence"', html)
+        self.assertIn('id="filterConfidence"', html)
+        self.assertIn('data-inventory-filter="has-domain"', html)
+        for inventory_filter in (
+            "mobile-app",
+            "web-app",
+            "api-service",
+            "microservice",
+            "middleware",
+            "serverless",
+            "library",
+            "infrastructure",
+            "ai-enabled",
+            "ml-enabled",
+        ):
+            self.assertIn(f'data-inventory-filter="{inventory_filter}"', html)
+        self.assertIn(
+            '".png": "image/png"',
+            (Path(__file__).parents[1] / "appsec_scan_router" / "ui.py").read_text(
+                encoding="utf-8"
+            ),
+        )
+        self.assertIn(
+            '".jpg": "image/jpeg"',
+            (Path(__file__).parents[1] / "appsec_scan_router" / "ui.py").read_text(
+                encoding="utf-8"
+            ),
+        )
+        self.assertIn(
+            '".svg": "image/svg+xml"',
+            (Path(__file__).parents[1] / "appsec_scan_router" / "ui.py").read_text(
+                encoding="utf-8"
+            ),
+        )
 
     def test_normalize_scan_config_requires_org(self):
         with self.assertRaises(ValueError):
             scanner.normalize_scan_config({"provider": "azure-devops"})
         with self.assertRaises(ValueError):
-            scanner.normalize_scan_config({"provider": "azure-devops", "org": "FabrikamCloud"})
+            scanner.normalize_scan_config(
+                {"provider": "azure-devops", "org": "FabrikamCloud"}
+            )
 
     def test_normalize_scan_config_defaults_github_url_and_api_url(self):
-        with patch.dict("os.environ", {"APPLICATION_INVENTORY_GITHUB_URLS": "global-snt"}, clear=False):
+        with patch.dict(
+            "os.environ",
+            {"APPLICATION_INVENTORY_GITHUB_URLS": "global-snt"},
+            clear=False,
+        ):
             config = scanner.normalize_scan_config({"provider": "github-enterprise"})
 
         self.assertEqual(config["githubUrls"], ["global-snt"])
@@ -861,7 +1097,13 @@ class UiServiceTests(unittest.TestCase):
         self.assertEqual(config["baseUrl"], "https://api.github.com")
 
     def test_build_scan_command_for_github_enterprise(self):
-        with patch.dict("os.environ", {"APPLICATION_INVENTORY_GITHUB_API_URL": "https://github.fabrikam.example/api/v3"}, clear=False):
+        with patch.dict(
+            "os.environ",
+            {
+                "APPLICATION_INVENTORY_GITHUB_API_URL": "https://github.fabrikam.example/api/v3"
+            },
+            clear=False,
+        ):
             config = scanner.normalize_scan_config(
                 {
                     "provider": "github-enterprise",
@@ -925,8 +1167,13 @@ class UiServiceTests(unittest.TestCase):
         ):
             environment = ui_module.scan_environment(config)
         self.assertEqual(environment["APPLICATION_INVENTORY_GITHUB_APP_ID"], "123")
-        self.assertEqual(environment["APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID"], "456")
-        self.assertIn("BEGIN PRIVATE KEY", environment["APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY"])
+        self.assertEqual(
+            environment["APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID"], "456"
+        )
+        self.assertIn(
+            "BEGIN PRIVATE KEY",
+            environment["APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY"],
+        )
 
     def test_scan_environment_forwards_primary_github_app_private_key_file(self):
         config = scanner.normalize_scan_config(
@@ -939,7 +1186,9 @@ class UiServiceTests(unittest.TestCase):
 
         with patch.dict(
             "os.environ",
-            {"APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE": "/run/secrets/github-app.pem"},
+            {
+                "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE": "/run/secrets/github-app.pem"
+            },
             clear=False,
         ):
             environment = ui_module.scan_environment(config)
@@ -1124,19 +1373,32 @@ class UiServiceTests(unittest.TestCase):
         command = scanner.build_scan_command(config, Path("/reports/scan-1"))
         env = scanner.scan_environment(config)
 
-        self.assertEqual(config["postgresDsn"], "postgresql://postgres:postgres@localhost:5432/postgres")
+        self.assertEqual(
+            config["postgresDsn"],
+            "postgresql://postgres:postgres@localhost:5432/postgres",
+        )
         self.assertEqual(config["postgresSchema"], "application_inventory")
         self.assertIn("--postgres-schema", command)
         self.assertIn("application_inventory", command)
         self.assertIn("--postgres-table", command)
         self.assertIn("application_inventory_assets", command)
         self.assertNotIn(config["postgresDsn"], command)
-        self.assertEqual(env["APPLICATION_INVENTORY_POSTGRES_DSN"], config["postgresDsn"])
-        self.assertEqual(env["APPLICATION_INVENTORY_POSTGRES_SCHEMA"], "application_inventory")
-        self.assertEqual(env["APPLICATION_INVENTORY_POSTGRES_TABLE"], "application_inventory_assets")
+        self.assertEqual(
+            env["APPLICATION_INVENTORY_POSTGRES_DSN"], config["postgresDsn"]
+        )
+        self.assertEqual(
+            env["APPLICATION_INVENTORY_POSTGRES_SCHEMA"], "application_inventory"
+        )
+        self.assertEqual(
+            env["APPLICATION_INVENTORY_POSTGRES_TABLE"], "application_inventory_assets"
+        )
         self.assertEqual(env["APPSEC_INVENTORY_POSTGRES_DSN"], config["postgresDsn"])
-        self.assertEqual(env["APPSEC_INVENTORY_POSTGRES_SCHEMA"], "application_inventory")
-        self.assertEqual(env["APPSEC_INVENTORY_POSTGRES_TABLE"], "application_inventory_assets")
+        self.assertEqual(
+            env["APPSEC_INVENTORY_POSTGRES_SCHEMA"], "application_inventory"
+        )
+        self.assertEqual(
+            env["APPSEC_INVENTORY_POSTGRES_TABLE"], "application_inventory_assets"
+        )
 
     def test_postgres_disabled_removes_database_environment(self):
         config = scanner.normalize_scan_config(
@@ -1216,11 +1478,17 @@ class UiServiceTests(unittest.TestCase):
         self.assertNotIn("ADO_PAT", env)
         self.assertEqual(
             json.loads(env["APPLICATION_INVENTORY_ADO_ORG_PATS"]),
-            [{"org": "FabrikamCloud", "pat": "pat-a"}, {"org": "ContosoApps", "pat": "pat-b"}],
+            [
+                {"org": "FabrikamCloud", "pat": "pat-a"},
+                {"org": "ContosoApps", "pat": "pat-b"},
+            ],
         )
         self.assertEqual(
             json.loads(env["APPSEC_INVENTORY_ADO_ORG_PATS"]),
-            [{"org": "FabrikamCloud", "pat": "pat-a"}, {"org": "ContosoApps", "pat": "pat-b"}],
+            [
+                {"org": "FabrikamCloud", "pat": "pat-a"},
+                {"org": "ContosoApps", "pat": "pat-b"},
+            ],
         )
 
     def test_postgres_dsn_url_encodes_credentials(self):
@@ -1234,7 +1502,9 @@ class UiServiceTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(dsn, "postgresql://app%20user:p%40ss%20word@localhost:5432/inventory%20db")
+        self.assertEqual(
+            dsn, "postgresql://app%20user:p%40ss%20word@localhost:5432/inventory%20db"
+        )
 
     def test_database_status_requires_dsn(self):
         status = scanner.database_status("")
@@ -1245,7 +1515,14 @@ class UiServiceTests(unittest.TestCase):
     def test_postgres_inventory_key_is_user_scoped(self):
         self.assertEqual(
             PRIMARY_KEY_COLUMNS,
-            ("owner_user_id", "provider", "organization", "project", "repo_name", "branch_name"),
+            (
+                "owner_user_id",
+                "provider",
+                "organization",
+                "project",
+                "repo_name",
+                "branch_name",
+            ),
         )
 
     def test_database_search_normalizes_and_bounds_terms(self):
@@ -1322,7 +1599,9 @@ class UiServiceTests(unittest.TestCase):
             def close(self):
                 return None
 
-        with patch.object(source_discovery_module, "AzureDevOpsClient", FakeAzureClient):
+        with patch.object(
+            source_discovery_module, "AzureDevOpsClient", FakeAzureClient
+        ):
             data = ui_module.discover_source_targets(
                 {
                     "provider": "azure-devops",
@@ -1333,8 +1612,14 @@ class UiServiceTests(unittest.TestCase):
 
         self.assertEqual(created, [("FabrikamCloud", "pat-a", 12)])
         self.assertEqual(
-            [(target["org"], target["project"], target["kind"]) for target in data["targets"]],
-            [("FabrikamCloud", "Payments", "project"), ("FabrikamCloud", "Storefront", "project")],
+            [
+                (target["org"], target["project"], target["kind"])
+                for target in data["targets"]
+            ],
+            [
+                ("FabrikamCloud", "Payments", "project"),
+                ("FabrikamCloud", "Storefront", "project"),
+            ],
         )
 
     def test_discover_source_targets_loads_github_repositories(self):
@@ -1346,18 +1631,32 @@ class UiServiceTests(unittest.TestCase):
 
             def list_repos(self, project_name):
                 if project_name != "":
-                    raise AssertionError("repository discovery should list all repositories")
+                    raise AssertionError(
+                        "repository discovery should list all repositories"
+                    )
                 return [
                     {"name": "payments-api", "fullName": "FabrikamCloud/payments-api"},
-                    {"name": "archived-api", "fullName": "FabrikamCloud/archived-api", "isDisabled": True},
+                    {
+                        "name": "archived-api",
+                        "fullName": "FabrikamCloud/archived-api",
+                        "isDisabled": True,
+                    },
                 ]
 
             def close(self):
                 return None
 
         with (
-            patch.object(source_discovery_module, "GitHubEnterpriseClient", FakeGitHubClient),
-            patch.dict("os.environ", {"APPLICATION_INVENTORY_GITHUB_API_URL": "https://github.fabrikam.example/api/v3"}, clear=False),
+            patch.object(
+                source_discovery_module, "GitHubEnterpriseClient", FakeGitHubClient
+            ),
+            patch.dict(
+                "os.environ",
+                {
+                    "APPLICATION_INVENTORY_GITHUB_API_URL": "https://github.fabrikam.example/api/v3"
+                },
+                clear=False,
+            ),
         ):
             data = ui_module.discover_source_targets(
                 {
@@ -1368,21 +1667,38 @@ class UiServiceTests(unittest.TestCase):
                 }
             )
 
-        self.assertEqual(created, [("https://github.fabrikam.example/api/v3", "FabrikamCloud", "token", 11)])
         self.assertEqual(
-            [(target["org"], target["project"], target["kind"], target["label"]) for target in data["targets"]],
-            [("FabrikamCloud", "payments-api", "repository", "FabrikamCloud/payments-api")],
+            created,
+            [("https://github.fabrikam.example/api/v3", "FabrikamCloud", "token", 11)],
+        )
+        self.assertEqual(
+            [
+                (target["org"], target["project"], target["kind"], target["label"])
+                for target in data["targets"]
+            ],
+            [
+                (
+                    "FabrikamCloud",
+                    "payments-api",
+                    "repository",
+                    "FabrikamCloud/payments-api",
+                )
+            ],
         )
 
     def test_normalize_application_types_uses_known_order(self):
         self.assertEqual(
-            scanner.normalize_application_types(["ml_enabled", "ai_enabled", "mobile_app", "mobile_app"]),
+            scanner.normalize_application_types(
+                ["ml_enabled", "ai_enabled", "mobile_app", "mobile_app"]
+            ),
             ("mobile_app", "ai_enabled", "ml_enabled"),
         )
 
     def test_inventory_type_matches_defaults_to_all_types(self):
         self.assertTrue(scanner.inventory_type_matches(["web_app"], ()))
-        self.assertTrue(scanner.inventory_type_matches(["web_app", "api_service"], ["api_service"]))
+        self.assertTrue(
+            scanner.inventory_type_matches(["web_app", "api_service"], ["api_service"])
+        )
         self.assertFalse(scanner.inventory_type_matches(["web_app"], ["mobile_app"]))
 
     def test_store_lookup_is_mobile_only(self):
@@ -1425,6 +1741,7 @@ class UiServiceTests(unittest.TestCase):
                 "FabrikamCloud",
             ],
         )
+
 
 class DetectionTests(unittest.TestCase):
     def test_detects_react_native_android_repo(self):
@@ -1506,7 +1823,7 @@ android {
   </dependencies>
 </project>
 """,
-                "/Dockerfile": "FROM eclipse-temurin:21\nCMD [\"java\", \"-jar\", \"app.jar\"]\n",
+                "/Dockerfile": 'FROM eclipse-temurin:21\nCMD ["java", "-jar", "app.jar"]\n',
             },
         )
 
@@ -1671,7 +1988,9 @@ model_uri: models:/churn/latest
     def test_generic_config_xml_is_not_mobile(self):
         confidence, evidence, score = scanner.detect_mobile_repo(
             ["/config.xml"],
-            {"/config.xml": "<configuration><setting name='example' /></configuration>"},
+            {
+                "/config.xml": "<configuration><setting name='example' /></configuration>"
+            },
         )
 
         self.assertEqual(confidence, "none")
@@ -1728,13 +2047,20 @@ android {
         self.assertTrue(scanner.should_fetch_content("/serverless.yml"))
         self.assertTrue(scanner.should_fetch_content("/gradle.properties"))
         self.assertTrue(scanner.should_fetch_content("/Directory.Build.props"))
-        self.assertTrue(scanner.should_fetch_content("/android/app/src/main/AndroidManifest.xml"))
+        self.assertTrue(
+            scanner.should_fetch_content("/android/app/src/main/AndroidManifest.xml")
+        )
         self.assertTrue(scanner.should_fetch_content("/ios/App/Info.plist"))
-        self.assertTrue(scanner.should_fetch_content("/android/app/src/main/res/values/strings.xml"))
+        self.assertTrue(
+            scanner.should_fetch_content("/android/app/src/main/res/values/strings.xml")
+        )
         self.assertFalse(scanner.should_fetch_content("/src/app.py"))
 
     def test_normalize_path_adds_leading_slash_and_unix_separators(self):
-        self.assertEqual(scanner.normalize_path("android\\app\\build.gradle"), "/android/app/build.gradle")
+        self.assertEqual(
+            scanner.normalize_path("android\\app\\build.gradle"),
+            "/android/app/build.gradle",
+        )
 
 
 class MetadataExtractionTests(unittest.TestCase):
@@ -1919,11 +2245,19 @@ class RepoActivityTests(unittest.TestCase):
                 },
                 {
                     "author": {"name": "Bob Brown", "email": "bob@example.com"},
-                    "committer": {"name": "Bob Brown", "email": "bob@example.com", "date": "2024-05-02T08:30:15.123Z"},
+                    "committer": {
+                        "name": "Bob Brown",
+                        "email": "bob@example.com",
+                        "date": "2024-05-02T08:30:15.123Z",
+                    },
                 },
                 {
                     "author": {"name": "Alice Adams", "email": "alice@example.com"},
-                    "committer": {"name": "Alice Adams", "email": "alice@example.com", "date": "2024-03-01T00:00:00Z"},
+                    "committer": {
+                        "name": "Alice Adams",
+                        "email": "alice@example.com",
+                        "date": "2024-03-01T00:00:00Z",
+                    },
                 },
             ]
         )
@@ -2081,25 +2415,49 @@ class OutputTests(unittest.TestCase):
             self.assertTrue(sonarqube_path.exists())
             self.assertEqual(xlsx_path.name, "scan_mobile_app.xlsx")
             self.assertEqual(semgrep_path.name, "scan_mobile_app_semgrep_targets.txt")
-            self.assertEqual(sonarqube_path.name, "scan_mobile_app_sonarqube_projects.csv")
+            self.assertEqual(
+                sonarqube_path.name, "scan_mobile_app_sonarqube_projects.csv"
+            )
             self.assertFalse((Path(tmpdir) / "scan_mobile_app.csv").exists())
             self.assertFalse((Path(tmpdir) / "scan_mobile_app.json").exists())
-            self.assertFalse((Path(tmpdir) / "scan_mobile_app_scanner_targets.csv").exists())
-            self.assertFalse((Path(tmpdir) / "scan_mobile_app_scanner_targets.json").exists())
-            self.assertIn("https://example.invalid/repo.git#branch=main", semgrep_path.read_text(encoding="utf-8"))
+            self.assertFalse(
+                (Path(tmpdir) / "scan_mobile_app_scanner_targets.csv").exists()
+            )
+            self.assertFalse(
+                (Path(tmpdir) / "scan_mobile_app_scanner_targets.json").exists()
+            )
+            self.assertIn(
+                "https://example.invalid/repo.git#branch=main",
+                semgrep_path.read_text(encoding="utf-8"),
+            )
             sonar_text = sonarqube_path.read_text(encoding="utf-8")
             self.assertIn("sonar.projectKey", sonar_text)
             self.assertIn("Agsnap", sonar_text)
             workbook = load_workbook(xlsx_path)
-            self.assertEqual(workbook.sheetnames, [scanner.ACTIVE_SHEET_NAME, scanner.OLDER_SHEET_NAME])
-            self.assertEqual(workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "mobile_name", 2), "Agsnap")
-            self.assertEqual(workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "provider", 2), "azure-devops")
             self.assertEqual(
-                workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "primary_web_domain", 2),
+                workbook.sheetnames,
+                [scanner.ACTIVE_SHEET_NAME, scanner.OLDER_SHEET_NAME],
+            )
+            self.assertEqual(
+                workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "mobile_name", 2),
+                "Agsnap",
+            )
+            self.assertEqual(
+                workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "provider", 2),
+                "azure-devops",
+            )
+            self.assertEqual(
+                workbook_value(
+                    workbook[scanner.ACTIVE_SHEET_NAME], "primary_web_domain", 2
+                ),
                 "agsnap.fabrikam.example",
             )
             self.assertEqual(
-                workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "branch_contributing_developers", 2),
+                workbook_value(
+                    workbook[scanner.ACTIVE_SHEET_NAME],
+                    "branch_contributing_developers",
+                    2,
+                ),
                 "Alice Adams <alice@example.com>; Bob Brown <bob@example.com>",
             )
 
@@ -2147,12 +2505,19 @@ class OutputTests(unittest.TestCase):
                 writer.write_result(result)
 
                 semgrep_text = writer.semgrep_targets_path.read_text(encoding="utf-8")
-                sonarqube_text = writer.sonarqube_projects_path.read_text(encoding="utf-8")
-                self.assertIn("https://example.invalid/repo.git#branch=main", semgrep_text)
+                sonarqube_text = writer.sonarqube_projects_path.read_text(
+                    encoding="utf-8"
+                )
+                self.assertIn(
+                    "https://example.invalid/repo.git#branch=main", semgrep_text
+                )
                 self.assertIn("Agsnap", sonarqube_text)
 
             workbook = load_workbook(writer.xlsx_path)
-            self.assertEqual(workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "mobile_name", 2), "Agsnap")
+            self.assertEqual(
+                workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "mobile_name", 2),
+                "Agsnap",
+            )
 
     def test_workbook_checkpoints_expand_to_avoid_repeated_full_serialization(self):
         settings = {
@@ -2160,7 +2525,10 @@ class OutputTests(unittest.TestCase):
             "APPLICATION_INVENTORY_XLSX_MAX_CHECKPOINT_ROWS": "40",
             "APPLICATION_INVENTORY_XLSX_CHECKPOINT_SECONDS": "3600",
         }
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict("os.environ", settings):
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict("os.environ", settings),
+        ):
             with scanner.StreamingReportWriter(Path(tmpdir), "scan") as writer:
                 with (
                     patch.object(writer, "_save_workbook") as save_workbook,
@@ -2182,7 +2550,9 @@ class OutputTests(unittest.TestCase):
 
             workbook = load_workbook(writer.xlsx_path)
             self.assertEqual(
-                workbook_value(workbook[scanner.ACTIVE_SHEET_NAME], "contributing_developers", 2),
+                workbook_value(
+                    workbook[scanner.ACTIVE_SHEET_NAME], "contributing_developers", 2
+                ),
                 "Alice Adams <alice@example.com>",
             )
 
@@ -2241,7 +2611,9 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(values["provider"], "github-enterprise")
 
     def test_category_columns_are_excel_filter_friendly(self):
-        columns = scanner.category_columns(["android", "react_native", "ai_enabled", "ml_enabled"])
+        columns = scanner.category_columns(
+            ["android", "react_native", "ai_enabled", "ml_enabled"]
+        )
 
         self.assertEqual(columns["category_android"], "TRUE")
         self.assertEqual(columns["category_react_native"], "TRUE")
@@ -2250,7 +2622,9 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(columns["category_ios"], "FALSE")
 
     def test_type_columns_are_excel_filter_friendly(self):
-        columns = scanner.type_columns(["web_app", "microservice", "ai_enabled", "ml_enabled"])
+        columns = scanner.type_columns(
+            ["web_app", "microservice", "ai_enabled", "ml_enabled"]
+        )
 
         self.assertEqual(columns["type_web_app"], "TRUE")
         self.assertEqual(columns["type_microservice"], "TRUE")
@@ -2260,7 +2634,9 @@ class OutputTests(unittest.TestCase):
 
     def test_inventory_types_from_categories(self):
         self.assertEqual(
-            scanner.inventory_types_from_categories(["web_backend", "api_service", "middleware", "ml_inference"]),
+            scanner.inventory_types_from_categories(
+                ["web_backend", "api_service", "middleware", "ml_inference"]
+            ),
             ["web_app", "api_service", "middleware", "ai_enabled", "ml_enabled"],
         )
 
@@ -2269,12 +2645,24 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(scanner.identifier_status(""), "missing_from_scanned_files")
 
     def test_branch_name_from_ref(self):
-        self.assertEqual(scanner.branch_name_from_ref("refs/heads/release/1.0"), "release/1.0")
+        self.assertEqual(
+            scanner.branch_name_from_ref("refs/heads/release/1.0"), "release/1.0"
+        )
         self.assertEqual(scanner.branch_name_from_ref("main"), "main")
 
     def test_default_branch_name_from_repo(self):
-        self.assertEqual(scanner.default_branch_name_from_repo({"defaultBranch": "refs/heads/master"}), "master")
-        self.assertEqual(scanner.default_branch_name_from_repo({"defaultBranch": "refs/heads/develop"}), "develop")
+        self.assertEqual(
+            scanner.default_branch_name_from_repo(
+                {"defaultBranch": "refs/heads/master"}
+            ),
+            "master",
+        )
+        self.assertEqual(
+            scanner.default_branch_name_from_repo(
+                {"defaultBranch": "refs/heads/develop"}
+            ),
+            "develop",
+        )
         self.assertEqual(scanner.default_branch_name_from_repo({}), "")
 
     def test_list_branch_targets_uses_only_default_branch(self):
@@ -2296,7 +2684,9 @@ class OutputTests(unittest.TestCase):
 
     def test_select_fallback_branch_name_prefers_deployment_names(self):
         self.assertEqual(
-            scanner.select_fallback_branch_name(["feature/foo", "main", "release/prod"]),
+            scanner.select_fallback_branch_name(
+                ["feature/foo", "main", "release/prod"]
+            ),
             "release/prod",
         )
         self.assertEqual(
@@ -2357,22 +2747,36 @@ class OutputTests(unittest.TestCase):
     def test_branch_age_bucket(self):
         now = datetime(2026, 6, 21, tzinfo=timezone.utc)
 
-        self.assertEqual(scanner.branch_age_bucket("2026-06-01T00:00:00Z", 90, now), scanner.ACTIVE_SHEET_NAME)
-        self.assertEqual(scanner.branch_age_bucket("2026-01-01T00:00:00Z", 90, now), scanner.OLDER_SHEET_NAME)
-        self.assertEqual(scanner.branch_age_bucket("", 90, now), scanner.OLDER_SHEET_NAME)
+        self.assertEqual(
+            scanner.branch_age_bucket("2026-06-01T00:00:00Z", 90, now),
+            scanner.ACTIVE_SHEET_NAME,
+        )
+        self.assertEqual(
+            scanner.branch_age_bucket("2026-01-01T00:00:00Z", 90, now),
+            scanner.OLDER_SHEET_NAME,
+        )
+        self.assertEqual(
+            scanner.branch_age_bucket("", 90, now), scanner.OLDER_SHEET_NAME
+        )
 
 
 class StoreLookupTests(unittest.TestCase):
     def test_target_store_platforms_uses_native_categories(self):
-        self.assertEqual(scanner.target_store_platforms(["ios"]), (scanner.APPLE_PLATFORM,))
-        self.assertEqual(scanner.target_store_platforms(["android"]), (scanner.GOOGLE_PLATFORM,))
+        self.assertEqual(
+            scanner.target_store_platforms(["ios"]), (scanner.APPLE_PLATFORM,)
+        )
+        self.assertEqual(
+            scanner.target_store_platforms(["android"]), (scanner.GOOGLE_PLATFORM,)
+        )
         self.assertEqual(
             scanner.target_store_platforms(["react_native"]),
             (scanner.APPLE_PLATFORM, scanner.GOOGLE_PLATFORM),
         )
 
     def test_normalize_store_countries_deduplicates_and_uppercases(self):
-        self.assertEqual(scanner.normalize_store_countries("us, ca\nGB"), ("US", "CA", "GB"))
+        self.assertEqual(
+            scanner.normalize_store_countries("us, ca\nGB"), ("US", "CA", "GB")
+        )
         self.assertEqual(scanner.normalize_store_countries([]), ("US",))
         with self.assertRaises(ValueError):
             scanner.normalize_store_countries(["USA"])
@@ -2468,13 +2872,21 @@ class StoreLookupTests(unittest.TestCase):
             def lookup(self, identifier, categories):
                 raise AssertionError("invalid identifiers should not call store lookup")
 
-        columns = scanner.store_columns("#ID#Configuration:CONNECTIONS_CONFIG", ["android"], FailingStoreClient())
+        columns = scanner.store_columns(
+            "#ID#Configuration:CONNECTIONS_CONFIG", ["android"], FailingStoreClient()
+        )
 
         self.assertEqual(columns["store_lookup_status"], "identifier_invalid")
         self.assertEqual(columns["store_validation_passed"], "FALSE")
         self.assertEqual(columns["google_play_lookup_status"], "identifier_invalid")
-        self.assertEqual(columns["google_play_identifier"], "#ID#Configuration:CONNECTIONS_CONFIG")
-        self.assertFalse(scanner.is_store_identifier_candidate("#ID#Configuration:CONNECTIONS_CONFIG"))
+        self.assertEqual(
+            columns["google_play_identifier"], "#ID#Configuration:CONNECTIONS_CONFIG"
+        )
+        self.assertFalse(
+            scanner.is_store_identifier_candidate(
+                "#ID#Configuration:CONNECTIONS_CONFIG"
+            )
+        )
         self.assertTrue(scanner.is_store_identifier_candidate("com.fabrikam.agsnap"))
 
     def test_store_columns_reports_tls_errors_without_retrying_reads(self):
@@ -2506,9 +2918,17 @@ class StoreLookupTests(unittest.TestCase):
         parser = scanner.MetaTagParser()
         parser.feed(html)
 
-        self.assertEqual(scanner.normalize_google_play_title(parser.meta["og:title"]), "Agsnap")
-        self.assertTrue(scanner.google_play_app_page(parser.meta, parser.meta["og:title"], "com.fabrikam.agsnap"))
-        self.assertFalse(scanner.google_play_app_page({}, "Google Play", "com.fabrikam.agsnap"))
+        self.assertEqual(
+            scanner.normalize_google_play_title(parser.meta["og:title"]), "Agsnap"
+        )
+        self.assertTrue(
+            scanner.google_play_app_page(
+                parser.meta, parser.meta["og:title"], "com.fabrikam.agsnap"
+            )
+        )
+        self.assertFalse(
+            scanner.google_play_app_page({}, "Google Play", "com.fabrikam.agsnap")
+        )
         self.assertEqual(scanner.extract_google_play_version(html), "1.0.2")
         self.assertEqual(scanner.extract_google_play_updated(html), "2026-01-02")
 
@@ -2610,9 +3030,13 @@ class CliTests(unittest.TestCase):
 
     def test_parse_args_rejects_invalid_store_options(self):
         with self.assertRaises(SystemExit):
-            scanner.parse_args(["--org", "example", "--pat", "token", "--store-country", "usa"])
+            scanner.parse_args(
+                ["--org", "example", "--pat", "token", "--store-country", "usa"]
+            )
         with self.assertRaises(SystemExit):
-            scanner.parse_args(["--org", "example", "--pat", "token", "--store-timeout", "0"])
+            scanner.parse_args(
+                ["--org", "example", "--pat", "token", "--store-timeout", "0"]
+            )
         with self.assertRaises(SystemExit):
             scanner.parse_args(
                 [
@@ -2628,7 +3052,9 @@ class CliTests(unittest.TestCase):
 
     def test_parse_args_rejects_invalid_branch_workers(self):
         with self.assertRaises(SystemExit):
-            scanner.parse_args(["--org", "example", "--pat", "token", "--branch-workers", "0"])
+            scanner.parse_args(
+                ["--org", "example", "--pat", "token", "--branch-workers", "0"]
+            )
 
 
 if __name__ == "__main__":

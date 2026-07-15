@@ -80,7 +80,7 @@ APPLICATION_INVENTORY_XLSX_CHECKPOINT_ROWS=500
 APPLICATION_INVENTORY_XLSX_MAX_CHECKPOINT_ROWS=5000
 APPLICATION_INVENTORY_XLSX_CHECKPOINT_SECONDS=30
 APPLICATION_INVENTORY_POSTGRES_COMMIT_ROWS=50
-APPLICATION_INVENTORY_POSTGRES_COMMIT_SECONDS=2
+APPLICATION_INVENTORY_POSTGRES_COMMIT_SECONDS=1
 APPLICATION_INVENTORY_POSTGRES_SCHEMA=application_inventory
 APPLICATION_INVENTORY_POSTGRES_TABLE=application_inventory_assets
 APPLICATION_INVENTORY_OBSERVABILITY_DSN=postgresql://user:password@host:5432/postgres
@@ -106,7 +106,7 @@ AZURE_LOCATION=eastus
 RESOURCE_GROUP=rg-application-inventory-prod
 ACR_NAME=appinventoryprodacr
 IMAGE_NAME=application-inventory-service
-IMAGE_TAG=1.6.9
+IMAGE_TAG=1.6.10
 
 az group create \
   --name "$RESOURCE_GROUP" \
@@ -460,9 +460,9 @@ Validate from the UI:
 
 1. Sign in.
 2. Open **Database**.
-3. Confirm PostgreSQL sync is on.
-4. Select **Check database**.
-5. Run a small scan and export CSV or JSON from the database page.
+3. Confirm the startup status is **Ready**.
+4. Run a small scan and confirm records appear while it runs.
+5. Export XLSX, CSV, and JSON from the database page.
 
 Validate from SQL:
 

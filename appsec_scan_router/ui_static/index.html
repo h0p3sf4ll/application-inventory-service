@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Application Inventory Service</title>
-    <link rel="stylesheet" href="/static/styles.css?v=4">
+    <link rel="stylesheet" href="/static/styles.css?v=6">
   </head>
   <body class="login-mode">
     <main class="login-shell" id="loginPage">
@@ -377,85 +377,111 @@
 
           <section class="panel form-panel tab-view hidden" id="databaseView" role="tabpanel" hidden>
             <div class="section-heading">
-              <h2>Database</h2>
-              <span class="default-badge">Default: PostgreSQL on</span>
+              <div>
+                <p class="eyebrow">Current state</p>
+                <h2>Inventory database</h2>
+              </div>
+              <span class="status-chip idle" id="databaseReadyBadge">Checking</span>
             </div>
 
-            <label class="toggle-row full">
-              <input name="postgresEnabled" type="checkbox" checked>
-              <span class="toggle-copy">
-                <span>Sync to PostgreSQL</span>
-                <small>Default on; rows are scoped by signed-in user</small>
-              </span>
-            </label>
-
-            <div class="field-grid database-fields hidden">
-              <label>
-                <span class="label-line">
-                  <span>PostgreSQL host</span>
-                  <span class="default-badge">Default: localhost</span>
+            <div class="database-connection-row">
+              <label class="toggle-row">
+                <input name="postgresEnabled" type="checkbox" checked>
+                <span class="toggle-copy">
+                  <span>Sync scan results</span>
+                  <small>PostgreSQL, private to your signed-in account</small>
                 </span>
-                <input name="postgresHost" value="localhost">
               </label>
-              <label>
-                <span class="label-line">
-                  <span>PostgreSQL port</span>
-                  <span class="default-badge">Default: 5432</span>
-                </span>
-                <input name="postgresPort" type="number" min="1" max="65535" value="5432">
-              </label>
-              <label>
-                <span class="label-line">
-                  <span>Database</span>
-                  <span class="default-badge">Default: postgres</span>
-                </span>
-                <input name="postgresDatabase" value="postgres">
-              </label>
-              <label>
-                <span class="label-line">
-                  <span>User</span>
-                  <span class="default-badge">Default: postgres</span>
-                </span>
-                <input name="postgresUser" value="postgres">
-              </label>
-              <label>
-                <span class="label-line">
-                  <span>Password</span>
-                  <span class="field-badge optional">Optional</span>
-                </span>
-                <input name="postgresPassword" type="password" autocomplete="off" placeholder="Local dev: postgres">
-              </label>
-              <label>
-                <span class="label-line">
-                  <span>Schema</span>
-                  <span class="default-badge">Default: application_inventory</span>
-                </span>
-                <input name="postgresSchema" value="application_inventory">
-              </label>
-              <label>
-                <span class="label-line">
-                  <span>Flat table</span>
-                  <span class="default-badge">Default: application_inventory_assets</span>
-                </span>
-                <input name="postgresTable" value="application_inventory_assets">
-              </label>
+              <div class="database-status" id="databaseStatus">
+                <strong>Checking connection</strong>
+                <span>application_inventory</span>
+              </div>
             </div>
 
-            <div class="database-actions">
-              <button class="ghost" id="checkDatabase" type="button">Check database</button>
-            </div>
-            <div class="database-status" id="databaseStatus">
-              <strong>Not checked</strong>
-              <span>Schema: application_inventory</span>
-            </div>
+            <details class="advanced-settings database-settings">
+              <summary>
+                <span>Connection settings</span>
+                <small>localhost:5432 / postgres</small>
+              </summary>
+              <div class="field-grid database-fields">
+                <label>
+                  <span class="label-line"><span>Host</span><span class="default-badge">Default: localhost</span></span>
+                  <input name="postgresHost" value="localhost">
+                </label>
+                <label>
+                  <span class="label-line"><span>Port</span><span class="default-badge">Default: 5432</span></span>
+                  <input name="postgresPort" type="number" min="1" max="65535" value="5432">
+                </label>
+                <label>
+                  <span class="label-line"><span>Database</span><span class="default-badge">Default: postgres</span></span>
+                  <input name="postgresDatabase" value="postgres">
+                </label>
+                <label>
+                  <span class="label-line"><span>User</span><span class="default-badge">Default: postgres</span></span>
+                  <input name="postgresUser" value="postgres">
+                </label>
+                <label>
+                  <span class="label-line"><span>Password</span><span class="default-badge">Default: postgres</span></span>
+                  <input name="postgresPassword" type="password" autocomplete="off" value="postgres">
+                </label>
+                <label>
+                  <span class="label-line"><span>Schema</span><span class="default-badge">Default: application_inventory</span></span>
+                  <input name="postgresSchema" value="application_inventory">
+                </label>
+                <label class="full">
+                  <span class="label-line"><span>Compatibility table</span><span class="default-badge">Default: application_inventory_assets</span></span>
+                  <input name="postgresTable" value="application_inventory_assets">
+                </label>
+              </div>
+              <div class="database-actions">
+                <button class="ghost" id="checkDatabase" type="button">Test connection</button>
+              </div>
+            </details>
 
             <div class="database-browser">
               <div class="section-heading database-browser-heading">
                 <div>
                   <h3>Inventory records</h3>
-                  <p>Search and export records owned by your signed-in account.</p>
+                  <p id="databaseLiveStatus">Loading your inventory</p>
                 </div>
                 <span class="default-badge">Private to your account</span>
+              </div>
+              <section class="inventory-assistant" aria-labelledby="inventoryAssistantTitle">
+                <div class="inventory-assistant-heading">
+                  <div class="ai-identity">
+                    <span class="ai-avatar" aria-hidden="true">AI</span>
+                    <div>
+                      <strong id="inventoryAssistantTitle">Local AI inventory assistant</strong>
+                      <small>Private and running on this machine</small>
+                    </div>
+                  </div>
+                  <span class="status-chip idle" id="localLlmStatus">Checking local model</span>
+                </div>
+                <div class="inventory-assistant-controls">
+                  <input id="inventoryAssistantQuery" maxlength="2000" placeholder="Ask AI: Show web apps updated in 90 days without a domain">
+                  <button class="primary" id="askInventory" type="button">Ask AI</button>
+                </div>
+                <p id="inventoryAssistantSummary" aria-live="polite"></p>
+              </section>
+              <div class="inventory-filter-presets">
+                <strong>Quick filters</strong>
+                <div class="inventory-quick-filters" role="group" aria-label="Inventory quick filters">
+                  <button class="filter-button active" type="button" data-inventory-filter="all">All records</button>
+                  <button class="filter-button" type="button" data-inventory-filter="active">Updated 90d</button>
+                  <button class="filter-button" type="button" data-inventory-filter="older">Older 90d</button>
+                  <button class="filter-button" type="button" data-inventory-filter="has-domain">Has domain</button>
+                  <button class="filter-button" type="button" data-inventory-filter="missing-domain">Missing domain</button>
+                  <button class="filter-button" type="button" data-inventory-filter="mobile-app">Mobile app</button>
+                  <button class="filter-button" type="button" data-inventory-filter="web-app">Web app</button>
+                  <button class="filter-button" type="button" data-inventory-filter="api-service">API service</button>
+                  <button class="filter-button" type="button" data-inventory-filter="microservice">Microservice</button>
+                  <button class="filter-button" type="button" data-inventory-filter="middleware">Middleware</button>
+                  <button class="filter-button" type="button" data-inventory-filter="serverless">Serverless</button>
+                  <button class="filter-button" type="button" data-inventory-filter="library">Library</button>
+                  <button class="filter-button" type="button" data-inventory-filter="infrastructure">Infrastructure</button>
+                  <button class="filter-button" type="button" data-inventory-filter="ai-enabled">AI-enabled</button>
+                  <button class="filter-button" type="button" data-inventory-filter="ml-enabled">ML-enabled</button>
+                </div>
               </div>
               <div class="database-search-controls">
                 <label class="database-search-field" for="databaseSearchQuery">
@@ -468,31 +494,48 @@
               <div class="database-results-toolbar">
                 <strong id="databaseResultSummary" aria-live="polite">Search to view inventory records</strong>
                 <div class="database-export-actions">
+                  <button class="primary" id="exportDatabaseXlsx" type="button">Export XLSX</button>
                   <button class="ghost" id="exportDatabaseCsv" type="button">Export CSV</button>
                   <button class="ghost" id="exportDatabaseJson" type="button">Export JSON</button>
                 </div>
               </div>
               <div class="database-table-wrap">
                 <table class="database-table">
+                  <colgroup>
+                    <col class="column-application">
+                    <col class="column-repository">
+                    <col class="column-branch">
+                    <col class="column-domain">
+                    <col class="column-updated">
+                    <col class="column-confidence">
+                    <col class="column-source">
+                    <col class="column-types">
+                  </colgroup>
                   <thead>
-                    <tr>
-                      <th scope="col">Source</th>
-                      <th scope="col">Organization</th>
-                      <th scope="col">Project</th>
-                      <th scope="col">Repository</th>
-                      <th scope="col">Branch</th>
-                      <th scope="col">Web domain</th>
-                      <th scope="col">Application</th>
-                      <th scope="col">Version</th>
-                      <th scope="col">Language</th>
-                      <th scope="col">Updated</th>
-                      <th scope="col">Confidence</th>
-                      <th scope="col">Application types</th>
+                    <tr class="database-sort-row">
+                      <th scope="col" data-sort-column="application"><button class="database-sort-button" type="button" data-database-sort="application">Application<span class="sort-indicator" aria-hidden="true"></span></button></th>
+                      <th scope="col" data-sort-column="repository"><button class="database-sort-button" type="button" data-database-sort="repository">Repository<span class="sort-indicator" aria-hidden="true"></span></button></th>
+                      <th scope="col" data-sort-column="branch"><button class="database-sort-button" type="button" data-database-sort="branch">Branch<span class="sort-indicator" aria-hidden="true"></span></button></th>
+                      <th scope="col" data-sort-column="domain"><button class="database-sort-button" type="button" data-database-sort="domain">Web domain<span class="sort-indicator" aria-hidden="true"></span></button></th>
+                      <th scope="col" data-sort-column="updated"><button class="database-sort-button" type="button" data-database-sort="updated">Updated<span class="sort-indicator" aria-hidden="true"></span></button></th>
+                      <th scope="col" data-sort-column="confidence"><button class="database-sort-button" type="button" data-database-sort="confidence">Confidence<span class="sort-indicator" aria-hidden="true"></span></button></th>
+                      <th scope="col" data-sort-column="source"><button class="database-sort-button" type="button" data-database-sort="source">Source<span class="sort-indicator" aria-hidden="true"></span></button></th>
+                      <th scope="col" data-sort-column="types"><button class="database-sort-button" type="button" data-database-sort="types">Types<span class="sort-indicator" aria-hidden="true"></span></button></th>
+                    </tr>
+                    <tr class="database-filter-row">
+                      <th><input id="filterApplication" type="search" maxlength="120" placeholder="Filter" aria-label="Filter applications"></th>
+                      <th><input id="filterRepository" type="search" maxlength="120" placeholder="Filter" aria-label="Filter repositories"></th>
+                      <th><input id="filterBranch" type="search" maxlength="120" placeholder="Filter" aria-label="Filter branches"></th>
+                      <th><select id="filterDomain" aria-label="Filter web domains"><option value="">Any</option><option value="has">Has domain</option><option value="missing">Missing</option></select></th>
+                      <th><select id="filterUpdated" aria-label="Filter update date"><option value="">Any date</option><option value="active">Updated 90d</option><option value="older">Older 90d</option></select></th>
+                      <th><select id="filterConfidence" aria-label="Filter confidence"><option value="">Any</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></th>
+                      <th><select id="filterSource" aria-label="Filter source"><option value="">Any</option><option value="azure-devops">Azure DevOps</option><option value="github-enterprise">GitHub</option></select></th>
+                      <th><select id="filterType" aria-label="Filter application type"><option value="">Any type</option><option value="mobile_app">Mobile app</option><option value="web_app">Web app</option><option value="api_service">API service</option><option value="microservice">Microservice</option><option value="middleware">Middleware</option><option value="serverless">Serverless</option><option value="library">Library</option><option value="infrastructure">Infrastructure</option><option value="ai_enabled">AI-enabled</option><option value="ml_enabled">ML-enabled</option></select></th>
                     </tr>
                   </thead>
                   <tbody id="databaseResultRows">
                     <tr>
-                      <td class="database-empty-row" colspan="12">No search has been run.</td>
+                      <td class="database-empty-row" colspan="8">Loading inventory records.</td>
                     </tr>
                   </tbody>
                 </table>
@@ -503,6 +546,16 @@
                 <button class="ghost" id="databaseNext" type="button" disabled>Next</button>
               </div>
             </div>
+            <dialog class="inventory-dialog" id="inventoryRecordDialog">
+              <div class="inventory-dialog-heading">
+                <div>
+                  <p class="eyebrow">Inventory record</p>
+                  <h3 id="inventoryRecordTitle">Application details</h3>
+                </div>
+                <button class="icon-button" id="closeInventoryRecord" type="button" aria-label="Close" title="Close">&times;</button>
+              </div>
+              <dl id="inventoryRecordDetails"></dl>
+            </dialog>
           </section>
         </form>
 
@@ -616,6 +669,6 @@
       </section>
     </main>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=4" type="module"></script>
+    <script src="/static/app.js?v=7" type="module"></script>
   </body>
 </html>

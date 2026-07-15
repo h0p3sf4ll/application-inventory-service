@@ -20,7 +20,7 @@ DEFAULT_POSTGRES_HOST = "localhost"
 DEFAULT_POSTGRES_PORT = 5432
 DEFAULT_POSTGRES_DATABASE = "postgres"
 DEFAULT_POSTGRES_USER = "postgres"
-DEFAULT_POSTGRES_PASSWORD = ""
+DEFAULT_POSTGRES_PASSWORD = "postgres"
 MISSING_REQUESTS_MESSAGE = "Missing dependency: requests. Install it with `python -m pip install -r requirements.txt`."
 MISSING_PSYCOPG_MESSAGE = "Missing dependency: psycopg. Install it with `python -m pip install 'psycopg[binary]>=3.2.0'`."
 MISSING_CRYPTOGRAPHY_MESSAGE = "Missing dependency: cryptography. Install it with `python -m pip install 'cryptography>=42.0.0'`."
@@ -94,7 +94,9 @@ KNOWN_INVENTORY_TYPES = (
     "ml_enabled",
 )
 
-TYPE_FIELDNAMES = tuple(f"type_{inventory_type}" for inventory_type in KNOWN_INVENTORY_TYPES)
+TYPE_FIELDNAMES = tuple(
+    f"type_{inventory_type}" for inventory_type in KNOWN_INVENTORY_TYPES
+)
 
 APPLICATION_TYPE_LABELS = {
     "mobile_app": "Mobile app",
@@ -246,8 +248,12 @@ CONTENT_FILES_TO_FETCH: tuple[str, ...] = (
 )
 
 CONTENT_FILE_SUFFIXES = tuple(name.lower() for name in CONTENT_FILES_TO_FETCH)
-CONTENT_FILE_NAMES = frozenset(name for name in CONTENT_FILE_SUFFIXES if not name.startswith("."))
-CONTENT_FILE_EXTENSION_SUFFIXES = tuple(name for name in CONTENT_FILE_SUFFIXES if name.startswith("."))
+CONTENT_FILE_NAMES = frozenset(
+    name for name in CONTENT_FILE_SUFFIXES if not name.startswith(".")
+)
+CONTENT_FILE_EXTENSION_SUFFIXES = tuple(
+    name for name in CONTENT_FILE_SUFFIXES if name.startswith(".")
+)
 
 IGNORED_CONTENT_DIRECTORIES = frozenset(
     {

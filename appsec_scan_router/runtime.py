@@ -6,23 +6,30 @@ import os
 import queue
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .constants import DEFAULT_OUT_PREFIX, DEFAULT_POSTGRES_SCHEMA, DEFAULT_POSTGRES_TABLE
+from .constants import (
+    DEFAULT_OUT_PREFIX,
+    DEFAULT_POSTGRES_SCHEMA,
+    DEFAULT_POSTGRES_TABLE,
+)
 from .github import configured_github_app_id, configured_github_installation_id
 from .observability import log_github_app_context
+from .scan_persistence import ScanStateStore, valid_scan_id
 
 
 LOGGER = logging.getLogger("appsec_scan_router")
 MAX_LOG_LINES = 5000
+MAX_PERSISTED_SCANS = 500
 REPORT_EXTENSIONS = frozenset({".csv", ".json", ".xlsx", ".txt"})
 SCAN_STATUSES_DONE = frozenset({"succeeded", "failed", "stopped"})
 SCAN_STATUSES_ACTIVE = frozenset({"queued", "running", "paused"})
@@ -41,6 +48,10 @@ class ScanRun:
     exit_code: int | None = None
     stop_requested: bool = False
     process: subprocess.Popen[str] | None = None
+    process_pid: int | None = None
+    process_group_id: int | None = None
+    recovered: bool = False
+    log_path: Path | None = None
     logs: deque[str] = field(default_factory=lambda: deque(maxlen=MAX_LOG_LINES))
     log_tail: deque[str] = field(default_factory=lambda: deque(maxlen=300))
     listeners: list[queue.Queue[dict[str, Any] | None]] = field(default_factory=list)
@@ -101,7 +112,11 @@ class ScanRun:
         if stale:
             stale_ids = {id(listener) for listener in stale}
             with self.lock:
-                self.listeners = [listener for listener in self.listeners if id(listener) not in stale_ids]
+                self.listeners = [
+                    listener
+                    for listener in self.listeners
+                    if id(listener) not in stale_ids
+                ]
 
     def add_listener(self) -> queue.Queue[dict[str, Any] | None]:
         listener: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=250)
@@ -111,7 +126,9 @@ class ScanRun:
 
     def remove_listener(self, listener: queue.Queue[dict[str, Any] | None]) -> None:
         with self.lock:
-            self.listeners = [candidate for candidate in self.listeners if candidate is not listener]
+            self.listeners = [
+                candidate for candidate in self.listeners if candidate is not listener
+            ]
 
     def close_listeners(self) -> None:
         with self.lock:
@@ -126,7 +143,9 @@ class ScanRun:
     def report_files(self) -> list[dict[str, Any]]:
         now = time.monotonic()
         with self.lock:
-            if self._report_cache_at and (self.status in SCAN_STATUSES_DONE or now - self._report_cache_at < 2.0):
+            if self._report_cache_at and (
+                self.status in SCAN_STATUSES_DONE or now - self._report_cache_at < 2.0
+            ):
                 return list(self._report_cache)
         reports: list[dict[str, Any]] = []
         if self.reports_dir.exists():
@@ -138,7 +157,9 @@ class ScanRun:
                     {
                         "name": path.name,
                         "size": stat.st_size,
-                        "updatedAt": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                        "updatedAt": datetime.fromtimestamp(
+                            stat.st_mtime, timezone.utc
+                        ).isoformat(),
                         "url": f"/api/scans/{self.id}/reports/{path.name}",
                     }
                 )
@@ -149,13 +170,30 @@ class ScanRun:
 
     def active_seconds(self) -> int:
         with self.lock:
-            if not self.started_monotonic:
+            if self.started_monotonic:
+                end = (
+                    time.monotonic()
+                    if self.status not in SCAN_STATUSES_DONE
+                    else self.started_monotonic + self._elapsed_seconds()
+                )
+                paused = self.paused_seconds
+                if self.paused_monotonic:
+                    paused += time.monotonic() - self.paused_monotonic
+                return max(0, round(end - self.started_monotonic - paused))
+            if not self.started_at:
                 return 0
-            end = time.monotonic() if self.status not in SCAN_STATUSES_DONE else self.started_monotonic + self._elapsed_seconds()
-            paused = self.paused_seconds
-            if self.paused_monotonic:
-                paused += time.monotonic() - self.paused_monotonic
-            return max(0, round(end - self.started_monotonic - paused))
+            try:
+                started = datetime.fromisoformat(self.started_at.replace("Z", "+00:00"))
+                ended = (
+                    datetime.fromisoformat(self.ended_at.replace("Z", "+00:00"))
+                    if self.ended_at
+                    else datetime.now(timezone.utc)
+                )
+            except ValueError:
+                return 0
+            return max(
+                0, round((ended - started).total_seconds() - self.paused_seconds)
+            )
 
     def summary(self) -> dict[str, Any]:
         reports = self.report_files()
@@ -172,8 +210,12 @@ class ScanRun:
                 "ownerUserId": str(self.config.get("ownerUserId", "anonymous")),
                 "ownerUserLogin": str(self.config.get("ownerUserLogin", "anonymous")),
                 "postgresEnabled": bool(self.config.get("postgresEnabled")),
-                "postgresSchema": str(self.config.get("postgresSchema", DEFAULT_POSTGRES_SCHEMA)),
-                "postgresTable": str(self.config.get("postgresTable", DEFAULT_POSTGRES_TABLE)),
+                "postgresSchema": str(
+                    self.config.get("postgresSchema", DEFAULT_POSTGRES_SCHEMA)
+                ),
+                "postgresTable": str(
+                    self.config.get("postgresTable", DEFAULT_POSTGRES_TABLE)
+                ),
                 "startedAt": self.started_at,
                 "endedAt": self.ended_at,
                 "exitCode": self.exit_code,
@@ -182,6 +224,8 @@ class ScanRun:
                 "activeSeconds": self.active_seconds(),
                 "reportsDir": str(self.reports_dir),
                 "command": " ".join(self.display_command),
+                "persistent": True,
+                "recovered": self.recovered,
                 "reports": reports,
                 "logsTail": list(self.log_tail),
             }
@@ -221,6 +265,7 @@ class ScanManager:
         build_environment: Callable[[dict[str, Any]], dict[str, str]],
         redact_command: Callable[[tuple[str, ...] | list[str]], list[str]],
         max_concurrent_scans: int = 2,
+        state_dir: Path | None = None,
     ) -> None:
         self.reports_root = reports_root
         self.reports_root.mkdir(parents=True, exist_ok=True)
@@ -233,13 +278,20 @@ class ScanManager:
         self._slots = threading.BoundedSemaphore(max(1, max_concurrent_scans))
         self._threads: set[threading.Thread] = set()
         self._closing = False
+        self.state_store = ScanStateStore(
+            state_dir or self.reports_root / ".application_inventory_service"
+        )
+        self._restore_scans()
 
     def list_scans(self, owner_user_id: str = "") -> list[dict[str, Any]]:
         with self.lock:
             runs = tuple(self.scans.values())
         if owner_user_id:
             runs = tuple(run for run in runs if run_owner_id(run) == owner_user_id)
-        return [run.summary() for run in sorted(runs, key=lambda item: item.id, reverse=True)]
+        return [
+            run.summary()
+            for run in sorted(runs, key=lambda item: item.id, reverse=True)
+        ]
 
     def get_scan(self, scan_id: str) -> ScanRun | None:
         with self.lock:
@@ -273,9 +325,12 @@ class ScanManager:
             command=command,
             display_command=tuple(self.redact_command(command)),
             reports_dir=reports_dir,
+            log_path=reports_dir / ".scan.log",
         )
+        self.state_store.remove_completion(scan_id)
         with self.lock:
             self.scans[scan_id] = run
+        self._persist_scans()
         LOGGER.info(
             "Scan queued scan_id=%s provider=%s",
             scan_id,
@@ -285,15 +340,13 @@ class ScanManager:
         if normalized.get("provider") in {"github-enterprise", "mixed"}:
             log_github_app_context(
                 normalized.get("githubAppId") or configured_github_app_id(),
-                normalized.get("githubAppInstallationId") or configured_github_installation_id(),
+                normalized.get("githubAppInstallationId")
+                or configured_github_installation_id(),
                 scan_id=scan_id,
                 owner_user_id=normalized.get("ownerUserId", ""),
                 owner_user_login=normalized.get("ownerUserLogin", ""),
             )
-        thread = threading.Thread(target=self._run_scan, args=(run,), name=f"scan-{scan_id}", daemon=True)
-        with self.lock:
-            self._threads.add(thread)
-        thread.start()
+        self._start_thread(run, self._run_scan)
         return run
 
     def pause_scan(self, scan_id: str) -> ScanRun | None:
@@ -301,17 +354,23 @@ class ScanManager:
         if not run:
             return None
         with run.lock:
-            process = run.process
+            process = run.process or run.process_pid
+            process_group_id = run.process_group_id
             status = run.status
-        if status != "running" or not process or process.poll() is not None:
+        if status != "running" or not process_is_running(process, process_group_id):
             raise ValueError("Only a running scan can be paused.")
         try:
-            pause_process(process)
+            pause_process(process, process_group_id)
         except ProcessLookupError as exc:
             raise ValueError("The scan ended before it could be paused.") from exc
         run.append_log("Scan paused from UI.")
         run.set_status("paused")
-        LOGGER.info("Scan paused scan_id=%s", run.id, extra=scan_log_extra(run, "scan.paused", status="paused"))
+        self._persist_scans()
+        LOGGER.info(
+            "Scan paused scan_id=%s",
+            run.id,
+            extra=scan_log_extra(run, "scan.paused", status="paused"),
+        )
         return run
 
     def resume_scan(self, scan_id: str) -> ScanRun | None:
@@ -319,17 +378,23 @@ class ScanManager:
         if not run:
             return None
         with run.lock:
-            process = run.process
+            process = run.process or run.process_pid
+            process_group_id = run.process_group_id
             status = run.status
-        if status != "paused" or not process or process.poll() is not None:
+        if status != "paused" or not process_is_running(process, process_group_id):
             raise ValueError("Only a paused scan can be resumed.")
         try:
-            resume_process(process)
+            resume_process(process, process_group_id)
         except ProcessLookupError as exc:
             raise ValueError("The scan ended before it could be resumed.") from exc
         run.append_log("Scan resumed from UI.")
         run.set_status("running")
-        LOGGER.info("Scan resumed scan_id=%s", run.id, extra=scan_log_extra(run, "scan.resumed", status="running"))
+        self._persist_scans()
+        LOGGER.info(
+            "Scan resumed scan_id=%s",
+            run.id,
+            extra=scan_log_extra(run, "scan.resumed", status="running"),
+        )
         return run
 
     def stop_scan(self, scan_id: str) -> ScanRun | None:
@@ -337,17 +402,27 @@ class ScanManager:
         if not run:
             return None
         with run.lock:
-            process = run.process
+            process = run.process or run.process_pid
+            process_group_id = run.process_group_id
             status = run.status
             run.stop_requested = True
         if status == "queued":
             run.append_log("Queued scan cancelled from UI.")
-        elif process and status in {"running", "paused"} and process.poll() is None:
+        elif (
+            process
+            and status in {"running", "paused"}
+            and process_is_running(process, process_group_id)
+        ):
             run.append_log("Stop requested from UI.")
             try:
-                terminate_process(process, resume_first=status == "paused")
+                terminate_process(
+                    process,
+                    process_group_id,
+                    resume_first=status == "paused",
+                )
             except ProcessLookupError:
                 return run
+        self._persist_scans()
         return run
 
     def close(self) -> None:
@@ -355,31 +430,39 @@ class ScanManager:
             self._closing = True
             runs = tuple(self.scans.values())
             threads = tuple(self._threads)
+        self._persist_scans()
         for run in runs:
-            if run.status in SCAN_STATUSES_ACTIVE:
-                self.stop_scan(run.id)
-        deadline = time.monotonic() + 5
-        for thread in threads:
-            thread.join(timeout=max(0.0, deadline - time.monotonic()))
-        for run in runs:
-            with run.lock:
-                process = run.process
-            if process and process.poll() is None:
-                try:
-                    kill_process(process)
-                except ProcessLookupError:
-                    continue
+            run.close_listeners()
         deadline = time.monotonic() + 2
         for thread in threads:
-            if thread.is_alive():
-                thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+
+    def _start_thread(
+        self,
+        run: ScanRun,
+        target: Callable[..., None],
+        *args: Any,
+    ) -> None:
+        thread = threading.Thread(
+            target=target,
+            args=(run, *args),
+            name=f"scan-{run.id}",
+            daemon=True,
+        )
+        with self.lock:
+            self._threads.add(thread)
+        thread.start()
 
     def _run_scan(self, run: ScanRun) -> None:
         acquired = False
         try:
             while not acquired:
+                if self._closing:
+                    self._persist_scans()
+                    return
                 if run.stop_requested:
                     run.set_status("stopped", 0)
+                    self._persist_scans()
                     run.close_listeners()
                     return
                 acquired = self._slots.acquire(timeout=0.5)
@@ -391,94 +474,437 @@ class ScanManager:
             child_config["scanId"] = run.id
             environment = self.build_environment(child_config)
             run.set_status("running")
-            LOGGER.info("Scan started scan_id=%s", run.id, extra=scan_log_extra(run, "scan.started", status="running"))
-            run.append_log(f"Command: {' '.join(run.display_command)}")
+            command_line = f"Command: {' '.join(run.display_command)}"
+            append_scan_log(run.log_path, command_line)
+            run.append_log(command_line)
+            log_offset = scan_log_size(run.log_path)
+            completion_path = self.state_store.completion_path(run.id)
+            self.state_store.remove_completion(run.id)
+            worker_command = durable_worker_command(run.command, completion_path)
+            LOGGER.info(
+                "Scan started scan_id=%s",
+                run.id,
+                extra=scan_log_extra(run, "scan.started", status="running"),
+            )
             try:
-                process = subprocess.Popen(
-                    run.command,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    bufsize=1,
-                    env=environment,
-                    start_new_session=os.name == "posix",
-                )
+                with open_scan_log(run.log_path) as log_file:
+                    process = subprocess.Popen(
+                        worker_command,
+                        stdin=subprocess.DEVNULL,
+                        stdout=log_file,
+                        stderr=subprocess.STDOUT,
+                        env=environment,
+                        close_fds=True,
+                        start_new_session=os.name == "posix",
+                    )
                 with run.lock:
                     run.process = process
-                if process.stdout:
-                    try:
-                        for line in process.stdout:
-                            run.append_log(line)
-                    finally:
-                        process.stdout.close()
-                exit_code = process.wait()
+                    run.process_pid = process.pid
+                    run.process_group_id = process.pid if os.name == "posix" else None
+                self._persist_scans()
+                self._monitor_scan(run, process, log_offset)
             except FileNotFoundError as exc:
                 run.append_log(str(exc))
                 run.set_status("failed", 127)
-                LOGGER.error("Scan failed scan_id=%s", run.id, extra=scan_log_extra(run, "scan.failed", status="failed"))
+                self._persist_scans()
+                LOGGER.error(
+                    "Scan failed scan_id=%s",
+                    run.id,
+                    extra=scan_log_extra(run, "scan.failed", status="failed"),
+                )
                 run.close_listeners()
                 return
             except Exception as exc:
                 run.append_log(str(exc))
                 run.set_status("failed", 1)
-                LOGGER.exception("Scan failed scan_id=%s", run.id, extra=scan_log_extra(run, "scan.failed", status="failed"))
+                self._persist_scans()
+                LOGGER.exception(
+                    "Scan failed scan_id=%s",
+                    run.id,
+                    extra=scan_log_extra(run, "scan.failed", status="failed"),
+                )
                 run.close_listeners()
                 return
-
-            if run.stop_requested:
-                run.set_status("stopped", exit_code)
-            elif exit_code == 0:
-                run.set_status("succeeded", exit_code)
-            else:
-                run.set_status("failed", exit_code)
-            LOGGER.info(
-                "Scan completed scan_id=%s status=%s exit_code=%s",
-                run.id,
-                run.status,
-                exit_code,
-                extra=scan_log_extra(run, "scan.completed", status=run.status),
-            )
-            run.close_listeners()
         finally:
             if acquired:
                 self._slots.release()
             with self.lock:
                 self._threads.discard(threading.current_thread())
 
+    def _monitor_recovered_scan(self, run: ScanRun, acquired: bool) -> None:
+        try:
+            self._monitor_scan(run, None, scan_log_size(run.log_path))
+        finally:
+            if acquired:
+                self._slots.release()
+            with self.lock:
+                self._threads.discard(threading.current_thread())
 
-def pause_process(process: subprocess.Popen[str]) -> None:
+    def _monitor_scan(
+        self,
+        run: ScanRun,
+        process: subprocess.Popen[str] | None,
+        log_offset: int,
+    ) -> None:
+        while True:
+            log_offset = self._publish_scan_log(run, log_offset)
+            completion = self.state_store.read_completion(run.id)
+            exit_code = completion_exit_code(completion)
+            if exit_code is None and process is not None:
+                exit_code = process.poll()
+            if exit_code is not None:
+                self._publish_scan_log(run, log_offset, include_partial=True)
+                self._complete_scan(run, exit_code, completion)
+                return
+            if process is None and not process_is_running(
+                run.process_pid, run.process_group_id
+            ):
+                self._publish_scan_log(run, log_offset, include_partial=True)
+                self._complete_scan(run, None, completion)
+                return
+            if self._closing:
+                self._persist_scans()
+                return
+            time.sleep(0.25)
+
+    def _publish_scan_log(
+        self,
+        run: ScanRun,
+        offset: int,
+        include_partial: bool = False,
+    ) -> int:
+        next_offset, lines = read_scan_log(run.log_path, offset, include_partial)
+        for line in lines:
+            run.append_log(line)
+        return next_offset
+
+    def _complete_scan(
+        self,
+        run: ScanRun,
+        exit_code: int | None,
+        completion: dict[str, Any] | None,
+    ) -> None:
+        if completion and completion.get("endedAt"):
+            run.ended_at = str(completion["endedAt"])
+        if run.stop_requested:
+            status = "stopped"
+        elif exit_code == 0:
+            status = "succeeded"
+        else:
+            status = "failed"
+        run.set_status(status, exit_code)
+        with run.lock:
+            run.process = None
+        self._persist_scans()
+        LOGGER.info(
+            "Scan completed scan_id=%s status=%s exit_code=%s",
+            run.id,
+            run.status,
+            exit_code,
+            extra=scan_log_extra(run, "scan.completed", status=run.status),
+        )
+        run.close_listeners()
+
+    def _restore_scans(self) -> None:
+        queued: list[ScanRun] = []
+        recovered: list[ScanRun] = []
+        for record in self.state_store.records():
+            run = self._restore_run(record)
+            if run is None:
+                continue
+            self.scans[run.id] = run
+            if run.status == "queued":
+                queued.append(run)
+            elif run.status in {"running", "paused"}:
+                completion = self.state_store.read_completion(run.id)
+                exit_code = completion_exit_code(completion)
+                if exit_code is not None:
+                    self._complete_scan(run, exit_code, completion)
+                elif process_is_running(run.process_pid, run.process_group_id):
+                    recovered.append(run)
+                else:
+                    run.append_log(
+                        "Scan process ended while the service was offline; exit status is unavailable."
+                    )
+                    self._complete_scan(run, None, None)
+        self._persist_scans()
+        for run in queued:
+            self._start_thread(run, self._run_scan)
+        for run in recovered:
+            acquired = self._slots.acquire(blocking=False)
+            self._start_thread(run, self._monitor_recovered_scan, acquired)
+
+    def _restore_run(self, record: dict[str, Any]) -> ScanRun | None:
+        try:
+            scan_id = valid_scan_id(record.get("id"))
+            config = dict(record.get("config") or {})
+            status = str(record.get("status") or "failed")
+            if status not in SCAN_STATUSES_ACTIVE | SCAN_STATUSES_DONE:
+                return None
+            reports_dir = self.reports_root / scan_id
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            command = (
+                tuple(self.build_command(config, reports_dir))
+                if status == "queued"
+                else ()
+            )
+            display_command = tuple(record.get("displayCommand") or ())
+            if status == "queued" and not display_command:
+                display_command = tuple(self.redact_command(command))
+        except (OSError, TypeError, ValueError):
+            return None
+        run = ScanRun(
+            id=scan_id,
+            config=config,
+            command=command,
+            display_command=display_command,
+            reports_dir=reports_dir,
+            status=status,
+            started_at=str(record.get("startedAt") or ""),
+            ended_at=str(record.get("endedAt") or ""),
+            exit_code=optional_int(record.get("exitCode")),
+            stop_requested=bool(record.get("stopRequested")),
+            process_pid=positive_optional_int(record.get("processPid")),
+            process_group_id=positive_optional_int(record.get("processGroupId")),
+            recovered=status in {"running", "paused"},
+            log_path=reports_dir / ".scan.log",
+            paused_seconds=non_negative_float(record.get("pausedSeconds")),
+        )
+        for line in scan_log_lines(run.log_path):
+            run.append_log(line)
+        return run
+
+    def _persist_scans(self) -> None:
+        with self.lock:
+            runs = sorted(self.scans.values(), key=lambda item: item.id, reverse=True)
+        active = [run for run in runs if run.status in SCAN_STATUSES_ACTIVE]
+        completed = [run for run in runs if run.status not in SCAN_STATUSES_ACTIVE]
+        retained = active + completed[: max(0, MAX_PERSISTED_SCANS - len(active))]
+        self.state_store.write(run_state_record(run) for run in retained)
+
+
+def durable_worker_command(
+    command: tuple[str, ...], completion_path: Path
+) -> tuple[str, ...]:
+    return (
+        sys.executable,
+        "-m",
+        "appsec_scan_router.scan_worker",
+        "--completion-file",
+        str(completion_path),
+        "--",
+        *command,
+    )
+
+
+def open_scan_log(path: Path | None) -> Any:
+    if path is None:
+        raise ValueError("Scan log path is required.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    return os.fdopen(descriptor, "ab", buffering=0)
+
+
+def append_scan_log(path: Path | None, line: str) -> None:
+    with open_scan_log(path) as log_file:
+        log_file.write(f"{line.rstrip()}\n".encode("utf-8", errors="replace"))
+
+
+def scan_log_size(path: Path | None) -> int:
+    if path is None:
+        return 0
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def read_scan_log(
+    path: Path | None,
+    offset: int,
+    include_partial: bool = False,
+) -> tuple[int, list[str]]:
+    if path is None or not path.exists():
+        return offset, []
+    try:
+        with path.open("rb") as log_file:
+            log_file.seek(max(0, offset))
+            data = log_file.read()
+    except OSError:
+        return offset, []
+    if not data:
+        return offset, []
+    consumed = len(data)
+    if not include_partial and not data.endswith(b"\n"):
+        newline = data.rfind(b"\n")
+        if newline < 0:
+            return offset, []
+        consumed = newline + 1
+        data = data[:consumed]
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    return offset + consumed, lines
+
+
+def scan_log_lines(path: Path | None) -> Iterable[str]:
+    if path is None or not path.exists():
+        return ()
+
+    def lines() -> Iterable[str]:
+        try:
+            with path.open("rb") as log_file:
+                for line in log_file:
+                    yield line.decode("utf-8", errors="replace").rstrip("\r\n")
+        except OSError:
+            return
+
+    return lines()
+
+
+def run_state_record(run: ScanRun) -> dict[str, Any]:
+    with run.lock:
+        return {
+            "id": run.id,
+            "config": json_safe(run.config),
+            "displayCommand": list(run.display_command),
+            "status": run.status,
+            "startedAt": run.started_at,
+            "endedAt": run.ended_at,
+            "exitCode": run.exit_code,
+            "stopRequested": run.stop_requested,
+            "processPid": run.process_pid,
+            "processGroupId": run.process_group_id,
+            "pausedSeconds": run.paused_seconds,
+        }
+
+
+def json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [json_safe(item) for item in value]
+    return str(value)
+
+
+def completion_exit_code(completion: dict[str, Any] | None) -> int | None:
+    if not completion:
+        return None
+    return optional_int(completion.get("exitCode"))
+
+
+def optional_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def positive_optional_int(value: Any) -> int | None:
+    resolved = optional_int(value)
+    return resolved if resolved is not None and resolved > 0 else None
+
+
+def non_negative_float(value: Any) -> float:
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def process_id(process: subprocess.Popen[Any] | int) -> int:
+    return process if isinstance(process, int) else process.pid
+
+
+def process_is_running(
+    process: subprocess.Popen[Any] | int | None,
+    process_group_id: int | None = None,
+) -> bool:
+    if process is None:
+        return False
+    if not isinstance(process, int):
+        return process.poll() is None
+    try:
+        os.kill(process, 0)
+        if (
+            os.name == "posix"
+            and process_group_id is not None
+            and os.getpgid(process) != process_group_id
+        ):
+            return False
+        return True
+    except PermissionError:
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
+def process_group(process: subprocess.Popen[Any] | int, fallback: int | None) -> int:
+    if fallback is not None:
+        return fallback
+    return os.getpgid(process_id(process))
+
+
+def pause_process(
+    process: subprocess.Popen[Any] | int,
+    process_group_id: int | None = None,
+) -> None:
     if os.name != "posix" or not hasattr(signal, "SIGSTOP"):
-        raise ValueError("Pause and resume require a POSIX host such as Linux or macOS.")
-    os.killpg(os.getpgid(process.pid), signal.SIGSTOP)
+        raise ValueError(
+            "Pause and resume require a POSIX host such as Linux or macOS."
+        )
+    os.killpg(process_group(process, process_group_id), signal.SIGSTOP)
 
 
-def resume_process(process: subprocess.Popen[str]) -> None:
+def resume_process(
+    process: subprocess.Popen[Any] | int,
+    process_group_id: int | None = None,
+) -> None:
     if os.name != "posix" or not hasattr(signal, "SIGCONT"):
-        raise ValueError("Pause and resume require a POSIX host such as Linux or macOS.")
-    os.killpg(os.getpgid(process.pid), signal.SIGCONT)
+        raise ValueError(
+            "Pause and resume require a POSIX host such as Linux or macOS."
+        )
+    os.killpg(process_group(process, process_group_id), signal.SIGCONT)
 
 
-def terminate_process(process: subprocess.Popen[str], resume_first: bool = False) -> None:
+def terminate_process(
+    process: subprocess.Popen[Any] | int,
+    process_group_id: int | None = None,
+    resume_first: bool = False,
+) -> None:
     if os.name == "posix":
-        process_group = os.getpgid(process.pid)
+        group_id = process_group(process, process_group_id)
         if resume_first and hasattr(signal, "SIGCONT"):
-            os.killpg(process_group, signal.SIGCONT)
-        os.killpg(process_group, signal.SIGTERM)
+            os.killpg(group_id, signal.SIGCONT)
+        os.killpg(group_id, signal.SIGTERM)
         return
-    process.terminate()
+    if isinstance(process, int):
+        os.kill(process, signal.SIGTERM)
+    else:
+        process.terminate()
 
 
-def kill_process(process: subprocess.Popen[str]) -> None:
+def kill_process(
+    process: subprocess.Popen[Any] | int,
+    process_group_id: int | None = None,
+) -> None:
     if os.name == "posix" and hasattr(signal, "SIGKILL"):
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        os.killpg(process_group(process, process_group_id), signal.SIGKILL)
         return
-    process.kill()
+    if isinstance(process, int):
+        os.kill(process, signal.SIGTERM)
+    else:
+        process.kill()
 
 
 def scan_target_summary(config: dict[str, Any]) -> str:
-    target_filters = config.get("targetFilters") if isinstance(config.get("targetFilters"), list) else []
+    target_filters = (
+        config.get("targetFilters")
+        if isinstance(config.get("targetFilters"), list)
+        else []
+    )
     if target_filters:
         if len(target_filters) == 1:
             target = target_filters[0]

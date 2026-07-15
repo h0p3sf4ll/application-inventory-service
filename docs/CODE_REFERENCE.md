@@ -49,10 +49,15 @@ Provider clients expose a common operational shape: list projects, repositories,
 | --- | --- |
 | `reports.py` | Streams Semgrep and SonarQube targets and checkpoints XLSX workbooks |
 | `postgres.py` | Creates and migrates schema objects, performs current-state user-scoped upserts, searches and exports inventory, and stores observability events |
+| `inventory_query.py` | Validates immutable structured search criteria and local-assistant query plans |
+| `inventory_exports.py` | Writes formula-safe XLSX, CSV, and JSON database exports |
+| `local_llm.py` | Converts natural-language requests into allowlisted query plans through a local Ollama endpoint |
+| `scan_persistence.py` | Stores encrypted run records and reads private worker completion markers |
+| `scan_worker.py` | Executes one detached scanner command and atomically records its exit status |
 | `secure_store.py` | Atomically reads and writes Fernet-encrypted JSON state |
 | `observability.py` | Configures structured console and PostgreSQL logging |
 
-The report writer creates all output files at scan start. Text targets flush per finding. XLSX checkpoints use bounded adaptive intervals, atomically replace the prior workbook, and save once more at close. PostgreSQL uses short transactions controlled by row and time thresholds. Inventory keys include the owning user and source identity, so repeated scans update rows instead of creating duplicate findings. Child types, categories, contributors, web domains, domain sources, and store listings are synchronized by value.
+The report writer creates all output files at scan start. Text targets flush per finding. XLSX checkpoints use bounded adaptive intervals, atomically replace the prior workbook, and save once more at close. PostgreSQL uses short transactions controlled by row and time thresholds, with a background flush for live visibility. Schema changes are versioned and serialized with a PostgreSQL advisory lock; unchanged schemas use a fast readiness path. Inventory keys include the owning user and source identity, so repeated scans update rows instead of creating duplicate findings. Child types, categories, contributors, web domains, domain sources, and store listings are synchronized by value.
 
 ### UI operations
 
@@ -66,7 +71,7 @@ The report writer creates all output files at scan start. Text targets flush per
 | `ui_static/app.js` | Browser state, scan configuration, live console, controls, schedules, reports, and database search/export actions |
 | `ui_static/styles.css` | Responsive dark interface and operational status presentation |
 
-`ScanManager` admits a bounded number of subprocesses. Extra scans remain queued. On POSIX hosts, each scanner starts in a new process group so pause, resume, and stop apply to the complete process tree.
+`ScanManager` admits a bounded number of subprocesses. Extra scans remain queued. On POSIX hosts, each scanner starts in a detached process group so pause, resume, and stop apply to the complete process tree. Run configuration is encrypted, output is appended to a private log, and a replacement manager verifies the saved PID and process group before reconnecting to an active worker.
 
 `ScanScheduler` persists encrypted schedule definitions under the configured state directory. It dispatches due work through the same `ScanManager`, so scheduled and interactive scans share concurrency limits and reporting behavior.
 
@@ -107,7 +112,9 @@ Repository, branch, and content queues are bounded. Increasing a worker count ca
 
 `ScanSchedule.summary()` is the browser-safe schedule contract. Encrypted scan configuration and credentials never appear in the response.
 
-`search_inventory()` accepts a user scope, bounded search text, limit, and offset. Search terms are parameterized and matched across source, repository, application, contributor, classification, and mobile/store fields. CSV and JSON exports use the same filter path.
+`search_inventory()` accepts a user scope, bounded search text, literal column filters, structured filters, sort order, limit, and offset. Text uses an indexed PostgreSQL search vector. Filters and sort expressions are allowlisted and parameterized. XLSX, CSV, and JSON exports use the same query path and a server-side cursor.
+
+`LocalInventoryAssistant` sends only the user's question and a fixed field schema to Ollama. `InventoryQueryPlan` drops unknown fields and never accepts SQL. The database layer remains responsible for parameterization, authorization, and owner scope.
 
 ## Extension Points
 
