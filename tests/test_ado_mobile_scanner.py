@@ -1055,6 +1055,10 @@ class UiServiceTests(unittest.TestCase):
         self.assertNotIn("etaValue", html)
         self.assertIn("log-error", javascript)
         self.assertIn("log-success", javascript)
+        self.assertIn(
+            "savedGithubUrls.length ? savedGithubUrls : [...defaultValues.githubUrls]",
+            javascript,
+        )
         self.assertNotIn('name="token"', html)
         self.assertNotIn('name="saveToken"', html)
         self.assertIn('id="adoOrgRequirementBadge">Required</span>', html)

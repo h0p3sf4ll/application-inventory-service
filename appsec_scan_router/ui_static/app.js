@@ -2163,7 +2163,10 @@ function loadForm() {
       continue;
     }
     if (name === "githubUrls") {
-      state.githubUrls = Array.isArray(saved[name]) ? saved[name].map((item) => String(item || "").trim()).filter(Boolean) : [...defaultValues.githubUrls];
+      const savedGithubUrls = Array.isArray(saved[name])
+        ? saved[name].map((item) => String(item || "").trim()).filter(Boolean)
+        : [];
+      state.githubUrls = savedGithubUrls.length ? savedGithubUrls : [...defaultValues.githubUrls];
       continue;
     }
     const element = form.elements[name];
