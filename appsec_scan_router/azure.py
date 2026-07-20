@@ -50,7 +50,7 @@ class AzureDevOpsClient:
         self._headers = {
             "Authorization": self._auth_header_value(pat),
             "Accept": "application/json",
-            "User-Agent": "application-inventory-service/1.6.18",
+            "User-Agent": "application-inventory-service/1.6.19",
         }
         self._retry = Retry(
             total=positive_int_env("APPLICATION_INVENTORY_ADO_MAX_RETRIES", DEFAULT_ADO_MAX_RETRIES),
@@ -152,6 +152,10 @@ class AzureDevOpsClient:
                 f"HTTP {response.status_code} from {response.url}: {message}",
                 status_code=response.status_code,
             ) from exc
+
+    def validate_access(self) -> None:
+        response = self.get("/_apis/projects", {"$top": 1})
+        self._raise_for_status(response)
 
     def list_projects(self) -> list[dict[str, Any]]:
         projects: list[dict[str, Any]] = []

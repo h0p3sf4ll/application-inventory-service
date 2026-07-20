@@ -11,6 +11,7 @@ import appsec_scan_router as scanner
 import appsec_scan_router.azure as azure_module
 import appsec_scan_router.github as github_module
 import appsec_scan_router.scanner as scanner_module
+import appsec_scan_router.source_access as source_access_module
 import appsec_scan_router.source_discovery as source_discovery_module
 import appsec_scan_router.ui as ui_module
 import application_inventory_service
@@ -54,6 +55,7 @@ class PublicApiTests(unittest.TestCase):
         self.assertIs(scanner.ScanConfig, application_inventory_service.ScanConfig)
         self.assertTrue(callable(scanner.scan))
         self.assertTrue(callable(scanner.scan_to_reports))
+        self.assertTrue(callable(scanner.validate_scan_source_access))
         self.assertTrue(callable(scanner.detect_mobile_repo))
         self.assertTrue(callable(scanner.detect_inventory_repo))
         self.assertTrue(callable(scanner.discover_web_domains))
@@ -576,7 +578,10 @@ class MultiOrganizationScanTests(unittest.TestCase):
                     on_result(result)
                 return [result]
 
-            with patch.object(scanner_module, "scan_single_org", side_effect=fake_scan):
+            with (
+                patch.object(scanner_module, "validate_scan_source_access"),
+                patch.object(scanner_module, "scan_single_org", side_effect=fake_scan),
+            ):
                 results, xlsx_path, semgrep_path, sonarqube_path = (
                     scanner.scan_to_reports(config)
                 )
@@ -598,6 +603,81 @@ class MultiOrganizationScanTests(unittest.TestCase):
             self.assertEqual(
                 len(sonarqube_path.read_text(encoding="utf-8").splitlines()), 3
             )
+
+    def test_report_preflight_rejects_expired_pat_before_opening_writers(self):
+        config = scanner.ScanConfig(
+            org="FabrikamCloud",
+            pat="expired-token",
+            project=None,
+            out_dir=Path("reports"),
+            out_prefix="scan",
+            max_workers=1,
+            content_workers=1,
+            max_commits_per_repo=0,
+            timeout_seconds=30,
+            min_confidence="low",
+        )
+
+        with (
+            patch.object(
+                scanner_module,
+                "validate_scan_source_access",
+                side_effect=scanner.AzureDevOpsError(
+                    "Azure DevOps PAT has expired", status_code=401
+                ),
+            ),
+            patch.object(scanner_module, "StreamingReportWriter") as report_writer,
+            self.assertRaises(scanner.AzureDevOpsError),
+        ):
+            scanner.scan_reports(config)
+
+        report_writer.assert_not_called()
+
+    def test_mixed_preflight_reports_expired_pat_and_validates_all_sources(self):
+        config = scanner.ScanConfig(
+            org="FabrikamGH",
+            pat="",
+            project=None,
+            out_dir=Path("reports"),
+            out_prefix="scan",
+            max_workers=1,
+            content_workers=1,
+            max_commits_per_repo=0,
+            timeout_seconds=30,
+            min_confidence="low",
+            provider="mixed",
+            base_url="https://api.github.com",
+            ado_org_pats=(
+                scanner.AzureDevOpsOrgPat("FabrikamADO", "expired-token"),
+            ),
+            github_urls=("FabrikamGH",),
+            source_workers=2,
+        )
+        ado_client = Mock()
+        ado_client.validate_access.side_effect = scanner.AzureDevOpsError(
+            "The Personal Access Token used has expired.", status_code=401
+        )
+        github_client = Mock()
+
+        def client_for(source_config):
+            return ado_client if source_config.provider == "azure-devops" else github_client
+
+        with (
+            patch.object(
+                source_access_module,
+                "create_source_client",
+                side_effect=client_for,
+            ),
+            self.assertRaises(scanner.AzureDevOpsError) as context,
+        ):
+            source_access_module.validate_scan_source_access(config)
+
+        self.assertIn("FabrikamADO", str(context.exception))
+        self.assertIn("PAT has expired", str(context.exception))
+        ado_client.validate_access.assert_called_once_with()
+        github_client.validate_access.assert_called_once_with()
+        ado_client.close.assert_called_once_with()
+        github_client.close.assert_called_once_with()
 
     def test_scan_dispatches_each_ado_org_pat(self):
         config = scanner.ScanConfig(
@@ -686,6 +766,29 @@ class MultiOrganizationScanTests(unittest.TestCase):
 
 
 class ProviderClientTests(unittest.TestCase):
+    def test_azure_access_validation_uses_one_project(self):
+        client = object.__new__(azure_module.AzureDevOpsClient)
+        response = Mock()
+        client.get = Mock(return_value=response)
+
+        client.validate_access()
+
+        client.get.assert_called_once_with("/_apis/projects", {"$top": 1})
+        response.raise_for_status.assert_called_once_with()
+
+    def test_github_access_validation_uses_one_repository(self):
+        client = object.__new__(github_module.GitHubEnterpriseClient)
+        client.owner = "global-snt"
+        client._get_paginated = Mock(return_value=[])
+
+        client.validate_access()
+
+        client._get_paginated.assert_called_once_with(
+            "/orgs/global-snt/repos",
+            {"type": "all", "per_page": 1},
+            max_items=1,
+        )
+
     def test_normalizes_github_enterprise_api_urls(self):
         self.assertEqual(scanner.normalize_github_api_url(""), "https://api.github.com")
         self.assertEqual(
@@ -2573,7 +2676,10 @@ class OutputTests(unittest.TestCase):
                     on_result(row)
                 return []
 
-            with patch.object(scanner_module, "scan", side_effect=fake_scan):
+            with (
+                patch.object(scanner_module, "validate_scan_source_access"),
+                patch.object(scanner_module, "scan", side_effect=fake_scan),
+            ):
                 result_count, xlsx_path, _, _ = scanner.scan_reports(config)
 
             workbook = load_workbook(xlsx_path)
@@ -3024,6 +3130,35 @@ class StoreLookupTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_main_reports_source_validation_failure_without_raising(self):
+        config = scanner.ScanConfig(
+            org="FabrikamCloud",
+            pat="expired-token",
+            project=None,
+            out_dir=Path("reports"),
+            out_prefix="scan",
+            max_workers=1,
+            content_workers=1,
+            max_commits_per_repo=0,
+            timeout_seconds=30,
+            min_confidence="low",
+        )
+        error = scanner.AzureDevOpsError(
+            "Source access validation failed: Azure DevOps organization "
+            "'FabrikamCloud' could not be authenticated because the PAT has expired",
+            status_code=401,
+        )
+
+        with (
+            patch("appsec_scan_router.cli.parse_args", return_value=config),
+            patch("appsec_scan_router.cli.scan_reports", side_effect=error),
+            self.assertLogs("appsec_scan_router", level="ERROR") as captured,
+        ):
+            exit_code = scanner.main([])
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("PAT has expired", "\n".join(captured.output))
+
     def test_parse_args_supports_multiple_github_urls_and_defaults_api_url(self):
         with patch.dict("os.environ", {"GITHUB_TOKEN": "token"}, clear=True):
             config = scanner.parse_args(

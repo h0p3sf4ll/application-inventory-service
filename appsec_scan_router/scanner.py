@@ -26,7 +26,7 @@ from .constants import (
 )
 from .detection import detect_inventory_repo
 from .domains import NETWORKED_INVENTORY_TYPES, discover_web_domains, web_domain_columns
-from .github import GitHubAppCredentials, GitHubEnterpriseClient, configured_github_owners, parse_github_urls
+from .github import GitHubEnterpriseClient, configured_github_owners, parse_github_urls
 from .metadata import extract_mobile_metadata
 from .models import (
     AzureDevOpsError,
@@ -40,7 +40,9 @@ from .models import (
 )
 from .postgres import PostgresInventoryWriter
 from .reports import StreamingReportWriter
+from .source_access import create_source_client, validate_scan_source_access
 from .store_lookup import StoreLookupClient, store_columns
+from .target_filters import target_filter_matches_source, target_filters_for_source
 from .utils import clean_value, clean_version, confidence_rank, load_json_object, should_fetch_content, xml_text, yaml_scalar
 
 
@@ -77,6 +79,7 @@ def write_scan_reports(
     config: ScanConfig,
     retain_results: bool,
 ) -> tuple[list[dict[str, Any]], int, Path, Path, Path]:
+    validate_scan_source_access(config)
     with ExitStack() as stack:
         writer = stack.enter_context(
             StreamingReportWriter(
@@ -369,24 +372,6 @@ def scan_single_org(
         client.close()
         if store_client:
             store_client.close()
-
-
-def create_source_client(config: ScanConfig) -> AzureDevOpsClient | GitHubEnterpriseClient:
-    if config.provider == "github-enterprise":
-        app_credentials = GitHubAppCredentials.from_values(
-            config.github_app_id,
-            config.github_app_installation_id,
-            config.github_app_private_key,
-            config.github_app_private_key_file,
-        )
-        return GitHubEnterpriseClient(
-            base_url=config.base_url,
-            owner=config.org,
-            token=config.pat,
-            timeout_seconds=config.timeout_seconds,
-            app_credentials=app_credentials,
-        )
-    return AzureDevOpsClient(config.org, config.pat, config.timeout_seconds)
 
 
 def drain_branch_scans(
@@ -1339,21 +1324,6 @@ def selected_project_names(
             if target_filter_matches_source(target_filter.org, organization)
         )
     return [project_name] if project_name else []
-
-
-def target_filters_for_source(
-    target_filters: Iterable[SourceTargetFilter],
-    organization: str,
-) -> tuple[SourceTargetFilter, ...]:
-    return tuple(
-        target_filter
-        for target_filter in target_filters
-        if target_filter_matches_source(target_filter.org, organization)
-    )
-
-
-def target_filter_matches_source(filter_org: str, organization: str) -> bool:
-    return not filter_org or filter_org.lower() == organization.lower()
 
 
 def dedupe_values(values: Iterable[str]) -> list[str]:

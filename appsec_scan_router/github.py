@@ -178,7 +178,7 @@ class GitHubAppTokenProvider:
             "Authorization": f"Bearer {assertion}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "application-inventory-service/1.6.18",
+            "User-Agent": "application-inventory-service/1.6.19",
         }
         try:
             response = self._session.post(url, headers=headers, timeout=self.timeout_seconds)
@@ -297,7 +297,7 @@ class GitHubEnterpriseClient:
         self._headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "application-inventory-service/1.6.18",
+            "User-Agent": "application-inventory-service/1.6.19",
         }
         self._retry = Retry(
             total=positive_int_env("APPLICATION_INVENTORY_GITHUB_MAX_RETRIES", DEFAULT_GITHUB_MAX_RETRIES),
@@ -385,6 +385,22 @@ class GitHubEnterpriseClient:
             return response.json()
         except ValueError as exc:
             raise AzureDevOpsError(f"Expected JSON from {response.url}") from exc
+
+    def validate_access(self) -> None:
+        try:
+            self._get_paginated(
+                f"/orgs/{quote(self.owner)}/repos",
+                {"type": "all", "per_page": 1},
+                max_items=1,
+            )
+        except AzureDevOpsError as exc:
+            if exc.status_code != 404:
+                raise
+            self._get_paginated(
+                f"/users/{quote(self.owner)}/repos",
+                {"type": "all", "per_page": 1},
+                max_items=1,
+            )
 
     @staticmethod
     def _raise_for_status(response: requests.Response) -> None:

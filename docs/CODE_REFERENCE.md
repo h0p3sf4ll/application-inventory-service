@@ -36,12 +36,13 @@ Compatibility packages and commands delegate to the same implementation. New int
 | --- | --- |
 | `azure.py` | Azure DevOps REST traversal, connection reuse, retry policy, pacing, and commit streaming |
 | `github.py` | GitHub App authentication, installation-token refresh, REST traversal, pagination, and commit streaming |
+| `source_access.py` | Builds provider clients and validates every selected source before inventory collection |
 | `org_tokens.py` | Parses and serializes Azure organization/PAT pairs |
-| `target_filters.py` | Parses source-qualified project and repository filters |
+| `target_filters.py` | Parses and matches source-qualified project and repository filters |
 | `source_discovery.py` | Loads selectable projects and repositories concurrently for the UI |
 | `store_lookup.py` | Queries Apple App Store and Google Play and validates listing identity |
 
-Provider clients expose a common operational shape: list projects, repositories, branches, repository items, commits, and selected file content. GitHub additionally exposes bounded successful deployment environment URLs for domain attribution. The scanner does not require a repository clone.
+Provider clients expose a common operational shape: validate access, list projects, repositories, branches, repository items, commits, and selected file content. GitHub additionally exposes bounded successful deployment environment URLs for domain attribution. Source preflight completes before report and PostgreSQL writers open, and the scanner does not require a repository clone.
 
 ### Output and persistence
 

@@ -116,3 +116,18 @@ def target_filter_value(target_filter: SourceTargetFilter | dict[str, Any]) -> s
         org = clean_value_without_resource_filter(target_filter.get("org"))
         project = clean_value_without_resource_filter(target_filter.get("project"))
     return f"{org}={project}" if org else project
+
+
+def target_filters_for_source(
+    target_filters: Iterable[SourceTargetFilter],
+    organization: str,
+) -> tuple[SourceTargetFilter, ...]:
+    return tuple(
+        target_filter
+        for target_filter in target_filters
+        if target_filter_matches_source(target_filter.org, organization)
+    )
+
+
+def target_filter_matches_source(filter_org: str, organization: str) -> bool:
+    return not filter_org or filter_org.casefold() == organization.casefold()

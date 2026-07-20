@@ -109,7 +109,7 @@ docker run --rm \
   -p 48731:48731 \
   --env-file .env \
   -v "$PWD/reports:/reports" \
-  h0p3sf4ll/application-inventory-service:1.6.18 \
+  h0p3sf4ll/application-inventory-service:1.6.19 \
   ui \
   --host 0.0.0.0 \
   --port 48731 \
@@ -156,6 +156,8 @@ application-inventory-service \
   --target-filter "ContosoApps=Payments" \
   --out-dir reports
 ```
+
+Before opening report or database writers, the scanner validates access to every selected organization. An expired or unauthorized PAT stops the run immediately, identifies the affected organization, and prevents incomplete inventory from being committed. Replace the rejected PAT and rerun the scan.
 
 ## GitHub
 
@@ -243,6 +245,8 @@ application-inventory-service \
 ```
 
 Use `--target-filter ORG=PROJECT_OR_REPO` to limit either source. The organization prefix identifies the source owner, for example `FabrikamADO=Payments` or `FabrikamGH=payments-api`. Leave filters out to scan all accessible projects and repositories from both configured sources.
+
+Mixed scans use the same source-access preflight. All selected Azure DevOps organizations and GitHub owners must authenticate successfully before collection begins.
 
 ## PostgreSQL
 

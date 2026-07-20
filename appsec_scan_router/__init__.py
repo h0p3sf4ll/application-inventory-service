@@ -183,6 +183,7 @@ from .scanner import (
     normalize_store_countries,
     store_lookup_allowed,
     type_columns,
+    validate_scan_source_access,
 )
 from .sdk import ApplicationInventoryService, AppSecInventoryService, AppSecScanRouter
 from .scheduling import ScanSchedule, ScanScheduler
@@ -467,6 +468,7 @@ __all__ = [
     "target_filter_value",
     "target_store_platforms",
     "type_columns",
+    "validate_scan_source_access",
     "web_domain_columns",
     "write_outputs",
     "xml_text",

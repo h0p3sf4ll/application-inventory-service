@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from pathlib import Path
@@ -32,11 +33,14 @@ from .github import (
     normalize_github_api_url,
     parse_github_urls,
 )
-from .models import AzureDevOpsOrgPat, ScanConfig, SourceTargetFilter
+from .models import AzureDevOpsError, AzureDevOpsOrgPat, ScanConfig, SourceTargetFilter
 from .observability import configure_logging as configure_observability_logging, log_github_app_context
 from .org_tokens import parse_ado_org_pat_values
 from .scanner import normalize_application_types, normalize_store_countries, scan_reports, store_lookup_allowed
 from .target_filters import parse_source_target_filter_values
+
+
+LOGGER = logging.getLogger("appsec_scan_router")
 
 
 def parse_args(argv: list[str]) -> ScanConfig:
@@ -483,7 +487,11 @@ def env_value(*names: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     config = parse_args(sys.argv[1:] if argv is None else argv)
-    result_count, xlsx_path, semgrep_path, sonarqube_path = scan_reports(config)
+    try:
+        result_count, xlsx_path, semgrep_path, sonarqube_path = scan_reports(config)
+    except AzureDevOpsError as exc:
+        LOGGER.error("Scan aborted: %s", exc)
+        return 1
     print(f"Done. Found {result_count} inventory branches.")
     print(f"XLSX:              {xlsx_path}")
     print(f"Semgrep targets:   {semgrep_path}")

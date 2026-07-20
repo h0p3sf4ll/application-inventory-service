@@ -106,7 +106,7 @@ AZURE_LOCATION=eastus
 RESOURCE_GROUP=rg-application-inventory-prod
 ACR_NAME=appinventoryprodacr
 IMAGE_NAME=application-inventory-service
-IMAGE_TAG=1.6.18
+IMAGE_TAG=1.6.19
 
 az group create \
   --name "$RESOURCE_GROUP" \
@@ -451,6 +451,8 @@ application-inventory-service \
 ```
 
 For full-organization scans, omit `--target-filter`.
+
+At scan start, the service validates each selected Azure DevOps organization with a bounded project request. A rejected or expired PAT aborts collection before reports or PostgreSQL writes begin. Rotate the PAT, update the organization/PAT pair, and rerun the scan.
 
 ## PostgreSQL Validation
 
