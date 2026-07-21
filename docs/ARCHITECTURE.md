@@ -4,7 +4,7 @@
 
 ```mermaid
 flowchart LR
-  User["Security / Platform User"] --> UI["Application Inventory Service UI"]
+  User["Security / Platform User"] --> UI["ASPM UI"]
   Automation["CLI / SDK / Scheduler"] --> Core["Inventory Engine"]
   UI --> Core
   UI --> Scheduler["Encrypted Schedule Service"]
@@ -17,6 +17,12 @@ flowchart LR
   Core --> Reports["XLSX / Semgrep Targets / SonarQube Targets"]
   Core --> DB["PostgreSQL Inventory Schema"]
   Reports --> Scanners["Semgrep / SonarQube / SCA / Custom Scanners"]
+  Scanners --> Ingestion["Finding Normalization"]
+  Ingestion --> Correlation["Inventory Correlation / Deduplication"]
+  Correlation --> Risk["Contextual Risk Engine"]
+  Risk --> Workflow["Remediation Workflow / Coverage"]
+  Workflow --> DB
+  UI --> Workflow
   DB --> BI["Live Table / Dashboards / Data Exports"]
 ```
 
@@ -31,6 +37,11 @@ flowchart LR
 | Source discovery | Concurrent project and repository discovery for interactive filtering |
 | CLI | Non-interactive scans for automation and scheduled inventory jobs |
 | SDK | Importable API for other applications and orchestration processes |
+| Finding ingestion | SARIF, Semgrep, SonarQube, and generic normalization with atomic import audit |
+| Finding correlation | Deterministic deduplication and conservative branch-inventory matching |
+| Risk engine | Explainable technical and business-context scoring from 0 to 100 |
+| Remediation workflow | Status, assignment, due date, notes, immutable events, search, and export |
+| Coverage service | Per-application scanner reach and freshness |
 | Inventory engine | Provider traversal, branch selection, detection, metadata extraction, activity extraction |
 | Domain attribution | Normalized deployment, repository, and configuration evidence linked to source branches |
 | Report writer | Streaming XLSX inventory, Semgrep target, and SonarQube target outputs |
@@ -52,6 +63,10 @@ flowchart LR
 9. Results from every source stream through the same report writer and PostgreSQL writer. Pending rows commit on a bounded time interval and appear in the active UI table.
 10. Database search applies owner scope, indexed text search, structured filters, and a bounded result window. Exports stream through a server-side cursor.
 11. Scanner manifests are consumed by downstream security tooling.
+12. Scanner result files return through the ASPM ingestion contract and commit atomically.
+13. Findings correlate to branch inventory, deduplicate within the source tool, and retain unlinked results when identity is ambiguous.
+14. Asset context and exploitability produce explainable risk; users manage remediation through an audited workflow.
+15. Scanner target snapshots update coverage and resolve findings absent from declared complete snapshots.
 
 The service emits structured lifecycle, request, scan, and provider-authentication events to the configured PostgreSQL observability table. The UI exposes health and metrics endpoints without exposing provider secrets.
 
@@ -67,7 +82,9 @@ The UI writes reports, private scan logs, encrypted run state, encrypted provide
 - Scheduled scan configuration and credentials are encrypted with Fernet and scoped by user.
 - Active and queued run configuration is encrypted with Fernet and never returned by the run API.
 - PostgreSQL inventory and repository keys are scoped by signed-in user.
-- Repeated findings update current-state rows; normalized child values are synchronized without duplicate insertion.
+- Repeated inventory and scanner findings update current-state rows; normalized child values are synchronized without duplicate insertion.
+- Failed finding imports retain an audit record while finding, identifier, event, and coverage updates roll back atomically.
+- Complete scanner snapshots resolve only active findings for explicitly matched application branches.
 - Domains and domain evidence sources use separate normalized child tables keyed to branch inventory.
 - Domain attribution never performs HTTP or DNS requests to discovered hosts.
 - Database search and filtered exports enforce the signed-in user scope in SQL.

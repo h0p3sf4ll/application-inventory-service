@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "application-inventory-service"
-version = "1.6.19"
-description = "SDK, CLI, UI, Excel reports, and scanner-ready targets for application inventory across Azure DevOps and GitHub Enterprise"
+version = "1.7.0"
+description = "Application security posture management for Azure DevOps and GitHub Enterprise inventory, scanner findings, risk, coverage, and remediation"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -13,6 +13,12 @@ license-files = ["LICENSE"]
 authors = [{name = "Application Inventory Service contributors"}]
 keywords = [
     "appsec",
+    "aspm",
+    "application-security-posture-management",
+    "vulnerability-management",
+    "sarif",
+    "semgrep",
+    "sonarqube",
     "sdk",
     "azure-devops",
     "github-enterprise",
@@ -24,8 +30,6 @@ keywords = [
     "llm",
     "machine-learning",
     "inventory",
-    "semgrep",
-    "sonarqube",
     "android",
     "ios",
     "app-store",
@@ -56,6 +60,8 @@ Issues = "https://github.com/InfoSec-Actions/application-inventory-service/issue
 application-inventory-service = "appsec_scan_router.cli:main"
 application-inventory-service-ui = "appsec_scan_router.ui:main"
 application-inventory-service-container = "appsec_scan_router.entrypoint:main"
+application-inventory-aspm = "appsec_scan_router.aspm_cli:main"
+appsec-aspm = "appsec_scan_router.aspm_cli:main"
 appsec-inventory-service = "appsec_scan_router.cli:main"
 appsec-inventory-service-ui = "appsec_scan_router.ui:main"
 appsec-inventory-service-container = "appsec_scan_router.entrypoint:main"

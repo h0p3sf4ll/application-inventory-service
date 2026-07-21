@@ -9,7 +9,12 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
-from .constants import API_VERSION, DEFAULT_COMMIT_PAGE_SIZE, MISSING_REQUESTS_MESSAGE
+from .constants import (
+    API_VERSION,
+    APPLICATION_USER_AGENT,
+    DEFAULT_COMMIT_PAGE_SIZE,
+    MISSING_REQUESTS_MESSAGE,
+)
 from .models import AzureDevOpsError
 
 try:
@@ -50,7 +55,7 @@ class AzureDevOpsClient:
         self._headers = {
             "Authorization": self._auth_header_value(pat),
             "Accept": "application/json",
-            "User-Agent": "application-inventory-service/1.6.19",
+            "User-Agent": APPLICATION_USER_AGENT,
         }
         self._retry = Retry(
             total=positive_int_env("APPLICATION_INVENTORY_ADO_MAX_RETRIES", DEFAULT_ADO_MAX_RETRIES),

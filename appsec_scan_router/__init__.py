@@ -1,3 +1,15 @@
+from .aspm_ingest import SUPPORTED_FINDING_FORMATS, parse_finding_document
+from .aspm_models import (
+    ACTIVE_FINDING_STATUSES,
+    FindingDocument,
+    FindingInput,
+    FindingSeverity,
+    FindingStatus,
+    RiskAssessment,
+    SourceLocation,
+)
+from .aspm_postgres import AspmRepository
+from .aspm_risk import AssetRiskContext, RiskEngine
 from .activity import (
     developer_identity_key,
     extract_repo_activity,
@@ -8,6 +20,8 @@ from .activity import (
 from .azure import AzureDevOpsClient
 from .cli import configure_logging, main, parse_args
 from .constants import (
+    APPLICATION_USER_AGENT,
+    APPLICATION_VERSION,
     APPLICATION_TYPE_LABELS,
     APPLICATION_CLASSIFICATION_FIELDNAMES,
     CATEGORY_FIELDNAMES,
@@ -185,7 +199,13 @@ from .scanner import (
     type_columns,
     validate_scan_source_access,
 )
-from .sdk import ApplicationInventoryService, AppSecInventoryService, AppSecScanRouter
+from .sdk import (
+    ApplicationInventoryService,
+    ApplicationSecurityPostureManagementService,
+    AppSecInventoryService,
+    AppSecScanRouter,
+    AspmService,
+)
 from .scheduling import ScanSchedule, ScanScheduler
 from .store_lookup import (
     APPLE_DISPLAY_NAME,
@@ -247,7 +267,24 @@ from .ui import (
 )
 from .scan_request import postgres_dsn_from_config
 
+__version__ = APPLICATION_VERSION
+
 __all__ = [
+    "ACTIVE_FINDING_STATUSES",
+    "APPLICATION_USER_AGENT",
+    "APPLICATION_VERSION",
+    "ApplicationSecurityPostureManagementService",
+    "AspmRepository",
+    "AspmService",
+    "AssetRiskContext",
+    "FindingDocument",
+    "FindingInput",
+    "FindingSeverity",
+    "FindingStatus",
+    "RiskAssessment",
+    "RiskEngine",
+    "SUPPORTED_FINDING_FORMATS",
+    "SourceLocation",
     "AzureDevOpsClient",
     "AzureDevOpsError",
     "AzureDevOpsOrgPat",
@@ -434,6 +471,7 @@ __all__ = [
     "normalize_web_endpoint",
     "normalized_confidence",
     "parse_github_urls",
+    "parse_finding_document",
     "postgres_dsn_from_config",
     "regex_value",
     "redact_command",
@@ -474,4 +512,5 @@ __all__ = [
     "xml_text",
     "yaml_has_flutter_dependency",
     "yaml_scalar",
+    "__version__",
 ]

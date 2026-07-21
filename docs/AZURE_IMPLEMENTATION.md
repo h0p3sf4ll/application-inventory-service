@@ -1,6 +1,6 @@
 # Azure Implementation Guide
 
-This guide describes a production Azure implementation for Application Inventory Service. It covers the application runtime, Azure-hosted persistence, secrets, networking, and Azure DevOps scanning configuration.
+This guide describes a production Azure implementation for Application Security Posture Management. It covers the application runtime, ASPM persistence, secrets, networking, and source and scanner integration.
 
 ## Recommended Architecture
 
@@ -10,7 +10,7 @@ Use Azure Container Apps for the UI and scanner process, Azure Database for Post
 flowchart TB
   Users["Users / SSO"] --> FrontDoor["Azure Front Door or Application Gateway\noptional edge control"]
   FrontDoor --> Ingress["Container Apps Ingress\nHTTPS / custom domain"]
-  Ingress --> ACA["Azure Container Apps\nApplication Inventory Service"]
+  Ingress --> ACA["Azure Container Apps\nApplication Security Posture Management"]
 
   ACA --> Files["Azure Files\n/reports and encrypted UI state"]
   ACA --> Postgres["Azure Database for PostgreSQL Flexible Server\napplication_inventory schema"]
@@ -24,8 +24,9 @@ flowchart TB
   NAT --> Stores["Apple App Store / Google Play"]
 
   Pipelines["Azure Pipelines / GitHub Actions"] --> ACR
-  Reports["Semgrep / SonarQube / SCA Orchestrators"] --> ACA
-  Reports --> Postgres
+  Scanners["Semgrep / SonarQube / SCA Orchestrators"] --> ACA
+  ACA --> Posture["Posture / Findings / Coverage / Exports"]
+  Posture --> Postgres
 ```
 
 ## Service Map
@@ -73,6 +74,7 @@ APPLICATION_INVENTORY_SERVICE_GHE_BASE_URL=https://github.enterprise.example
 APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS=github.example.com
 APPLICATION_INVENTORY_SERVICE_ALLOW_INSECURE_PROVIDER_URLS=false
 APPLICATION_INVENTORY_SERVICE_MAX_JSON_BODY_BYTES=1048576
+APPLICATION_INVENTORY_SERVICE_MAX_FINDING_IMPORT_BYTES=25165824
 APPLICATION_INVENTORY_SERVICE_MAX_CONCURRENT_SCANS=2
 APPLICATION_INVENTORY_GITHUB_REQUESTS_PER_SECOND=8
 APPLICATION_INVENTORY_GITHUB_RATE_LIMIT_RESERVE=50
@@ -106,7 +108,7 @@ AZURE_LOCATION=eastus
 RESOURCE_GROUP=rg-application-inventory-prod
 ACR_NAME=appinventoryprodacr
 IMAGE_NAME=application-inventory-service
-IMAGE_TAG=1.6.19
+IMAGE_TAG=1.7.0
 
 az group create \
   --name "$RESOURCE_GROUP" \
@@ -204,6 +206,8 @@ az postgres flexible-server update \
 ```
 
 For production, use private access or Private Link, disable broad public firewall rules, and use a dedicated database user with only the privileges required by the `application_inventory` schema.
+
+The schema stores normalized inventory and ASPM tools, imports, findings, identifiers, workflow events, application security profiles, and scanner coverage. Back up and restore it as one consistency boundary. Configure Front Door, Application Gateway, and Container Apps ingress limits to permit the dedicated scanner import limit without increasing unrelated request limits. Use the Python SDK from a trusted Azure Pipeline or Container Apps Job for machine ingestion instead of automating browser cookies.
 
 Create Azure Files:
 
@@ -461,7 +465,7 @@ The application creates the `application_inventory` schema and normalized tables
 Validate from the UI:
 
 1. Sign in.
-2. Open **Database**.
+2. Open **Settings**.
 3. Confirm the startup status is **Ready**.
 4. Run a small scan and confirm records appear while it runs.
 5. Export XLSX, CSV, and JSON from the database page.

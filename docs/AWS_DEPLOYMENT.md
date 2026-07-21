@@ -1,6 +1,6 @@
 # AWS Deployment Guide
 
-This guide describes a production-ready AWS deployment for Application Inventory Service.
+This guide describes a production-ready AWS deployment for Application Security Posture Management.
 
 ## Recommended Architecture
 
@@ -10,7 +10,7 @@ Use Amazon ECS on Fargate behind an HTTPS Application Load Balancer. Store norma
 flowchart TB
   Users["Users / SSO"] --> Route53["Route 53"]
   Route53 --> ALB["Application Load Balancer + ACM TLS"]
-  ALB --> ECS["ECS Fargate Service\nApplication Inventory Service"]
+  ALB --> ECS["ECS Fargate Service\nApplication Security Posture Management"]
 
   ECS --> EFS["EFS\n/reports and encrypted UI state"]
   ECS --> RDS["RDS PostgreSQL\napplication_inventory schema"]
@@ -23,7 +23,9 @@ flowchart TB
   NAT --> GHE["GitHub Enterprise"]
   NAT --> Stores["Apple / Google Store APIs"]
 
-  Scanners["Semgrep / SonarQube / Security Pipelines"] --> Reports["Reports / DB Export / Scanner Targets"]
+  Scanners["Semgrep / SonarQube / Security Pipelines"] --> Ingestion["ASPM finding ingestion"]
+  Ingestion --> ECS
+  ECS --> Reports["Posture / Findings / Coverage / Exports"]
   EFS --> Reports
   RDS --> Reports
 ```
@@ -91,7 +93,7 @@ aws ecr create-repository \
 aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 
-IMAGE_TAG=1.6.19
+IMAGE_TAG=1.7.0
 docker build -t "$REPO:$IMAGE_TAG" .
 docker tag "$REPO:$IMAGE_TAG" "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:$IMAGE_TAG"
 docker push "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:$IMAGE_TAG"
@@ -165,6 +167,7 @@ Environment:
 | `APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS` | Approved GitHub Enterprise hostnames |
 | `APPLICATION_INVENTORY_SERVICE_ALLOW_INSECURE_PROVIDER_URLS` | `false` |
 | `APPLICATION_INVENTORY_SERVICE_MAX_JSON_BODY_BYTES` | `1048576` |
+| `APPLICATION_INVENTORY_SERVICE_MAX_FINDING_IMPORT_BYTES` | `25165824` |
 | `APPLICATION_INVENTORY_SERVICE_MAX_CONCURRENT_SCANS` | `2` |
 | `APPLICATION_INVENTORY_GITHUB_REQUESTS_PER_SECOND` | `8` |
 | `APPLICATION_INVENTORY_GITHUB_RATE_LIMIT_RESERVE` | `50` |
@@ -227,7 +230,9 @@ Recommended RDS settings:
 - SSL/TLS connections: required by parameter group or connection policy.
 - Minor version auto-upgrades: enabled where compatible with your release process.
 
-The service creates the `application_inventory` schema automatically when PostgreSQL sync is enabled.
+The service creates the `application_inventory` schema automatically when PostgreSQL sync is enabled. The same schema contains normalized inventory plus ASPM tools, imports, findings, identifiers, workflow events, application security profiles, and scanner coverage. Back up the schema as one consistency boundary.
+
+Configure the ALB and WAF request-body policy to accept the scanner import limit without raising a broader global limit than required. Scanner automation should authenticate through an approved integration layer or use the Python SDK inside a trusted worker; it should not replay browser session cookies.
 
 ## IAM
 

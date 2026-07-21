@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import quote, urlparse, urlunparse
 
 from .constants import (
+    APPLICATION_USER_AGENT,
     DEFAULT_GITHUB_API_URL,
     DEFAULT_COMMIT_PAGE_SIZE,
     DEFAULT_GITHUB_APP_ID,
@@ -178,7 +179,7 @@ class GitHubAppTokenProvider:
             "Authorization": f"Bearer {assertion}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "application-inventory-service/1.6.19",
+            "User-Agent": APPLICATION_USER_AGENT,
         }
         try:
             response = self._session.post(url, headers=headers, timeout=self.timeout_seconds)
@@ -297,7 +298,7 @@ class GitHubEnterpriseClient:
         self._headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "application-inventory-service/1.6.19",
+            "User-Agent": APPLICATION_USER_AGENT,
         }
         self._retry = Retry(
             total=positive_int_env("APPLICATION_INVENTORY_GITHUB_MAX_RETRIES", DEFAULT_GITHUB_MAX_RETRIES),

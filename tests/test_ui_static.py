@@ -153,6 +153,27 @@ class UiStaticTests(unittest.TestCase):
         self.assertIn(".inventory-dialog .inventory-detail-target", stylesheet)
         self.assertIn("grid-column: 1 / -1", stylesheet)
 
+    def test_aspm_workspace_has_dedicated_posture_findings_and_coverage_views(self):
+        static_root = (
+            Path(__file__).resolve().parents[1] / "appsec_scan_router" / "ui_static"
+        )
+        html = (static_root / "index.html").read_text(encoding="utf-8")
+        app_javascript = (static_root / "app.js").read_text(encoding="utf-8")
+        aspm_javascript = (static_root / "aspm-ui.js").read_text(encoding="utf-8")
+
+        parser = UiStructureParser()
+        parser.feed(html)
+        self.assertIn("postureView", parser.views)
+        self.assertIn("findingsView", parser.views)
+        self.assertIn("coverageView", parser.views)
+        self.assertIn('id="findingImportFile"', html)
+        self.assertIn('id="findingDialog"', html)
+        self.assertIn('id="coverageResultRows"', html)
+        self.assertIn("new AspmWorkspace", app_javascript)
+        self.assertIn('"/api/aspm/findings/import"', aspm_javascript)
+        self.assertIn('"/api/aspm/findings/update"', aspm_javascript)
+        self.assertIn('"/api/aspm/coverage"', aspm_javascript)
+
 
 if __name__ == "__main__":
     unittest.main()

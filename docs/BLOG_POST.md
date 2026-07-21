@@ -1,16 +1,14 @@
-# From Source Code to an Actionable Application Inventory
+# Building an Evidence-Based Application Security Posture
 
-Security programs cannot protect applications they cannot identify. In a large organization, the challenge is not producing another repository list. It is determining which repositories contain deployable applications, which branches matter, who owns the work, where those applications run, and how each asset should enter the security-testing pipeline.
+Security teams cannot manage application risk from separate repository lists, scanner dashboards, spreadsheets, and ticket queues. The operating problem is integration: identify the applications that matter, connect findings to the right source branch, establish business context, and move the highest-risk work to closure.
 
-Application Inventory Service turns Azure DevOps and GitHub source-control evidence into a branch-aware application inventory. It uses provider APIs to inspect metadata, repository trees, selected manifests, deployment configuration, and commit history. It does not clone repositories, execute repository code, or connect to detected application endpoints.
+Application Security Posture Management provides that system of record for Azure DevOps and GitHub Enterprise environments. It combines application discovery, scanner findings, risk prioritization, coverage, and remediation workflow while preserving the existing tools that perform security testing.
 
-## Establishing the Inventory
+## Establish the Application Baseline
 
-The service scans one or more Azure DevOps organizations and GitHub owners in the same run. It can cover every accessible project and repository or a user-selected scope.
+The service scans one or more Azure DevOps organizations and GitHub owners in the same run. It starts with each repository's default branch. When no default exists, it uses pipeline associations and production-oriented branch names to select the most credible deployable branch.
 
-For each repository, the service begins with the default branch. If no default exists, it uses pipeline associations and production-oriented branch names to select the most credible deployable branch. Activity and contributor data are calculated for that branch rather than assumed from the repository as a whole.
-
-Structural evidence then classifies the asset as one or more of the following:
+Provider metadata, repository structure, manifests, dependencies, deployment configuration, and commit history classify each branch as one or more of the following:
 
 - Mobile application
 - Web application
@@ -23,55 +21,55 @@ Structural evidence then classifies the asset as one or more of the following:
 - AI-enabled application
 - ML-enabled application
 
-The resulting record includes the application name, version, language, application identifiers, contributors, last activity, evidence, source location, and scanner-routing values. Mobile scans can validate identifiers across selected Apple App Store and Google Play countries.
+The record includes application name, version, language, identifiers, contributors, last activity, evidence, source location, deployment domains, and scanner-routing values. Collection uses provider APIs; it does not clone repositories or execute application code.
 
-## Linking Source Code to Web Domains
+## Correlate Security Findings
 
-A repository URL identifies source code, not the application endpoint that users or systems reach. The service closes that gap by attributing network-deployable branches to web domains.
+Security tools publish SARIF, Semgrep JSON, SonarQube issues, or a generic finding contract. The ingestion service normalizes rule identity, severity, location, package data, CWE, CVE, CVSS, EPSS, exploit evidence, remediation, and source context.
 
-Domain evidence is collected from successful GitHub deployment environments, repository homepages, GitHub Pages, ingress manifests, Helm values, Terraform, Azure Pipelines, GitHub Actions, nginx, Caddy, Firebase, Fly.io, and related deployment configuration. Each association retains the repository, branch, normalized domain, URL, environment, evidence source, and confidence tier.
+Findings are matched conservatively to the branch inventory. Exact source identity produces a linked application finding. Missing or ambiguous identity remains visible as an unlinked finding rather than creating a false association. Deterministic fingerprints update repeated results instead of duplicating them.
 
-The confidence model is deliberately explicit:
+Complete scanner snapshots can resolve active findings that are no longer present for explicitly listed targets. Partial imports never remove prior results. Every import is transactional, and a failed import leaves an audit record without partial finding or coverage changes.
 
-- `confirmed`: a provider reports a successful deployment with an environment URL.
-- `configured`: source-controlled deployment configuration or repository metadata declares the endpoint.
-- `inferred`: a platform convention supports a credible domain, but the repository does not declare the complete endpoint directly.
+## Prioritize Business Risk
 
-The highest-quality association becomes the primary domain while all supported domains remain available for review. Localhost, private IP addresses, unresolved variables, credential-bearing URLs, provider control-plane hosts, and common infrastructure endpoints are rejected to reduce false attribution.
+Technical severity alone does not establish business priority. The risk engine combines:
 
-Attribution is evidence, not proof of production ownership. The service does not make outbound requests to detected domains, resolve DNS, inspect TLS, or test availability. This boundary avoids server-side request forgery risk and keeps endpoint validation with the systems authorized to perform it.
+- Severity, CVSS, EPSS, and known exploit evidence
+- Finding age
+- Internet exposure
+- Application criticality
+- Data classification
 
-## Operational Scale
+The outcome is a bounded score with a stored explanation of every contributing factor. Product and security teams can update application context without changing scanner evidence. Linked findings are recalculated in the same transaction.
 
-Inventory collection must respect provider limits. The service uses separate bounded worker pools for source discovery, repositories, branches, and content. Azure DevOps connections are reused and adapt to throttling signals. GitHub App installation tokens and rate-limit state are shared across owners. Commit histories are processed as streams instead of retained in memory.
+## Operate Remediation
 
-Domain discovery is similarly bounded. It runs only for network-deployable application types, limits recent deployment inspection, prioritizes production-like environments, and caps status lookups per environment.
+The remediation queue supports open, triaged, in-progress, resolved, accepted-risk, and false-positive states. Teams can assign owners, set due dates, add decision notes, search and filter the queue, and export the current view as XLSX, CSV, or JSON.
 
-Operators can run scans interactively or on one-time, daily, and weekly schedules. Active scans can be paused, resumed, or stopped. Browser and service restarts do not terminate detached workers on the same host. The Runs page preserves the full console while isolating failures in a separate view and owner-only log file. Scheduled configurations and embedded credentials are encrypted, scoped to the signed-in user, and processed through the same concurrency controls as interactive scans.
+Every workflow change creates an audit event. Default service levels provide a consistent starting point: 7 days for critical findings, 30 for high, 90 for medium, 180 for low, and 365 for informational results.
 
-## Durable, Searchable Results
+The posture dashboard reports active critical and high findings, affected assets, overdue work, average contextual risk, priority applications, tool health, and scanner coverage. Coverage identifies current, stale, expired, and untested applications by tool and branch.
 
-The service writes XLSX inventory reports, Semgrep target lists, and SonarQube project manifests. Results can also be synchronized to a normalized PostgreSQL schema for search, analytics, and export.
+## Link Source to Runtime Context
 
-Repositories, branch inventory, contributors, application types, categories, mobile store listings, web domains, domain evidence sources, scan runs, and observability events are stored separately. Stable records are updated when their values change instead of duplicated on every scan. Stale associations are removed when the latest scan no longer supports them.
+For network-deployable assets, the service attributes branches to web domains using successful deployment environments, repository metadata, ingress manifests, Helm values, Terraform, Azure Pipelines, GitHub Actions, and related configuration.
 
-This model supports questions that flat repository lists cannot answer:
+Each association retains its source and confidence tier. The service rejects localhost, private IP addresses, unresolved variables, credential-bearing URLs, and common control-plane hosts. It does not connect to attributed domains, resolve DNS, inspect TLS, or test availability. That boundary limits server-side request forgery risk and leaves runtime validation with authorized systems.
 
-- Which active web applications lack an attributed domain?
-- Which domains are supported only by inferred evidence?
-- Which source branch is associated with a production endpoint?
-- Which applications have not changed within the defined activity window?
-- Which teams contribute to each deployable branch?
-- Which assets have not entered Semgrep or SonarQube workflows?
+## Scale the Control
 
-## Security and Governance
+Source, repository, branch, and content work use separate bounded concurrency layers. Azure DevOps connections adapt to throttling. GitHub App installation tokens and rate-limit state are shared across owners. Commit pages stream through memory, PostgreSQL writes use short transactions, and scanner imports cache application resolution for all findings in the same source scope.
 
-GitHub repository access uses a server-managed GitHub App. Azure DevOps organizations use independently scoped PATs. UI authentication uses GitHub or Google OAuth and remains separate from provider-scanning credentials.
-
-Production deployments should use read-only provider permissions, HTTPS, secure cookies, disabled test login, private database connectivity, encrypted durable state, and a stable encryption key from an approved secret manager. Reports and logs should be treated as sensitive because they can contain internal repository names, application identifiers, domains, and contributor details.
+Interactive and scheduled scans use the same durable runtime. Scans can be paused, resumed, stopped, and reattached after a UI restart on the same host. Credentials, sessions, schedules, and active run state are encrypted and scoped to the signed-in user.
 
 ## Management Outcome
 
-Application Inventory Service converts distributed source-control signals into an operating inventory. Security teams gain scanner-ready targets. Platform teams gain a normalized integration point. Engineering leaders gain branch-level ownership and activity data. Governance teams gain exportable evidence with documented confidence and provenance.
+The service creates one operating view across software ownership and security risk:
 
-The result is a repeatable control: defined sources, bounded collection, evidence-based classification, source-to-domain attribution, durable records, and outputs that integrate with existing security tools.
+- Security teams gain a prioritized, auditable remediation queue.
+- Engineering teams gain application-specific ownership, due dates, and evidence.
+- Platform teams gain stable inventory and scanner integration contracts.
+- Governance teams gain coverage, risk, and decision records suitable for reporting.
+
+The result is a measurable control cycle: discover applications, ingest evidence, correlate findings, prioritize risk, remediate decisions, and verify scanner coverage.

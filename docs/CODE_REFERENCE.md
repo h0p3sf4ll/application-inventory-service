@@ -9,6 +9,8 @@ This document identifies module ownership and the principal runtime contracts. T
 | CLI | `application-inventory-service` | Runs a scan and writes reports for shell automation and CI jobs |
 | UI | `application-inventory-service-ui` | Hosts authentication, scan operations, schedules, reports, and database exports |
 | SDK | `ApplicationInventoryService` | Embeds the inventory engine in another Python process |
+| ASPM SDK | `AspmService` | Embeds finding ingestion, posture, workflow, coverage, profile, and export operations |
+| ASPM CLI | `application-inventory-aspm` | Imports scanner results and manages posture, findings, coverage, workflow, profiles, and exports |
 | Module | `python -m application_inventory_service` | Executes the same CLI used by the console command |
 
 Compatibility packages and commands delegate to the same implementation. New integrations should import `application_inventory_service` or use the current console commands.
@@ -57,6 +59,21 @@ Provider clients expose a common operational shape: validate access, list projec
 | `scan_worker.py` | Executes one detached scanner command and atomically records its exit status |
 | `secure_store.py` | Atomically reads and writes Fernet-encrypted JSON state |
 | `observability.py` | Configures structured console and PostgreSQL logging |
+
+### Application security posture management
+
+| Module | Responsibility |
+| --- | --- |
+| `aspm_models.py` | Immutable finding, source-location, severity, workflow, and risk contracts |
+| `aspm_ingest.py` | Detects and normalizes SARIF, Semgrep, SonarQube, and generic scanner documents |
+| `aspm_risk.py` | Produces bounded explainable risk assessments from findings and application context |
+| `aspm_postgres.py` | Owns ASPM schema, atomic imports, correlation, deduplication, workflow events, search, exports, profiles, posture, and coverage |
+| `aspm_cli.py` | Provides the dedicated automation CLI without changing the inventory scanner argument contract |
+| `ui_static/aspm-ui.js` | Drives posture, finding import/search/workflow, asset context, and scanner coverage views |
+
+`FindingDocument` is the canonical ingestion boundary. `AspmRepository.ingest()` first commits an import audit record, then applies every finding, identifier, coverage, and snapshot change in one transaction. Failure rolls back that transaction and marks the import failed. Asset resolution is cached per source scope during an import, so a large repository result set does not repeat the same inventory lookup for every finding.
+
+`RiskEngine` is deterministic and side-effect free. `AspmRepository` stores the score, band, and complete factor list used for that assessment. Application profile changes rerun the engine for linked findings in one transaction.
 
 The report writer creates all output files at scan start. Text targets flush per finding. XLSX checkpoints use bounded adaptive intervals, atomically replace the prior workbook, and save once more at close. PostgreSQL uses short transactions controlled by row and time thresholds, with a background flush for live visibility. Schema changes are versioned and serialized with a PostgreSQL advisory lock; unchanged schemas use a fast readiness path. Inventory keys include the owning user and source identity, so repeated scans update rows instead of creating duplicate findings. Child types, categories, contributors, web domains, domain sources, and store listings are synchronized by value.
 

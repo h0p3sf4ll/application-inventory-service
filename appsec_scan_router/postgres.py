@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from typing import Any
 
+from .aspm_postgres import create_aspm_schema
 from .constants import (
     DEFAULT_POSTGRES_SCHEMA,
     DEFAULT_POSTGRES_TABLE,
@@ -37,7 +38,7 @@ CONTROL_CHARACTER_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 SQL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SCHEMA_READY_LOCK = threading.Lock()
 SCHEMA_READY: set[tuple[str, str, str]] = set()
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SCHEMA_VERSION_COMPONENT = "inventory"
 MOBILE_ROUTING_FIELDS = ("nowsecure_target", *STORE_FIELDNAMES)
 
@@ -53,6 +54,14 @@ NORMALIZED_TABLES = (
     "web_domain_sources",
     "store_listings",
     "observability_events",
+    "aspm_tools",
+    "aspm_imports",
+    "asset_security_profiles",
+    "aspm_findings",
+    "aspm_finding_identifiers",
+    "aspm_import_findings",
+    "aspm_finding_events",
+    "aspm_coverage",
 )
 
 EXPORT_COLUMNS = (
@@ -953,6 +962,7 @@ def create_database_schema(connection: Any, schema: str, flat_table: str) -> Non
         create_normalized_tables(connection, valid_schema)
         create_observability_table(connection, valid_schema)
         create_export_view(connection, valid_schema)
+        create_aspm_schema(connection, valid_schema)
         connection.execute(
             sql.SQL(
                 """
@@ -1937,6 +1947,9 @@ def database_status(
                 "observabilityRows": observability_row_count(
                     connection, resolved_schema
                 ),
+                "findingRows": aspm_finding_row_count(
+                    connection, resolved_schema, owner_user_id
+                ),
                 "checkedAt": datetime.now(timezone.utc).isoformat(),
                 "latencyMs": round((time.perf_counter() - started) * 1000, 2),
             }
@@ -2066,7 +2079,7 @@ def search_inventory(
                 LIMIT %s OFFSET %s
                 """
             ).format(
-                columns=inventory_export_columns(),
+                columns=inventory_export_columns(include_internal=True),
                 view=object_identifier(resolved_schema, "inventory_export"),
                 where_clause=where_clause,
                 order_by=inventory_order_by(criteria),
@@ -2290,10 +2303,11 @@ def resolve_inventory_criteria(
     return InventorySearchCriteria.from_mapping(filters, text=query)
 
 
-def inventory_export_columns() -> Any:
+def inventory_export_columns(include_internal: bool = False) -> Any:
+    columns = EXPORT_COLUMNS + (("branch_inventory_id",) if include_internal else ())
     return sql.SQL(", ").join(
         sql.SQL("inventory.{column}").format(column=sql.Identifier(column))
-        for column in EXPORT_COLUMNS
+        for column in columns
     )
 
 
@@ -2379,6 +2393,17 @@ def observability_row_count(connection: Any, schema: str) -> int:
             sql.SQL("SELECT count(*) FROM {table}").format(
                 table=object_identifier(schema, "observability_events")
             )
+        ).fetchone()[0]
+    )
+
+
+def aspm_finding_row_count(connection: Any, schema: str, owner_user_id: str) -> int:
+    return int(
+        connection.execute(
+            sql.SQL(
+                "SELECT count(*) FROM {table} WHERE (%s = '' OR owner_user_id = %s)"
+            ).format(table=object_identifier(schema, "aspm_findings")),
+            (owner_user_id, owner_user_id),
         ).fetchone()[0]
     )
 

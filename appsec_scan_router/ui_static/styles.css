@@ -2438,3 +2438,660 @@ button:focus-visible {
     grid-template-columns: 1fr;
   }
 }
+
+.aspm-panel {
+  padding: 20px;
+}
+
+.aspm-heading {
+  align-items: flex-start;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.aspm-heading > div:first-child {
+  min-width: 0;
+}
+
+.aspm-heading p,
+.subsection-heading p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.aspm-heading-actions,
+.subsection-heading,
+.finding-results-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.compact-button {
+  min-height: 36px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+
+.text-button {
+  min-height: 32px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.posture-kpis,
+.coverage-kpis {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.posture-kpi,
+.coverage-kpis > div {
+  position: relative;
+  min-width: 0;
+  min-height: 116px;
+  padding: 15px;
+  overflow: hidden;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.posture-kpi::before,
+.coverage-kpis > div::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--accent);
+  content: "";
+}
+
+.posture-kpi.risk-critical::before,
+.posture-kpi.risk-overdue::before {
+  background: var(--danger);
+}
+
+.posture-kpi.risk-high::before {
+  background: var(--warning);
+}
+
+.posture-kpi span,
+.coverage-kpis span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.posture-kpi strong,
+.coverage-kpis strong {
+  display: block;
+  margin-top: 9px;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.posture-kpi small,
+.coverage-kpis small {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.posture-workspace {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.85fr) minmax(420px, 1.15fr);
+  gap: 24px;
+}
+
+.posture-region {
+  min-width: 0;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.posture-workspace .posture-region {
+  border-top: 0;
+}
+
+.subsection-heading h3,
+.finding-workflow h3,
+.finding-history h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.risk-distribution,
+.status-distribution,
+.priority-list,
+.tool-health-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.risk-bar {
+  display: grid;
+  grid-template-columns: 76px minmax(120px, 1fr) 48px;
+  align-items: center;
+  gap: 10px;
+}
+
+.risk-bar-label,
+.risk-bar-count {
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.risk-bar-label {
+  text-transform: capitalize;
+}
+
+.risk-bar-count {
+  color: var(--muted);
+  text-align: right;
+}
+
+.risk-bar-track {
+  height: 8px;
+  overflow: hidden;
+  background: var(--surface-raised);
+  border-radius: 4px;
+}
+
+.risk-bar-fill {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  background: var(--accent);
+  border-radius: inherit;
+}
+
+.risk-bar[data-risk="critical"] .risk-bar-fill {
+  background: var(--danger);
+}
+
+.risk-bar[data-risk="high"] .risk-bar-fill {
+  background: var(--warning);
+}
+
+.risk-bar[data-risk="low"] .risk-bar-fill,
+.risk-bar[data-risk="info"] .risk-bar-fill {
+  background: var(--success);
+}
+
+.status-distribution {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 18px;
+}
+
+.status-distribution > div {
+  min-width: 0;
+  padding: 10px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.status-distribution span,
+.status-distribution strong {
+  display: block;
+}
+
+.status-distribution span {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: capitalize;
+}
+
+.status-distribution strong {
+  margin-top: 3px;
+  font-size: 16px;
+}
+
+.priority-item {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.priority-score {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  background: var(--danger-soft);
+  border: 1px solid rgb(255 111 126 / 45%);
+  border-radius: 7px;
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.priority-copy {
+  min-width: 0;
+}
+
+.priority-copy strong,
+.priority-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.priority-copy strong {
+  font-size: 12px;
+}
+
+.priority-copy small,
+.priority-meta {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.priority-meta {
+  text-align: right;
+}
+
+.tool-health-grid {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+
+.tool-health-item {
+  min-width: 0;
+  padding: 13px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.tool-health-item > span,
+.tool-health-item > small {
+  display: block;
+}
+
+.tool-health-item strong {
+  font-size: 12px;
+}
+
+.tool-health-item > span:not(.tool-health-heading) {
+  margin-top: 5px;
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.tool-health-item small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.tool-health-item .tool-health-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tool-health-heading .status-chip {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.empty-inline {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.finding-import {
+  padding: 16px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+}
+
+.compact-close {
+  position: static;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  padding: 0;
+  font-size: 20px;
+}
+
+.finding-import-grid {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.7fr) minmax(210px, 1fr) minmax(280px, 1.3fr);
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.finding-snapshot-field {
+  grid-column: 1 / -1;
+}
+
+.finding-context-settings {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.finding-context-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(140px, 1fr));
+  gap: 10px;
+  padding-top: 10px;
+}
+
+.compact-actions {
+  margin-top: 14px;
+}
+
+.finding-toolbar {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) repeat(3, minmax(130px, 0.35fr)) auto auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.finding-search-field {
+  min-width: 0;
+}
+
+.finding-quick-filters {
+  display: inline-flex;
+  width: 100%;
+  gap: 4px;
+  padding: 4px;
+  overflow-x: auto;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.finding-quick-filters button {
+  flex: 1 0 max-content;
+  min-height: 32px;
+  padding: 0 12px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.finding-quick-filters button.active {
+  background: var(--surface);
+  border-color: var(--border-strong);
+  color: var(--accent-strong);
+}
+
+.finding-table {
+  min-width: 1050px;
+}
+
+.finding-table th:nth-child(1) {
+  width: 80px;
+}
+
+.finding-table th:nth-child(2) {
+  width: 27%;
+}
+
+.finding-table th:nth-child(3) {
+  width: 22%;
+}
+
+.finding-table tbody tr {
+  cursor: pointer;
+}
+
+.finding-table tbody tr:hover td {
+  background: var(--surface-raised);
+}
+
+.finding-title strong,
+.finding-title small,
+.finding-application strong,
+.finding-application small {
+  display: block;
+}
+
+.finding-title strong,
+.finding-application strong {
+  font-size: 12px;
+}
+
+.finding-title small,
+.finding-application small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.risk-score-badge,
+.severity-badge,
+.workflow-badge,
+.coverage-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 25px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.risk-score-badge.risk-critical,
+.severity-badge.severity-critical,
+.coverage-badge.coverage-expired,
+.coverage-badge.coverage-not-scanned {
+  background: var(--danger-soft);
+  border-color: rgb(255 111 126 / 40%);
+  color: var(--danger);
+}
+
+.risk-score-badge.risk-high,
+.severity-badge.severity-high,
+.coverage-badge.coverage-stale {
+  background: var(--warning-soft);
+  border-color: rgb(238 181 74 / 40%);
+  color: var(--warning);
+}
+
+.risk-score-badge.risk-medium,
+.severity-badge.severity-medium,
+.workflow-badge {
+  background: var(--accent-soft);
+  border-color: rgb(43 181 220 / 40%);
+  color: var(--accent-strong);
+}
+
+.risk-score-badge.risk-low,
+.severity-badge.severity-low,
+.severity-badge.severity-info,
+.coverage-badge.coverage-current {
+  background: var(--success-soft);
+  border-color: rgb(63 211 151 / 40%);
+  color: var(--success);
+}
+
+.finding-dialog {
+  width: min(1040px, calc(100vw - 32px));
+}
+
+.finding-detail-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 24px;
+  padding: 6px 18px 18px;
+}
+
+.finding-detail-item {
+  min-width: 0;
+  padding: 13px 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.finding-detail-item.full {
+  grid-column: 1 / -1;
+}
+
+.finding-detail-item span,
+.finding-detail-item strong {
+  display: block;
+}
+
+.finding-detail-item span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.finding-detail-item strong {
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.finding-workflow,
+.finding-history {
+  margin: 0 18px;
+  padding: 18px 0;
+  border-top: 1px solid var(--border);
+}
+
+.finding-workflow-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.finding-workflow-grid .full {
+  grid-column: 1 / -1;
+}
+
+.finding-history-item {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 14px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.finding-history-item time {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.finding-history-item strong,
+.finding-history-item small {
+  display: block;
+}
+
+.asset-profile {
+  margin: 0 18px 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.asset-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.finding-history-item strong {
+  font-size: 11px;
+}
+
+.finding-history-item small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.coverage-kpis {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.coverage-table {
+  min-width: 980px;
+}
+
+@media (max-width: 1180px) {
+  .posture-kpis {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .posture-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .finding-toolbar {
+    grid-template-columns: repeat(3, minmax(150px, 1fr));
+  }
+
+  .finding-search-field {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 720px) {
+  .aspm-panel {
+    padding: 14px;
+  }
+
+  .aspm-heading,
+  .aspm-heading-actions,
+  .subsection-heading,
+  .finding-results-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .posture-kpis,
+  .coverage-kpis,
+  .status-distribution,
+  .finding-import-grid,
+  .finding-context-grid,
+  .finding-toolbar,
+  .finding-workflow-grid,
+  .asset-profile-grid,
+  .finding-detail-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .finding-search-field,
+  .finding-snapshot-field,
+  .finding-workflow-grid .full,
+  .finding-detail-item.full {
+    grid-column: auto;
+  }
+
+  .finding-history-item {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+}

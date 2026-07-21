@@ -1,3 +1,5 @@
+import {AspmWorkspace} from "/static/aspm-ui.js?v=2";
+
 const form = document.querySelector("#scanForm");
 const loginPage = document.querySelector("#loginPage");
 const appShell = document.querySelector("#appShell");
@@ -183,6 +185,16 @@ const persistedFields = [
   "verbose",
 ];
 
+const aspmWorkspace = new AspmWorkspace({
+  databasePayload,
+  authHeaders,
+  notify,
+  escapeHtml,
+  formatDate,
+  downloadBlob,
+  setActiveView,
+});
+
 document.addEventListener("DOMContentLoaded", async () => {
   await loadBackendConfig();
   loadForm();
@@ -193,11 +205,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   syncTargetFilterInput();
   setDefaultScheduleTime();
   bindEvents();
+  aspmWorkspace.bind();
   renderShell();
   await loadSession();
   showAuthResult();
   if (isLoggedIn()) {
     await Promise.all([loadScans(), loadSchedules(), initializeDatabase()]);
+    await aspmWorkspace.initialize();
   } else {
     renderAll();
   }
@@ -465,6 +479,7 @@ async function logout() {
     state.logSequence = 0;
     state.failureSequence = 0;
     state.database = null;
+    aspmWorkspace.reset();
     state.databaseSearch = {query: "", filters: {}, rows: [], total: 0, limit: 100, offset: 0, loaded: false};
     resetDatabaseFacets();
     databaseSearchQuery.value = "";
@@ -696,7 +711,7 @@ function stampScan(scan) {
 }
 
 async function refreshData() {
-  await Promise.all([loadScans(), loadSchedules()]);
+  await Promise.all([loadScans(), loadSchedules(), aspmWorkspace.refreshVisible()]);
 }
 
 function renderAll() {
@@ -1112,6 +1127,7 @@ function openInventoryRecordFromEvent(event) {
     <div${target ? ' class="inventory-detail-target"' : ""}><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>
   `).join("");
   inventoryRecordDialog.showModal();
+  aspmWorkspace.loadAssetProfile(row);
 }
 
 function inventoryRecordHasType(row, applicationType) {
@@ -2610,6 +2626,7 @@ function setActiveView(viewId) {
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", String(active));
   });
+  aspmWorkspace.onViewActivated(viewId);
 }
 
 function notify(message) {

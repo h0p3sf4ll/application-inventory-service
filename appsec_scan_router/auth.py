@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse, urlunparse
 
-from .constants import MISSING_REQUESTS_MESSAGE
+from .constants import APPLICATION_USER_AGENT, MISSING_REQUESTS_MESSAGE
 from .secure_store import EncryptedJsonStore
 from .utils import clean_value
 
@@ -411,7 +411,7 @@ class GitHubOAuthService:
                     "Accept": "application/vnd.github+json",
                     "Authorization": f"Bearer {access_token}",
                     "X-GitHub-Api-Version": "2022-11-28",
-                    "User-Agent": "application-inventory-service/1.6.19",
+                    "User-Agent": APPLICATION_USER_AGENT,
                 },
                 timeout=20,
             )
@@ -514,7 +514,7 @@ class GoogleOAuthService:
                 headers={
                     "Accept": "application/json",
                     "Authorization": f"Bearer {access_token}",
-                    "User-Agent": "application-inventory-service/1.6.19",
+                    "User-Agent": APPLICATION_USER_AGENT,
                 },
                 timeout=20,
             )

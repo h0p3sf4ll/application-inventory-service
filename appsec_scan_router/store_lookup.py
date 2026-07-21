@@ -7,7 +7,7 @@ from html import unescape
 from html.parser import HTMLParser
 from collections.abc import Callable, Iterable
 
-from .constants import MISSING_REQUESTS_MESSAGE
+from .constants import APPLICATION_USER_AGENT, MISSING_REQUESTS_MESSAGE
 from .models import StoreListing
 from .utils import clean_value
 
@@ -66,7 +66,7 @@ class StoreLookupClient:
             session.headers.update(
                 {
                     "Accept": "application/json,text/html,application/xhtml+xml",
-                    "User-Agent": "application-inventory-service/1.6.19",
+                    "User-Agent": APPLICATION_USER_AGENT,
                 }
             )
             adapter = HTTPAdapter(max_retries=self._retry, pool_connections=8, pool_maxsize=8)

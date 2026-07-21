@@ -1,6 +1,6 @@
 # GitHub SSO
 
-GitHub OAuth authenticates people to the Application Inventory Service UI. Repository discovery and scanning use separate GitHub App credentials. Configure both capabilities when the service must protect the UI and scan private repositories.
+GitHub OAuth authenticates people to the Application Security Posture Management UI. Repository discovery and scanning use separate GitHub App credentials. Configure both capabilities when the service must protect the UI and scan private repositories.
 
 ## Prerequisites
 
@@ -19,7 +19,7 @@ Set these values:
 
 | Field | Value |
 | --- | --- |
-| Application name | `Application Inventory Service` |
+| Application name | `Application Security Posture Management` |
 | Homepage URL | `https://inventory.example.com` |
 | Authorization callback URL | `https://inventory.example.com/api/auth/github-enterprise/callback` |
 

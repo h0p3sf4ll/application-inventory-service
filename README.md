@@ -1,15 +1,14 @@
-# Application Inventory Service
+# Application Security Posture Management
 
 ```text
-    _    ___ ____    APPLICATION INVENTORY SERVICE
-   / \  |_ _/ ___|   --------------------------------
-  / _ \  | |\___ \   [ ADO ]--+
- / ___ \ | | ___) |           +--> DISCOVER --> CLASSIFY --> ROUTE
-/_/   \_\___|____/    [ GHE ]--+        |            |          |
-                                      branches    app/API/AI   DB/SAST
+    _    ____  ____  __  __
+   / \  / ___||  _ \|  \/  |   APPLICATION SECURITY POSTURE MANAGEMENT
+  / _ \ \___ \| |_) | |\/| |   ------------------------------------------------
+ / ___ \ ___) |  __/| |  | |   DISCOVER -> CORRELATE -> PRIORITIZE -> REMEDIATE
+/_/   \_\____/|_|   |_|  |_|      ADO + GHE       RISK          WORKFLOW
 ```
 
-![Application Inventory Service](docs/assets/application-inventory-service-banner.svg)
+![Application Security Posture Management](docs/assets/application-inventory-service-banner.svg)
 
 [![CI](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/ci.yml/badge.svg)](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/ci.yml)
 [![Security](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/security.yml/badge.svg)](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/security.yml)
@@ -18,12 +17,18 @@
 [![Python](https://img.shields.io/pypi/pyversions/application-inventory-service.svg)](https://pypi.org/project/application-inventory-service/)
 [![License](https://img.shields.io/pypi/l/application-inventory-service.svg)](LICENSE)
 
-Application Inventory Service discovers software assets across Azure DevOps and GitHub Enterprise without cloning repositories. It identifies mobile apps, web apps, API services, microservices, middleware, serverless workloads, infrastructure code, AI-enabled apps, and ML-enabled apps, then emits reports and scanner-ready target manifests.
+Application Security Posture Management builds a live software inventory from Azure DevOps and GitHub Enterprise, correlates normalized scanner findings to application branches, prioritizes them with explainable business context, measures scanner coverage, and coordinates remediation. Repository discovery does not require cloning or executing application code.
 
-The project is published as `application-inventory-service`. The original `appsec-*`, `ado-mobile-scanner`, and `mobile-app-inventory-tracer` commands remain available as compatibility aliases.
+The package remains `application-inventory-service` to preserve existing integrations. The original `appsec-*`, `ado-mobile-scanner`, and `mobile-app-inventory-tracer` commands remain available as compatibility aliases.
 
 ## What It Does
 
+- Normalizes SARIF, Semgrep JSON, SonarQube issue JSON, and generic findings into one deduplicated remediation queue.
+- Correlates findings to the branch-level application inventory and retains unlinked findings for review.
+- Scores risk from severity, CVSS, EPSS, exploit evidence, finding age, internet exposure, application criticality, and data classification.
+- Tracks open, triaged, in-progress, resolved, accepted-risk, and false-positive workflows with an immutable event history.
+- Measures scanner coverage by application and flags current, stale, expired, and untested assets.
+- Exports filtered security findings as XLSX, CSV, or JSON and exposes the same operations through the Python SDK and authenticated API.
 - Scans one or more Azure DevOps organizations, each with its own PAT.
 - Scans one or more GitHub owners and repositories.
 - Scans Azure DevOps and GitHub Enterprise together in one run when both source types are configured.
@@ -40,6 +45,7 @@ The project is published as `application-inventory-service`. The original `appse
 ## Documentation
 
 - [Application Intent](docs/APP_INTENT.md)
+- [ASPM Operations Guide](docs/ASPM_OPERATIONS.md)
 - [Security Baseline](SECURITY.md)
 - [Code Reference](docs/CODE_REFERENCE.md)
 - [GitHub SSO Guide](docs/GITHUB_SSO.md)
@@ -100,6 +106,73 @@ The Schedules page creates a schedule from the current Scan setup. Schedule defi
 
 Available frequencies are once, daily, and weekly. Each schedule can be run immediately, disabled, enabled, or deleted. `APPLICATION_INVENTORY_SERVICE_MAX_CONCURRENT_SCANS` limits aggregate scan pressure from interactive and scheduled runs.
 
+## Quick Start: ASPM
+
+1. Run an inventory scan so source branches exist in PostgreSQL.
+2. Open **Findings**, select **Import results**, and upload SARIF, Semgrep JSON, SonarQube issue JSON, or the documented generic format.
+3. Add repository context when the scanner file does not identify its source. Correlated findings immediately appear on **Posture**, **Findings**, and **Coverage**.
+4. Set criticality, internet exposure, data classification, and owners from an application's inventory record. Risk scores recalculate in the same transaction.
+5. Assign, triage, accept, resolve, or mark findings false positive. Every workflow change is retained in the finding history.
+
+Use complete snapshots only when a result file represents every finding produced by that tool for the listed targets. Findings absent from a complete snapshot are resolved automatically. Partial imports never resolve existing findings.
+
+Automation can use the dedicated ASPM CLI without changing existing inventory scan commands:
+
+```bash
+export APPLICATION_INVENTORY_POSTGRES_DSN="postgresql://app_user:secret@postgres:5432/appsec"
+
+application-inventory-aspm \
+  --owner-user-id security-platform \
+  --owner-user-login scanner-automation \
+  ingest results.sarif \
+  --tool-key codeql \
+  --tool-name CodeQL \
+  --tool-type sast \
+  --provider github-enterprise \
+  --organization example-engineering \
+  --repository payments-api \
+  --branch main \
+  --complete-snapshot
+
+application-inventory-aspm \
+  --owner-user-id security-platform \
+  findings --severity critical --severity high --status open --export xlsx
+```
+
+Python services can ingest scanner output without the UI:
+
+```python
+import json
+from pathlib import Path
+
+from application_inventory_service import AspmService
+
+aspm = AspmService(
+    postgres_dsn="postgresql://app_user:secret@postgres:5432/appsec",
+    postgres_schema="application_inventory",
+    owner_user_id="security-platform",
+    owner_user_login="scanner-automation",
+)
+
+result = aspm.ingest(
+    {
+        "format": "sarif",
+        "document": json.loads(Path("results.sarif").read_text()),
+        "completeSnapshot": True,
+        "scannedTargets": [
+            {
+                "provider": "github-enterprise",
+                "organization": "example-engineering",
+                "repository": "payments-api",
+                "branch": "main",
+            }
+        ],
+    }
+)
+```
+
+See the [ASPM Operations Guide](docs/ASPM_OPERATIONS.md) for data contracts, automation patterns, risk factors, lifecycle rules, API routes, and production controls.
+
 ## Quick Start: Docker
 
 ```bash
@@ -109,7 +182,7 @@ docker run --rm \
   -p 48731:48731 \
   --env-file .env \
   -v "$PWD/reports:/reports" \
-  h0p3sf4ll/application-inventory-service:1.6.19 \
+  h0p3sf4ll/application-inventory-service:1.7.0 \
   ui \
   --host 0.0.0.0 \
   --port 48731 \
@@ -263,13 +336,13 @@ application-inventory-service \
   --out-dir reports
 ```
 
-The local defaults are host `localhost`, port `5432`, database `postgres`, user `postgres`, and password `postgres`. The password is editable on the **Database** page and is not stored in browser storage. Change every default credential outside local development.
+The local defaults are host `localhost`, port `5432`, database `postgres`, user `postgres`, and password `postgres`. The password is editable on the **Settings** page and is not stored in browser storage. Change every default credential outside local development.
 
 At startup, the service tests PostgreSQL and applies versioned, advisory-lock-protected schema migrations before accepting scan work. Unchanged schemas take the fast readiness path. A scan with database sync enabled is rejected if its configured database is unavailable. Findings commit at least once per second while a scan is active, and the **Inventory** table refreshes as those transactions become visible.
 
 The schema separates repositories, branch inventory, application types, categories, contributors, web domains, domain evidence, store listings, scan runs, and observability events. Inventory identity is scoped by signed-in user, provider, organization, project, repository, and branch. Repeated scans update current rows and synchronize child values instead of inserting duplicate records. Full-text search uses a PostgreSQL GIN index; common type, owner, activity, domain, and validation filters use selective indexes.
 
-The **Inventory** page provides sortable columns, per-column filters, multi-select Language and Types filters, full-text search, activity/domain/type quick filters, record details, and XLSX, CSV, or JSON exports. The **Database** page contains connection, synchronization, and schema settings. Results and exports use the same filters, sort order, and signed-in user scope. XLSX, CSV, and JSON exports consume a server-side database cursor to bound application memory. Operational scan and observability records remain event-based because each execution and log entry is a distinct audit record.
+The **Inventory** page provides sortable columns, per-column filters, multi-select Language and Types filters, full-text search, activity/domain/type quick filters, record details, and XLSX, CSV, or JSON exports. The **Settings** page contains connection, synchronization, and schema settings. Results and exports use the same filters, sort order, and signed-in user scope. XLSX, CSV, and JSON exports consume a server-side database cursor to bound application memory. Operational scan and observability records remain event-based because each execution and log entry is a distinct audit record.
 
 Structured events include service lifecycle, HTTP request timing, scan lifecycle, provider, user scope, status, and sanitized metadata. The UI exposes database-backed health at `/api/health` and operational counters at `/api/metrics`.
 
@@ -309,6 +382,10 @@ The UI detects Ollama at `http://127.0.0.1:11434` and defaults to `llama3.1:late
 | `APPLICATION_INVENTORY_SERVICE_ALLOWED_GITHUB_HOSTS` | Comma-separated GitHub Enterprise host allowlist |
 | `APPLICATION_INVENTORY_SERVICE_ALLOW_INSECURE_PROVIDER_URLS` | Local-only escape hatch for HTTP provider URLs |
 | `APPLICATION_INVENTORY_SERVICE_MAX_JSON_BODY_BYTES` | Maximum UI JSON request size |
+| `APPLICATION_INVENTORY_SERVICE_MAX_FINDING_IMPORT_BYTES` | Maximum ASPM scanner import request size; defaults to 24 MiB |
+| `APPLICATION_INVENTORY_ASPM_CLI_MAX_IMPORT_BYTES` | Maximum ASPM CLI input file size; defaults to 256 MiB |
+| `APPLICATION_INVENTORY_OWNER_USER_ID` | Default stable ASPM CLI owner scope; defaults to `cli` |
+| `APPLICATION_INVENTORY_OWNER_USER_LOGIN` | Default ASPM CLI actor recorded in workflow events |
 | `APPLICATION_INVENTORY_SERVICE_MAX_CONCURRENT_SCANS` | Concurrent interactive and scheduled scan processes; defaults to `2` |
 | `APPLICATION_INVENTORY_SERVICE_GHE_BASE_URL` | GitHub Enterprise base URL used for OAuth sign-in |
 | `APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_ID` | GitHub Enterprise OAuth client ID |

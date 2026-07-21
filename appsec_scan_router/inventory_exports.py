@@ -39,9 +39,13 @@ def rows_to_json(rows: Iterable[Mapping[str, Any]]) -> bytes:
     return buffer.getvalue().encode("utf-8")
 
 
-def rows_to_xlsx(rows: Iterable[Mapping[str, Any]], columns: Sequence[str]) -> bytes:
+def rows_to_xlsx(
+    rows: Iterable[Mapping[str, Any]],
+    columns: Sequence[str],
+    sheet_name: str = "Inventory",
+) -> bytes:
     workbook = Workbook(write_only=True)
-    worksheet = workbook.create_sheet("Inventory")
+    worksheet = workbook.create_sheet(sheet_name[:31] or "Inventory")
     worksheet.freeze_panes = "A2"
     header: list[WriteOnlyCell] = []
     for column in columns:

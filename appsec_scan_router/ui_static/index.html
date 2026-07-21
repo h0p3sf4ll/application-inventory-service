@@ -3,16 +3,16 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Application Inventory Service</title>
-    <link rel="stylesheet" href="/static/styles.css?v=14">
+    <title>Application Security Posture Management</title>
+    <link rel="stylesheet" href="/static/styles.css?v=17">
   </head>
   <body class="login-mode">
     <main class="login-shell" id="loginPage">
       <section class="login-brand">
         <div class="login-brand-copy">
-          <p class="eyebrow">Application inventory</p>
-          <h1>Application Inventory Service</h1>
-          <p>Trace source assets, ownership, and scanner-ready targets from one controlled workspace.</p>
+          <p class="eyebrow">Application security</p>
+          <h1>Application Security Posture Management</h1>
+          <p>Unify application inventory, security findings, risk, scanner coverage, and remediation.</p>
         </div>
       </section>
       <section class="login-panel" aria-labelledby="loginTitle">
@@ -56,9 +56,9 @@
     <main class="shell" id="appShell" hidden>
       <header class="topbar">
         <div class="topbar-brand">
-          <p class="eyebrow">Application inventory</p>
-          <h1>Application Inventory Service</h1>
-          <p class="topbar-subtitle">Connect a source, choose a scope, and run an inventory scan.</p>
+          <p class="eyebrow">Application security</p>
+          <h1>Application Security Posture Management</h1>
+          <p class="topbar-subtitle">Prioritize risk, close coverage gaps, and coordinate remediation.</p>
         </div>
         <div class="topbar-actions">
           <div class="auth-card" id="authPanel">
@@ -71,17 +71,324 @@
       </header>
 
       <nav class="app-nav" aria-label="Application pages" role="tablist">
-        <button class="tab-button active" type="button" data-view="setupView" role="tab" aria-controls="setupView" aria-selected="true">Scan setup</button>
+        <button class="tab-button active" type="button" data-view="postureView" role="tab" aria-controls="postureView" aria-selected="true">Posture</button>
+        <button class="tab-button" type="button" data-view="findingsView" role="tab" aria-controls="findingsView" aria-selected="false">Findings</button>
+        <button class="tab-button" type="button" data-view="inventoryView" role="tab" aria-controls="inventoryView" aria-selected="false">Inventory</button>
+        <button class="tab-button" type="button" data-view="coverageView" role="tab" aria-controls="coverageView" aria-selected="false">Coverage</button>
+        <button class="tab-button" type="button" data-view="setupView" role="tab" aria-controls="setupView" aria-selected="false">New scan</button>
         <button class="tab-button" type="button" data-view="runsView" role="tab" aria-controls="runsView" aria-selected="false">Runs</button>
         <button class="tab-button" type="button" data-view="schedulesView" role="tab" aria-controls="schedulesView" aria-selected="false">Schedules</button>
-        <button class="tab-button" type="button" data-view="inventoryView" role="tab" aria-controls="inventoryView" aria-selected="false">Inventory</button>
         <button class="tab-button" type="button" data-view="reportsView" role="tab" aria-controls="reportsView" aria-selected="false">Reports</button>
-        <button class="tab-button" type="button" data-view="databaseView" role="tab" aria-controls="databaseView" aria-selected="false">Database</button>
+        <button class="tab-button" type="button" data-view="databaseView" role="tab" aria-controls="databaseView" aria-selected="false">Settings</button>
       </nav>
 
       <section class="layout">
         <form class="page-form" id="scanForm">
-          <section class="panel form-panel tab-view active" id="setupView" role="tabpanel">
+          <section class="panel aspm-panel tab-view active" id="postureView" role="tabpanel">
+            <div class="section-heading aspm-heading">
+              <div>
+                <p class="eyebrow">Risk command center</p>
+                <h2>Security posture</h2>
+                <p>Current application risk, remediation pressure, and scanner reach.</p>
+              </div>
+              <div class="aspm-heading-actions">
+                <span class="status-chip idle" id="postureStatus">Loading</span>
+                <button class="ghost compact-button" id="refreshPosture" type="button">Refresh posture</button>
+              </div>
+            </div>
+
+            <div class="posture-kpis" aria-label="Security posture summary">
+              <div class="posture-kpi risk-critical">
+                <span>Critical findings</span>
+                <strong id="postureCritical">0</strong>
+                <small>Active and actionable</small>
+              </div>
+              <div class="posture-kpi risk-high">
+                <span>High findings</span>
+                <strong id="postureHigh">0</strong>
+                <small>Active and actionable</small>
+              </div>
+              <div class="posture-kpi">
+                <span>Affected assets</span>
+                <strong id="postureAffectedAssets">0</strong>
+                <small id="postureAssetContext">of 0 inventoried</small>
+              </div>
+              <div class="posture-kpi risk-overdue">
+                <span>Overdue</span>
+                <strong id="postureOverdue">0</strong>
+                <small>Past severity SLA</small>
+              </div>
+              <div class="posture-kpi">
+                <span>Scanner coverage</span>
+                <strong id="postureCoverage">0%</strong>
+                <small>Scanned in 30 days</small>
+              </div>
+              <div class="posture-kpi">
+                <span>Average risk</span>
+                <strong id="postureAverageRisk">0</strong>
+                <small>Explainable score of 100</small>
+              </div>
+            </div>
+
+            <div class="posture-workspace">
+              <section class="posture-region" aria-labelledby="riskDistributionTitle">
+                <div class="subsection-heading">
+                  <div>
+                    <h3 id="riskDistributionTitle">Risk distribution</h3>
+                    <p>All normalized findings by severity and workflow state.</p>
+                  </div>
+                </div>
+                <div class="risk-distribution" id="riskDistribution">
+                  <span class="empty-inline">No findings imported</span>
+                </div>
+                <div class="status-distribution" id="statusDistribution"></div>
+              </section>
+              <section class="posture-region" aria-labelledby="priorityAssetsTitle">
+                <div class="subsection-heading">
+                  <div>
+                    <h3 id="priorityAssetsTitle">Priority applications</h3>
+                    <p>Assets with the highest active risk.</p>
+                  </div>
+                  <button class="text-button" id="viewAllFindings" type="button">View findings</button>
+                </div>
+                <div class="priority-list" id="priorityAssetList">
+                  <p class="empty-state">No application risk is available.</p>
+                </div>
+              </section>
+            </div>
+
+            <section class="posture-region tool-posture-region" aria-labelledby="toolPostureTitle">
+              <div class="subsection-heading">
+                <div>
+                  <h3 id="toolPostureTitle">Security tool health</h3>
+                  <p>Latest ingestion and asset coverage by connected scanner.</p>
+                </div>
+                <button class="ghost compact-button" id="openFindingImport" type="button">Import scanner results</button>
+              </div>
+              <div class="tool-health-grid" id="toolHealthGrid">
+                <p class="empty-state">Import scanner results to establish tool coverage.</p>
+              </div>
+            </section>
+          </section>
+
+          <section class="panel aspm-panel tab-view hidden" id="findingsView" role="tabpanel" hidden>
+            <div class="section-heading aspm-heading">
+              <div>
+                <p class="eyebrow">Remediation queue</p>
+                <h2>Security findings</h2>
+                <p>One deduplicated workflow across SAST, SCA, secrets, IaC, DAST, and custom tools.</p>
+              </div>
+              <button class="primary compact-button" id="toggleFindingImport" type="button">Import results</button>
+            </div>
+
+            <section class="finding-import hidden" id="findingImportPanel" aria-labelledby="findingImportTitle" hidden>
+              <div class="subsection-heading">
+                <div>
+                  <h3 id="findingImportTitle">Import scanner results</h3>
+                  <p>SARIF 2.1, Semgrep JSON, SonarQube issues, or normalized generic JSON.</p>
+                </div>
+                <button class="icon-button compact-close" id="closeFindingImport" type="button" aria-label="Close import" title="Close">&times;</button>
+              </div>
+              <div class="finding-import-grid">
+                <label>
+                  <span>Format</span>
+                  <select id="findingImportFormat">
+                    <option value="auto">Detect automatically</option>
+                    <option value="sarif">SARIF 2.1</option>
+                    <option value="semgrep">Semgrep JSON</option>
+                    <option value="sonarqube">SonarQube issues</option>
+                    <option value="generic">Generic findings</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Tool name <span class="field-badge optional">Optional</span></span>
+                  <input id="findingImportTool" maxlength="200" placeholder="Read from file when available">
+                </label>
+                <label class="finding-file-field">
+                  <span>Results file</span>
+                  <input id="findingImportFile" type="file" accept=".json,.sarif,application/json">
+                </label>
+                <label class="checkbox-field finding-snapshot-field">
+                  <input id="findingCompleteSnapshot" type="checkbox">
+                  <span><strong>Complete snapshot</strong><small>Resolve active findings absent from the uploaded asset scope.</small></span>
+                </label>
+              </div>
+              <details class="advanced-settings finding-context-settings">
+                <summary>
+                  <span>Link to an inventory asset</span>
+                  <small>Optional when the result file already identifies its repository</small>
+                </summary>
+                <div class="finding-context-grid">
+                  <label><span>Provider</span><select id="findingContextProvider"><option value="">Detect</option><option value="azure-devops">Azure DevOps</option><option value="github-enterprise">GitHub</option></select></label>
+                  <label><span>Organization</span><input id="findingContextOrganization" maxlength="300" placeholder="Organization or owner"></label>
+                  <label><span>Project <span class="field-badge optional">Optional</span></span><input id="findingContextProject" maxlength="500" placeholder="Azure DevOps project"></label>
+                  <label><span>Repository</span><input id="findingContextRepository" maxlength="500" placeholder="Exact repository name"></label>
+                  <label><span>Branch <span class="field-badge optional">Optional</span></span><input id="findingContextBranch" maxlength="500" placeholder="Default branch when blank"></label>
+                </div>
+              </details>
+              <div class="form-actions compact-actions">
+                <span id="findingImportStatus">Choose a scanner result file.</span>
+                <button class="primary" id="submitFindingImport" type="button" disabled>Import findings</button>
+              </div>
+            </section>
+
+            <div class="finding-toolbar">
+              <label class="finding-search-field">
+                <span>Search findings</span>
+                <input id="findingSearchQuery" type="search" maxlength="500" placeholder="Finding, rule, repository, package, CWE, or CVE">
+              </label>
+              <label>
+                <span>Severity</span>
+                <select id="findingSeverityFilter">
+                  <option value="">All severities</option>
+                  <option value="critical">Critical</option>
+                  <option value="high">High</option>
+                  <option value="medium">Medium</option>
+                  <option value="low">Low</option>
+                  <option value="info">Info</option>
+                </select>
+              </label>
+              <label>
+                <span>Status</span>
+                <select id="findingStatusFilter">
+                  <option value="">All statuses</option>
+                  <option value="open">Open</option>
+                  <option value="triaged">Triaged</option>
+                  <option value="in_progress">In progress</option>
+                  <option value="resolved">Resolved</option>
+                  <option value="accepted">Risk accepted</option>
+                  <option value="false_positive">False positive</option>
+                </select>
+              </label>
+              <label>
+                <span>Tool</span>
+                <select id="findingToolFilter"><option value="">All tools</option></select>
+              </label>
+              <button class="primary compact-button" id="searchFindings" type="button">Apply</button>
+              <button class="ghost compact-button" id="clearFindingFilters" type="button">Clear</button>
+            </div>
+
+            <div class="finding-quick-filters" role="group" aria-label="Finding quick filters">
+              <button class="active" type="button" data-finding-quick-filter="active">Active</button>
+              <button type="button" data-finding-quick-filter="critical">Critical</button>
+              <button type="button" data-finding-quick-filter="overdue">Overdue</button>
+              <button type="button" data-finding-quick-filter="unassigned">Unassigned</button>
+              <button type="button" data-finding-quick-filter="unlinked">Unlinked</button>
+              <button type="button" data-finding-quick-filter="all">All findings</button>
+            </div>
+
+            <div class="database-results-toolbar finding-results-toolbar">
+              <strong id="findingResultSummary" aria-live="polite">Loading findings</strong>
+              <div class="database-export-actions">
+                <button class="primary compact-button" type="button" data-finding-export="xlsx">Export XLSX</button>
+                <button class="ghost compact-button" type="button" data-finding-export="csv">CSV</button>
+                <button class="ghost compact-button" type="button" data-finding-export="json">JSON</button>
+              </div>
+            </div>
+
+            <div class="database-table-wrap finding-table-wrap">
+              <table class="database-table finding-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Risk</th>
+                    <th scope="col">Finding</th>
+                    <th scope="col">Application</th>
+                    <th scope="col">Severity</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Tool</th>
+                    <th scope="col">Due</th>
+                  </tr>
+                </thead>
+                <tbody id="findingResultRows">
+                  <tr><td class="database-empty-row" colspan="7">Loading security findings.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="database-pagination">
+              <button class="ghost" id="findingPrevious" type="button" disabled>Previous</button>
+              <span class="database-page-summary">
+                <strong id="findingPagePosition">Page 1</strong>
+                <small id="findingRecordCount">Loading findings</small>
+              </span>
+              <button class="ghost" id="findingNext" type="button" disabled>Next</button>
+            </div>
+
+            <dialog class="inventory-dialog finding-dialog" id="findingDialog">
+              <div class="inventory-dialog-heading">
+                <div>
+                  <p class="eyebrow">Security finding</p>
+                  <h2 id="findingDialogTitle">Finding details</h2>
+                </div>
+                <button class="icon-button" id="closeFindingDialog" type="button" aria-label="Close" title="Close">&times;</button>
+              </div>
+              <div class="finding-detail-summary" id="findingDetailSummary"></div>
+              <section class="finding-workflow" aria-labelledby="findingWorkflowTitle">
+                <h3 id="findingWorkflowTitle">Remediation workflow</h3>
+                <div class="finding-workflow-grid">
+                  <label><span>Status</span><select id="findingWorkflowStatus"></select></label>
+                  <label><span>Assignee</span><input id="findingWorkflowAssignee" maxlength="500" placeholder="Team or owner"></label>
+                  <label><span>Due date</span><input id="findingWorkflowDue" type="date"></label>
+                  <label class="full"><span>Audit note <span class="field-badge optional">Optional</span></span><textarea id="findingWorkflowNote" maxlength="5000" rows="3" placeholder="Decision, evidence, or next action"></textarea></label>
+                </div>
+                <div class="form-actions compact-actions">
+                  <span id="findingWorkflowMessage">Changes are written to the audit trail.</span>
+                  <button class="primary" id="saveFindingWorkflow" type="button">Save workflow</button>
+                </div>
+              </section>
+              <section class="finding-history" aria-labelledby="findingHistoryTitle">
+                <h3 id="findingHistoryTitle">Audit history</h3>
+                <div id="findingHistory"></div>
+              </section>
+            </dialog>
+          </section>
+
+          <section class="panel aspm-panel tab-view hidden" id="coverageView" role="tabpanel" hidden>
+            <div class="section-heading aspm-heading">
+              <div>
+                <p class="eyebrow">Control assurance</p>
+                <h2>Scanner coverage</h2>
+                <p>Find applications that are untested, stale, or missing expected security controls.</p>
+              </div>
+              <button class="ghost compact-button" id="refreshCoverage" type="button">Refresh coverage</button>
+            </div>
+            <div class="coverage-kpis">
+              <div><span>Current</span><strong id="coverageCurrent">0</strong><small>Scanned within 30 days</small></div>
+              <div><span>Stale</span><strong id="coverageStale">0</strong><small>31 to 90 days</small></div>
+              <div><span>Untested</span><strong id="coverageUntested">0</strong><small>Never or older than 90 days</small></div>
+              <div><span>Coverage</span><strong id="coveragePercent">0%</strong><small>Current application coverage</small></div>
+            </div>
+            <div class="database-results-toolbar">
+              <strong id="coverageResultSummary">Loading application coverage</strong>
+            </div>
+            <div class="database-table-wrap">
+              <table class="database-table coverage-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Application</th>
+                    <th scope="col">Repository</th>
+                    <th scope="col">Branch</th>
+                    <th scope="col">Types</th>
+                    <th scope="col">Tools</th>
+                    <th scope="col">Last scan</th>
+                    <th scope="col">Coverage</th>
+                  </tr>
+                </thead>
+                <tbody id="coverageResultRows">
+                  <tr><td class="database-empty-row" colspan="7">Loading scanner coverage.</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="database-pagination">
+              <button class="ghost" id="coveragePrevious" type="button" disabled>Previous</button>
+              <span class="database-page-summary">
+                <strong id="coveragePagePosition">Page 1</strong>
+                <small id="coverageRecordCount">Loading assets</small>
+              </span>
+              <button class="ghost" id="coverageNext" type="button" disabled>Next</button>
+            </div>
+          </section>
+
+          <section class="panel form-panel tab-view hidden" id="setupView" role="tabpanel" hidden>
             <div class="section-heading">
               <h2>Source</h2>
               <span class="status-chip idle" id="formStatus">Ready</span>
@@ -591,6 +898,27 @@
                 <button class="icon-button" id="closeInventoryRecord" type="button" aria-label="Close" title="Close">&times;</button>
               </div>
               <dl id="inventoryRecordDetails"></dl>
+              <section class="asset-profile" id="assetProfile" hidden>
+                <div class="subsection-heading">
+                  <div>
+                    <h3>Security context</h3>
+                    <p>Business context changes finding priority for this application.</p>
+                  </div>
+                  <span class="status-chip idle" id="assetProfileStatus">Loading</span>
+                </div>
+                <div class="asset-profile-grid">
+                  <label><span>Criticality</span><select id="assetCriticality"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="mission_critical">Mission critical</option></select></label>
+                  <label><span>Internet exposure</span><select id="assetInternetExposure"><option value="auto">Use domain evidence</option><option value="true">Internet exposed</option><option value="false">Internal only</option></select></label>
+                  <label><span>Data classification</span><select id="assetDataClassification"><option value="public">Public</option><option value="internal">Internal</option><option value="confidential">Confidential</option><option value="restricted">Restricted</option></select></label>
+                  <label><span>Business owner <span class="field-badge optional">Optional</span></span><input id="assetBusinessOwner" maxlength="500" placeholder="Business unit or service owner"></label>
+                  <label><span>Technical owner <span class="field-badge optional">Optional</span></span><input id="assetTechnicalOwner" maxlength="500" placeholder="Engineering team"></label>
+                  <label><span>Tags <span class="field-badge optional">Optional</span></span><input id="assetSecurityTags" maxlength="1000" placeholder="pci, tier-0, customer-facing"></label>
+                </div>
+                <div class="form-actions compact-actions">
+                  <span id="assetProfileMessage">Risk is recalculated when this profile changes.</span>
+                  <button class="primary" id="saveAssetProfile" type="button">Save security context</button>
+                </div>
+              </section>
             </dialog>
           </section>
         </form>
@@ -721,6 +1049,6 @@
       </section>
     </main>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=15" type="module"></script>
+    <script src="/static/app.js?v=17" type="module"></script>
   </body>
 </html>

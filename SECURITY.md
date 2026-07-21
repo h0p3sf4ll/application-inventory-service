@@ -1,6 +1,6 @@
 # Security
 
-Application Inventory Service is designed for internal inventory and AppSec orchestration. It reads source-provider metadata and selected manifest files without cloning repositories or executing scanned code.
+Application Security Posture Management is designed for internal software inventory, finding correlation, risk prioritization, and AppSec orchestration. It reads source-provider metadata and selected manifest files without cloning repositories or executing scanned code.
 
 ## Security Baseline
 
@@ -8,16 +8,16 @@ The service is aligned to the OWASP Top 10 2025 risk model:
 
 | OWASP area | Control |
 | --- | --- |
-| Broken Access Control | UI scan, report, database, and target-discovery APIs require a signed-in session. Reports and database exports are scoped by user. |
+| Broken Access Control | UI scan, report, inventory, finding, workflow, coverage, profile, and target-discovery APIs require a signed-in session. Queries and exports are scoped by user in SQL. |
 | Security Misconfiguration | Production deployments should run behind HTTPS, disable test login, set secure cookies, and use the documented security headers. |
 | Software Supply Chain Failures | Runtime dependency floors are set to audited versions. CI runs Bandit and `pip-audit`. SBOM files are maintained in `docs/`. |
 | Cryptographic Failures | Saved provider tokens and scheduled scan definitions are encrypted with Fernet. Operators should supply `APPLICATION_INVENTORY_SERVICE_SECRET_KEY` from a secret manager. |
 | Injection | Database writes use psycopg parameters and identifiers. Shell execution is avoided for scans; child process commands are argument arrays. |
-| Insecure Design | The app minimizes repository access, avoids code execution, and emits scanner target manifests for downstream security tooling. |
+| Insecure Design | The app minimizes repository access, avoids code execution, applies conservative finding-to-asset correlation, preserves ambiguous findings as unlinked, and limits destructive reconciliation to explicit complete snapshots. |
 | Authentication Failures | GitHub and Google OAuth flows use high-entropy state values, session cookies are HttpOnly and SameSite, and CSRF tokens protect state-changing APIs. |
-| Software or Data Integrity Failures | XML manifest parsing uses `defusedxml`. Public package publishing is handled by GitHub Actions with a protected `pypi` environment. |
+| Software or Data Integrity Failures | XML manifest parsing uses `defusedxml`. Finding imports are bounded, normalized, deduplicated, and transactional. Public package publishing is handled by GitHub Actions with a protected `pypi` environment. |
 | Security Logging and Alerting Failures | Scan activity is logged for operators without intentionally logging provider tokens or database DSNs. Production logs should be routed to a SIEM. |
-| Mishandling Exceptional Conditions | UI database exports and OAuth failures return sanitized messages rather than raw secret-bearing exception details. |
+| Mishandling Exceptional Conditions | UI database exports, scanner imports, and OAuth failures return sanitized messages rather than raw secret-bearing exception details. Failed imports retain a bounded audit message while partial finding changes roll back. |
 
 ## Required Production Settings
 
@@ -54,6 +54,17 @@ The UI sends:
 - HSTS when secure cookies are enabled
 
 State-changing API calls require the session CSRF token.
+
+## Scanner Finding Controls
+
+- The UI limits scanner files to 20 MB; the API limit defaults to 25 MB and can only be changed server-side.
+- A single import is limited to 100,000 normalized findings.
+- Scanner JSON is treated as data. The service does not execute rules, fixes, repository content, markup, or links from scanner output.
+- Browser output escapes finding, tool, repository, path, assignee, and event values before insertion into HTML.
+- Tool keys and deterministic fingerprints define deduplication scope. Pipelines should keep tool keys stable.
+- Complete snapshots may resolve findings and should be restricted to trusted scanner automation.
+- Finding imports, identifiers, events, and coverage updates commit atomically. Failed imports are auditable.
+- Scanner URLs are displayed as data unless a trusted integration explicitly uses them; credentials must not be embedded in scanner URLs.
 
 ## Provider URL Controls
 

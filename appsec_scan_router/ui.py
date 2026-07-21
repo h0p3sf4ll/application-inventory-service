@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+from .aspm_ingest import parse_finding_document
+from .aspm_postgres import AspmRepository
 from .auth import (
     AuthManager,
     GitHubEnterpriseOAuthConfig,
@@ -79,6 +81,7 @@ from .target_filters import parse_source_target_filter_values, target_filter_val
 DEFAULT_UI_HOST = "127.0.0.1"
 DEFAULT_UI_PORT = 48731
 DEFAULT_MAX_JSON_BODY_BYTES = 1_048_576
+DEFAULT_MAX_FINDING_IMPORT_BYTES = 25_165_824
 HOST_HEADER_RE = re.compile(r"^[A-Za-z0-9.:\-\[\]]+$")
 SECURITY_HEADER_VALUES = {
     "Content-Security-Policy": "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'",
@@ -223,6 +226,30 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/source-targets":
             self.handle_source_targets()
+            return
+        if path == "/api/aspm/posture":
+            self.handle_aspm_posture()
+            return
+        if path == "/api/aspm/findings/search":
+            self.handle_aspm_findings_search()
+            return
+        if path == "/api/aspm/findings/detail":
+            self.handle_aspm_finding_detail()
+            return
+        if path == "/api/aspm/findings/import":
+            self.handle_aspm_findings_import()
+            return
+        if path == "/api/aspm/findings/export":
+            self.handle_aspm_findings_export()
+            return
+        if path == "/api/aspm/findings/update":
+            self.handle_aspm_finding_update()
+            return
+        if path == "/api/aspm/coverage":
+            self.handle_aspm_coverage()
+            return
+        if path == "/api/aspm/assets/profile":
+            self.handle_aspm_asset_profile()
             return
         if path.startswith("/api/scans/") and path.rsplit("/", 1)[-1] in {
             "pause",
@@ -714,6 +741,211 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             status = HTTPStatus.OK
         self.send_json(targets, status)
 
+    def handle_aspm_posture(self) -> None:
+        try:
+            record, repository, _ = self.aspm_request()
+            if not record:
+                return
+            self.send_json({"posture": repository.posture(owner_scope(record))})
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception:
+            self.handle_aspm_error("posture")
+
+    def handle_aspm_findings_search(self) -> None:
+        try:
+            record, repository, payload = self.aspm_request()
+            if not record:
+                return
+            result = repository.search_findings(
+                owner_scope(record),
+                query=clean_text(payload.get("query")),
+                filters=payload.get("filters")
+                if isinstance(payload.get("filters"), dict)
+                else None,
+                limit=positive_int(payload.get("limit"), 100),
+                offset=max(0, integer_value(payload.get("offset"), 0)),
+                include_facets=payload.get("includeFacets") is not False,
+            )
+            self.send_json({"findings": result})
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception:
+            self.handle_aspm_error("findings.search")
+
+    def handle_aspm_finding_detail(self) -> None:
+        try:
+            record, repository, payload = self.aspm_request()
+            if not record:
+                return
+            result = repository.finding_detail(
+                owner_scope(record), clean_text(payload.get("findingId"))
+            )
+            self.send_json(result)
+        except KeyError as exc:
+            self.send_json({"error": str(exc).strip("'")}, HTTPStatus.NOT_FOUND)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception:
+            self.handle_aspm_error("finding.detail")
+
+    def handle_aspm_findings_import(self) -> None:
+        try:
+            record, repository, payload = self.aspm_request(
+                max_bytes=max_finding_import_bytes()
+            )
+            if not record:
+                return
+            document = parse_finding_document(payload)
+            result = repository.ingest(
+                owner_scope(record), owner_login(record), document
+            )
+            LOGGER.info(
+                "ASPM import completed tool=%s findings=%s inserted=%s updated=%s resolved=%s",
+                result["tool"]["key"],
+                result["findings"],
+                result["inserted"],
+                result["updated"],
+                result["resolved"],
+                extra={
+                    "event_type": "aspm.import.completed",
+                    "owner_user_id": owner_scope(record),
+                    "owner_user_login": owner_login(record),
+                    "metadata": result,
+                },
+            )
+            self.send_json({"import": result}, HTTPStatus.CREATED)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception:
+            self.handle_aspm_error("findings.import")
+
+    def handle_aspm_findings_export(self) -> None:
+        try:
+            record, repository, payload = self.aspm_request()
+            if not record:
+                return
+            export_format = clean_choice(
+                payload.get("format"), {"xlsx", "csv", "json"}, "xlsx"
+            )
+            content = repository.export_findings(
+                owner_scope(record),
+                export_format,
+                query=clean_text(payload.get("query")),
+                filters=payload.get("filters")
+                if isinstance(payload.get("filters"), dict)
+                else None,
+            )
+            content_types = {
+                "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "csv": "text/csv",
+                "json": "application/json",
+            }
+            self.send_bytes(
+                content,
+                content_types[export_format],
+                headers={
+                    "Content-Disposition": attachment_header(
+                        f"aspm_findings_export.{export_format}"
+                    )
+                },
+            )
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception:
+            self.handle_aspm_error("findings.export")
+
+    def handle_aspm_finding_update(self) -> None:
+        try:
+            record, repository, payload = self.aspm_request()
+            if not record:
+                return
+            result = repository.update_finding(
+                owner_scope(record),
+                owner_login(record),
+                clean_text(payload.get("findingId")),
+                clean_text(payload.get("status")),
+                assignee=clean_text(payload.get("assignee")),
+                due_at=payload.get("dueAt"),
+                note=clean_text(payload.get("note")),
+            )
+            self.send_json({"finding": result})
+        except KeyError as exc:
+            self.send_json({"error": str(exc).strip("'")}, HTTPStatus.NOT_FOUND)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception:
+            self.handle_aspm_error("finding.update")
+
+    def handle_aspm_coverage(self) -> None:
+        try:
+            record, repository, payload = self.aspm_request()
+            if not record:
+                return
+            result = repository.coverage(
+                owner_scope(record),
+                limit=positive_int(payload.get("limit"), 100),
+                offset=max(0, integer_value(payload.get("offset"), 0)),
+            )
+            self.send_json({"coverage": result})
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception:
+            self.handle_aspm_error("coverage")
+
+    def handle_aspm_asset_profile(self) -> None:
+        try:
+            record, repository, payload = self.aspm_request()
+            if not record:
+                return
+            profile = payload.get("profile")
+            branch_inventory_id = positive_int(payload.get("branchInventoryId"), 0)
+            if profile is None:
+                result = repository.asset_profile(
+                    owner_scope(record), branch_inventory_id
+                )
+            elif isinstance(profile, dict):
+                result = repository.update_asset_profile(
+                    owner_scope(record),
+                    owner_login(record),
+                    branch_inventory_id,
+                    profile,
+                )
+            else:
+                raise ValueError("Asset security profile must be a JSON object.")
+            self.send_json({"profile": result})
+        except KeyError as exc:
+            self.send_json({"error": str(exc).strip("'")}, HTTPStatus.NOT_FOUND)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception:
+            self.handle_aspm_error("asset.profile")
+
+    def aspm_request(
+        self, max_bytes: int | None = None
+    ) -> tuple[SessionRecord | None, AspmRepository | None, dict[str, Any]]:
+        record = self.current_session()
+        if not self.valid_csrf(record):
+            return None, None, {}
+        payload = self.read_json(max_bytes=max_bytes)
+        config = normalize_database_config(payload)
+        return (
+            record,
+            AspmRepository(config["postgresDsn"], config["postgresSchema"]),
+            payload,
+        )
+
+    def handle_aspm_error(self, operation: str) -> None:
+        LOGGER.exception(
+            "ASPM operation failed operation=%s",
+            operation,
+            extra={"event_type": f"aspm.{operation}.failed"},
+        )
+        self.send_json(
+            {"error": "The ASPM operation could not be completed."},
+            HTTPStatus.INTERNAL_SERVER_ERROR,
+        )
+
     def send_static(self, name: str, content_type: str) -> None:
         try:
             content = static_content(name)
@@ -802,7 +1034,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
         self.wfile.flush()
 
-    def read_json(self) -> dict[str, Any]:
+    def read_json(self, max_bytes: int | None = None) -> dict[str, Any]:
         raw_length = clean_text(self.headers.get("Content-Length", "0") or "0")
         try:
             length = int(raw_length)
@@ -810,7 +1042,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             raise ValueError("Content-Length must be a valid integer.") from exc
         if length <= 0:
             return {}
-        if length > max_json_body_bytes():
+        if length > (max_bytes or max_json_body_bytes()):
             raise ValueError("Request body is too large.")
         body = self.rfile.read(length)
         try:
@@ -1078,6 +1310,16 @@ def max_json_body_bytes() -> int:
             "APPSEC_INVENTORY_SERVICE_MAX_JSON_BODY_BYTES",
         ),
         DEFAULT_MAX_JSON_BODY_BYTES,
+    )
+
+
+def max_finding_import_bytes() -> int:
+    return positive_int(
+        env_value(
+            "APPLICATION_INVENTORY_SERVICE_MAX_FINDING_IMPORT_BYTES",
+            "APPSEC_INVENTORY_SERVICE_MAX_FINDING_IMPORT_BYTES",
+        ),
+        DEFAULT_MAX_FINDING_IMPORT_BYTES,
     )
 
 

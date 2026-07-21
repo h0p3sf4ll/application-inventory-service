@@ -13,6 +13,8 @@ def main() -> int:
         exec_callable("appsec_scan_router.ui", "main", args[1:])
     if first == "cli":
         exec_module("application_inventory_service", args[1:])
+    if first == "aspm":
+        exec_module("appsec_scan_router.aspm_cli", args[1:])
     if first.startswith("-"):
         exec_module("application_inventory_service", args)
     os.execvp(first, args)
