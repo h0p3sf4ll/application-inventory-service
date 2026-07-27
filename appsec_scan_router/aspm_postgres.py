@@ -4,9 +4,14 @@ import hashlib
 import re
 import threading
 import uuid
+from collections.abc import Iterable
+from itertools import chain
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse
 
+from .aspm_asset_risk import AssetRiskProfileEngine
+from .aspm_data import AssetDataInteraction, DataInteractionClassifier
 from .aspm_models import (
     ACTIVE_FINDING_STATUSES,
     FindingDocument,
@@ -33,7 +38,7 @@ except ImportError:
 
 
 SQL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-ASPM_SCHEMA_VERSION = 2
+ASPM_SCHEMA_VERSION = 4
 ASPM_SCHEMA_LOCK = threading.Lock()
 ASPM_SCHEMA_READY: set[tuple[str, str]] = set()
 FINDING_EXPORT_COLUMNS = (
@@ -49,6 +54,7 @@ FINDING_EXPORT_COLUMNS = (
     "category",
     "cwes",
     "cves",
+    "data_types",
     "provider",
     "organization",
     "project",
@@ -57,6 +63,11 @@ FINDING_EXPORT_COLUMNS = (
     "application",
     "application_types",
     "primary_web_domain",
+    "correlation_method",
+    "correlated_branch",
+    "technical_owner",
+    "business_owner",
+    "contributing_developers",
     "path",
     "start_line",
     "package_name",
@@ -128,6 +139,7 @@ def create_aspm_schema(connection: Any, schema: str) -> None:
                 owner_user_id text NOT NULL,
                 tool_id bigint NOT NULL REFERENCES {tools}(tool_id) ON DELETE CASCADE,
                 branch_inventory_id bigint REFERENCES {branches}(branch_inventory_id) ON DELETE SET NULL,
+                correlation_method text,
                 fingerprint text NOT NULL,
                 external_id text,
                 title text NOT NULL,
@@ -174,6 +186,15 @@ def create_aspm_schema(connection: Any, schema: str) -> None:
                 PRIMARY KEY (finding_id, identifier_type, identifier)
             );
 
+            CREATE TABLE IF NOT EXISTS {finding_data_types} (
+                finding_id text NOT NULL REFERENCES {findings}(finding_id) ON DELETE CASCADE,
+                data_type text NOT NULL,
+                confidence double precision NOT NULL,
+                evidence_source text NOT NULL,
+                evidence text,
+                PRIMARY KEY (finding_id, data_type)
+            );
+
             CREATE TABLE IF NOT EXISTS {import_findings} (
                 import_id text NOT NULL REFERENCES {imports}(import_id) ON DELETE CASCADE,
                 finding_id text NOT NULL REFERENCES {findings}(finding_id) ON DELETE CASCADE,
@@ -205,6 +226,53 @@ def create_aspm_schema(connection: Any, schema: str) -> None:
                 PRIMARY KEY (branch_inventory_id, tool_id)
             );
 
+            CREATE TABLE IF NOT EXISTS {connector_syncs} (
+                sync_id text PRIMARY KEY,
+                owner_user_id text NOT NULL,
+                owner_user_login text NOT NULL,
+                connector_key text NOT NULL,
+                connector_name text NOT NULL,
+                endpoint text,
+                status text NOT NULL,
+                records_read integer NOT NULL DEFAULT 0,
+                findings_imported integer NOT NULL DEFAULT 0,
+                linked_findings integer NOT NULL DEFAULT 0,
+                unlinked_findings integer NOT NULL DEFAULT 0,
+                assets_covered integer NOT NULL DEFAULT 0,
+                error_message text,
+                metadata jsonb NOT NULL DEFAULT '{{}}'::jsonb,
+                started_at timestamptz NOT NULL DEFAULT now(),
+                completed_at timestamptz
+            );
+
+            CREATE TABLE IF NOT EXISTS {data_interactions} (
+                branch_inventory_id bigint NOT NULL REFERENCES {branches}(branch_inventory_id) ON DELETE CASCADE,
+                owner_user_id text NOT NULL,
+                data_type text NOT NULL,
+                confidence double precision NOT NULL,
+                finding_count integer NOT NULL,
+                evidence jsonb NOT NULL DEFAULT '[]'::jsonb,
+                first_observed_at timestamptz NOT NULL,
+                last_observed_at timestamptz NOT NULL,
+                PRIMARY KEY (branch_inventory_id, data_type)
+            );
+
+            CREATE TABLE IF NOT EXISTS {asset_risks} (
+                branch_inventory_id bigint PRIMARY KEY REFERENCES {branches}(branch_inventory_id) ON DELETE CASCADE,
+                owner_user_id text NOT NULL,
+                risk_score integer NOT NULL,
+                risk_band text NOT NULL,
+                technical_score integer NOT NULL,
+                data_sensitivity_score integer NOT NULL,
+                context_score integer NOT NULL,
+                active_findings integer NOT NULL,
+                critical_findings integer NOT NULL,
+                high_findings integer NOT NULL,
+                data_types text[] NOT NULL DEFAULT '{{}}',
+                risk_factors jsonb NOT NULL DEFAULT '[]'::jsonb,
+                calculated_at timestamptz NOT NULL DEFAULT now()
+            );
+
             CREATE INDEX IF NOT EXISTS {finding_owner_status_idx}
                 ON {findings} (owner_user_id, status, risk_score DESC);
             CREATE INDEX IF NOT EXISTS {finding_owner_severity_idx}
@@ -229,9 +297,21 @@ def create_aspm_schema(connection: Any, schema: str) -> None:
                 ON {events} (finding_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS {import_owner_idx}
                 ON {imports} (owner_user_id, started_at DESC);
+            CREATE INDEX IF NOT EXISTS {sync_owner_idx}
+                ON {connector_syncs} (owner_user_id, started_at DESC);
+            CREATE INDEX IF NOT EXISTS {interaction_owner_idx}
+                ON {data_interactions} (owner_user_id, data_type, confidence DESC);
+            CREATE INDEX IF NOT EXISTS {asset_risk_owner_idx}
+                ON {asset_risks} (owner_user_id, risk_score DESC);
+            CREATE INDEX IF NOT EXISTS {asset_risk_owner_band_idx}
+                ON {asset_risks} (owner_user_id, risk_band, risk_score DESC);
+            CREATE INDEX IF NOT EXISTS {asset_risk_data_types_idx}
+                ON {asset_risks} USING GIN (data_types);
 
             ALTER TABLE {imports}
                 ADD COLUMN IF NOT EXISTS error_message text;
+            ALTER TABLE {findings}
+                ADD COLUMN IF NOT EXISTS correlation_method text;
             """
         ).format(
             tools=identifier(resolved, "aspm_tools"),
@@ -240,9 +320,13 @@ def create_aspm_schema(connection: Any, schema: str) -> None:
             branches=identifier(resolved, "branch_inventory"),
             findings=identifier(resolved, "aspm_findings"),
             identifiers=identifier(resolved, "aspm_finding_identifiers"),
+            finding_data_types=identifier(resolved, "aspm_finding_data_types"),
             import_findings=identifier(resolved, "aspm_import_findings"),
             events=identifier(resolved, "aspm_finding_events"),
             coverage=identifier(resolved, "aspm_coverage"),
+            connector_syncs=identifier(resolved, "aspm_connector_syncs"),
+            data_interactions=identifier(resolved, "asset_data_interactions"),
+            asset_risks=identifier(resolved, "asset_risk_profiles"),
             finding_owner_status_idx=sql.Identifier(
                 f"{resolved}_aspm_finding_owner_status_idx"[:63]
             ),
@@ -259,6 +343,19 @@ def create_aspm_schema(connection: Any, schema: str) -> None:
             ),
             event_finding_idx=sql.Identifier(f"{resolved}_aspm_event_finding_idx"[:63]),
             import_owner_idx=sql.Identifier(f"{resolved}_aspm_import_owner_idx"[:63]),
+            sync_owner_idx=sql.Identifier(f"{resolved}_aspm_sync_owner_idx"[:63]),
+            interaction_owner_idx=sql.Identifier(
+                f"{resolved}_aspm_interaction_owner_idx"[:63]
+            ),
+            asset_risk_owner_idx=sql.Identifier(
+                f"{resolved}_aspm_asset_risk_owner_idx"[:63]
+            ),
+            asset_risk_owner_band_idx=sql.Identifier(
+                f"{resolved}_aspm_asset_risk_owner_band_idx"[:63]
+            ),
+            asset_risk_data_types_idx=sql.Identifier(
+                f"{resolved}_aspm_asset_risk_data_types_idx"[:63]
+            ),
         )
     )
     connection.execute(
@@ -285,6 +382,8 @@ class AspmRepository:
         self.dsn = dsn
         self.schema = schema_name(schema)
         self.risk_engine = risk_engine or RiskEngine()
+        self.data_classifier = DataInteractionClassifier()
+        self.asset_risk_engine = AssetRiskProfileEngine()
 
     def ensure_schema(self) -> None:
         key = (hashlib.sha256(self.dsn.encode("utf-8")).hexdigest(), self.schema)
@@ -362,6 +461,167 @@ class AspmRepository:
             **result,
         }
 
+    def ingest_batches(
+        self,
+        owner_user_id: str,
+        owner_user_login: str,
+        documents: Iterable[FindingDocument],
+    ) -> dict[str, Any]:
+        self.ensure_schema()
+        iterator = iter(documents)
+        try:
+            first = next(iterator)
+        except StopIteration as exc:
+            raise ValueError("Connector returned no finding batches.") from exc
+        owner = bounded_text(owner_user_id, 500) or "anonymous"
+        actor = bounded_text(owner_user_login, 500) or owner
+        import_id = uuid.uuid4().hex
+        started_at = datetime.now(timezone.utc)
+        with psycopg.connect(self.dsn, row_factory=dict_row) as connection:
+            tool_id = self._upsert_tool(connection, owner, first)
+            connection.execute(
+                sql.SQL(
+                    """
+                    INSERT INTO {imports} (
+                        import_id, owner_user_id, tool_id, source_format, status,
+                        finding_count, complete_snapshot, metadata
+                    ) VALUES (%s, %s, %s, %s, 'processing', 0, false, %s)
+                    """
+                ).format(imports=self._table("aspm_imports")),
+                (
+                    import_id,
+                    owner,
+                    tool_id,
+                    first.source_format,
+                    Jsonb(dict(first.metadata)),
+                ),
+            )
+        counts = {
+            "findings": 0,
+            "inserted": 0,
+            "updated": 0,
+            "linkedFindings": 0,
+        }
+        linked_assets: dict[int, int] = {}
+        complete_snapshot = False
+        metadata: dict[str, Any] = dict(first.metadata)
+        try:
+            for document in chain((first,), iterator):
+                if document.tool_key != first.tool_key:
+                    raise ValueError("All connector batches must use the same tool key.")
+                complete_snapshot = complete_snapshot or document.complete_snapshot
+                metadata.update(document.metadata)
+                with psycopg.connect(self.dsn, row_factory=dict_row) as connection:
+                    batch = self._process_finding_batch(
+                        connection,
+                        owner,
+                        actor,
+                        import_id,
+                        tool_id,
+                        document,
+                        datetime.now(timezone.utc),
+                    )
+                    counts["findings"] += len(document.findings)
+                    counts["inserted"] += batch["inserted"]
+                    counts["updated"] += batch["updated"]
+                    counts["linkedFindings"] += batch["linkedFindings"]
+                    for asset_id, finding_count in batch["linkedAssets"].items():
+                        linked_assets[asset_id] = (
+                            linked_assets.get(asset_id, 0) + finding_count
+                        )
+                    connection.execute(
+                        sql.SQL(
+                            """
+                            UPDATE {imports}
+                            SET finding_count = %s, inserted_count = %s,
+                                updated_count = %s, complete_snapshot = %s,
+                                metadata = %s
+                            WHERE import_id = %s AND owner_user_id = %s
+                            """
+                        ).format(imports=self._table("aspm_imports")),
+                        (
+                            counts["findings"],
+                            counts["inserted"],
+                            counts["updated"],
+                            complete_snapshot,
+                            Jsonb(metadata),
+                            import_id,
+                            owner,
+                        ),
+                    )
+            completed_at = datetime.now(timezone.utc)
+            with psycopg.connect(self.dsn, row_factory=dict_row) as connection:
+                for asset_id, finding_count in linked_assets.items():
+                    self._upsert_coverage(
+                        connection,
+                        owner,
+                        tool_id,
+                        import_id,
+                        asset_id,
+                        finding_count,
+                        completed_at,
+                    )
+                resolved = 0
+                if complete_snapshot and linked_assets:
+                    resolved = self._reconcile_snapshot(
+                        connection,
+                        owner,
+                        actor,
+                        tool_id,
+                        import_id,
+                        tuple(linked_assets),
+                        completed_at,
+                    )
+                for asset_id in linked_assets:
+                    interactions = self._refresh_asset_data_interactions(
+                        connection, owner, asset_id, completed_at
+                    )
+                    self._refresh_asset_risk_profile(
+                        connection, owner, asset_id, interactions
+                    )
+                connection.execute(
+                    sql.SQL(
+                        """
+                        UPDATE {imports}
+                        SET status = 'completed', resolved_count = %s,
+                            completed_at = %s
+                        WHERE import_id = %s AND owner_user_id = %s
+                        """
+                    ).format(imports=self._table("aspm_imports")),
+                    (resolved, completed_at, import_id, owner),
+                )
+        except Exception as exc:
+            with psycopg.connect(self.dsn) as connection:
+                connection.execute(
+                    sql.SQL(
+                        """
+                        UPDATE {imports}
+                        SET status = 'failed', error_count = error_count + 1,
+                            error_message = %s, completed_at = now()
+                        WHERE import_id = %s AND owner_user_id = %s
+                        """
+                    ).format(imports=self._table("aspm_imports")),
+                    (bounded_text(exc, 2000), import_id, owner),
+                )
+            raise
+        return {
+            "importId": import_id,
+            "status": "completed",
+            "tool": {
+                "key": first.tool_key,
+                "name": first.tool_name,
+                "type": first.tool_type,
+            },
+            **counts,
+            "resolved": resolved,
+            "assetsCovered": len(linked_assets),
+            "unlinkedFindings": counts["findings"] - counts["linkedFindings"],
+            "metadata": metadata,
+            "durationSeconds": round(
+                (datetime.now(timezone.utc) - started_at).total_seconds(), 3
+            ),
+        }
+
     def _ingest_document(
         self,
         owner: str,
@@ -372,64 +632,19 @@ class AspmRepository:
         now: datetime,
     ) -> dict[str, int]:
         with psycopg.connect(self.dsn, row_factory=dict_row) as connection:
-            inserted = 0
-            updated = 0
-            linked_assets: dict[int, int] = {}
-            asset_cache: dict[str, dict[str, Any] | None] = {}
-            for finding in document.findings:
-                location_key = finding.location.scope_key()
-                if location_key not in asset_cache:
-                    asset_cache[location_key] = self._resolve_asset(
-                        connection, owner, finding.location
-                    )
-                asset = asset_cache[location_key]
-                asset_id = int(asset["branch_inventory_id"]) if asset else None
-                context = self._asset_risk_context(asset)
-                assessment = self.risk_engine.assess(finding, context, now)
-                finding_id, was_inserted = self._upsert_finding(
-                    connection,
-                    owner,
-                    tool_id,
-                    finding,
-                    asset_id,
-                    assessment.score,
-                    assessment.band,
-                    assessment.factors,
-                    now,
-                )
-                self._sync_identifiers(connection, finding_id, finding)
-                connection.execute(
-                    sql.SQL(
-                        "INSERT INTO {table} (import_id, finding_id) VALUES (%s, %s) ON CONFLICT DO NOTHING"
-                    ).format(table=self._table("aspm_import_findings")),
-                    (import_id, finding_id),
-                )
-                if was_inserted:
-                    inserted += 1
-                    self._record_event(
-                        connection,
-                        finding_id,
-                        owner,
-                        actor,
-                        "created",
-                        "",
-                        finding.status,
-                        "Imported from scanner.",
-                        {"import_id": import_id},
-                    )
-                else:
-                    updated += 1
-                if asset_id is not None:
-                    linked_assets[asset_id] = linked_assets.get(asset_id, 0) + 1
-            for target in document.scanned_targets:
-                location_key = target.scope_key()
-                if location_key not in asset_cache:
-                    asset_cache[location_key] = self._resolve_asset(
-                        connection, owner, target
-                    )
-                asset = asset_cache[location_key]
-                if asset:
-                    linked_assets.setdefault(int(asset["branch_inventory_id"]), 0)
+            batch = self._process_finding_batch(
+                connection,
+                owner,
+                actor,
+                import_id,
+                tool_id,
+                document,
+                now,
+            )
+            inserted = batch["inserted"]
+            updated = batch["updated"]
+            linked_findings = batch["linkedFindings"]
+            linked_assets = batch["linkedAssets"]
             for asset_id, finding_count in linked_assets.items():
                 self._upsert_coverage(
                     connection,
@@ -451,6 +666,13 @@ class AspmRepository:
                     tuple(linked_assets),
                     now,
                 )
+            for asset_id in linked_assets:
+                interactions = self._refresh_asset_data_interactions(
+                    connection, owner, asset_id, now
+                )
+                self._refresh_asset_risk_profile(
+                    connection, owner, asset_id, interactions
+                )
             connection.execute(
                 sql.SQL(
                     """
@@ -467,11 +689,93 @@ class AspmRepository:
             "updated": updated,
             "resolved": resolved,
             "assetsCovered": len(linked_assets),
+            "linkedFindings": linked_findings,
+            "unlinkedFindings": len(document.findings) - linked_findings,
+        }
+
+    def _process_finding_batch(
+        self,
+        connection: Any,
+        owner: str,
+        actor: str,
+        import_id: str,
+        tool_id: int,
+        document: FindingDocument,
+        now: datetime,
+    ) -> dict[str, Any]:
+        inserted = 0
+        updated = 0
+        linked_findings = 0
+        linked_assets: dict[int, int] = {}
+        asset_cache: dict[str, dict[str, Any] | None] = {}
+        for finding in document.findings:
+            location_key = finding.location.scope_key()
+            if location_key not in asset_cache:
+                asset_cache[location_key] = self._resolve_asset(
+                    connection, owner, finding.location
+                )
+            asset = asset_cache[location_key]
+            asset_id = int(asset["branch_inventory_id"]) if asset else None
+            context = self._asset_risk_context(asset)
+            assessment = self.risk_engine.assess(finding, context, now)
+            finding_id, was_inserted = self._upsert_finding(
+                connection,
+                owner,
+                tool_id,
+                finding,
+                asset_id,
+                asset.get("correlation_method") if asset else "",
+                assessment.score,
+                assessment.band,
+                assessment.factors,
+                now,
+            )
+            self._sync_identifiers(connection, finding_id, finding)
+            self._sync_finding_data_types(connection, finding_id, finding)
+            connection.execute(
+                sql.SQL(
+                    "INSERT INTO {table} (import_id, finding_id) VALUES (%s, %s) ON CONFLICT DO NOTHING"
+                ).format(table=self._table("aspm_import_findings")),
+                (import_id, finding_id),
+            )
+            if was_inserted:
+                inserted += 1
+                self._record_event(
+                    connection,
+                    finding_id,
+                    owner,
+                    actor,
+                    "created",
+                    "",
+                    finding.status,
+                    "Imported from scanner.",
+                    {"import_id": import_id},
+                )
+            else:
+                updated += 1
+            if asset_id is not None:
+                linked_findings += 1
+                linked_assets[asset_id] = linked_assets.get(asset_id, 0) + 1
+        for target in document.scanned_targets:
+            location_key = target.scope_key()
+            if location_key not in asset_cache:
+                asset_cache[location_key] = self._resolve_asset(
+                    connection, owner, target
+                )
+            asset = asset_cache[location_key]
+            if asset:
+                linked_assets.setdefault(int(asset["branch_inventory_id"]), 0)
+        return {
+            "inserted": inserted,
+            "updated": updated,
+            "linkedFindings": linked_findings,
+            "linkedAssets": linked_assets,
         }
 
     def posture(self, owner_user_id: str) -> dict[str, Any]:
         self.ensure_schema()
         owner = bounded_text(owner_user_id, 500) or "anonymous"
+        self._ensure_asset_risk_profiles(owner)
         with psycopg.connect(self.dsn, row_factory=dict_row) as connection:
             summary = connection.execute(
                 sql.SQL(
@@ -484,13 +788,24 @@ class AspmRepository:
                         count(*) FILTER (WHERE f.status = ANY(%s::text[]) AND f.severity = 'high') AS high_findings,
                         count(*) FILTER (WHERE f.status = ANY(%s::text[]) AND f.due_at < now()) AS overdue_findings,
                         count(DISTINCT f.branch_inventory_id) FILTER (WHERE f.status = ANY(%s::text[])) AS affected_assets,
-                        COALESCE(round(avg(f.risk_score) FILTER (WHERE f.status = ANY(%s::text[]))), 0) AS average_risk
+                        COALESCE((
+                            SELECT round(avg(asset_risk.risk_score))
+                            FROM {asset_risks} asset_risk
+                            WHERE asset_risk.owner_user_id = %s
+                        ), 0) AS average_risk,
+                        COALESCE((
+                            SELECT count(*)
+                            FROM {asset_risks} asset_risk
+                            WHERE asset_risk.owner_user_id = %s
+                              AND asset_risk.risk_band = 'critical'
+                        ), 0) AS critical_risk_assets
                     FROM {findings} f
                     WHERE f.owner_user_id = %s
                     """
                 ).format(
                     branches=self._table("branch_inventory"),
                     findings=self._table("aspm_findings"),
+                    asset_risks=self._table("asset_risk_profiles"),
                 ),
                 (
                     owner,
@@ -499,7 +814,8 @@ class AspmRepository:
                     list(ACTIVE_FINDING_STATUSES),
                     list(ACTIVE_FINDING_STATUSES),
                     list(ACTIVE_FINDING_STATUSES),
-                    list(ACTIVE_FINDING_STATUSES),
+                    owner,
+                    owner,
                     owner,
                 ),
             ).fetchone()
@@ -518,25 +834,38 @@ class AspmRepository:
                         r.project,
                         r.repo_name AS repository,
                         b.branch_name AS branch,
-                        max(f.risk_score) AS max_risk_score,
-                        count(*) AS active_findings,
-                        count(*) FILTER (WHERE f.severity = 'critical') AS critical_findings,
-                        count(*) FILTER (WHERE f.due_at < now()) AS overdue_findings
-                    FROM {findings} f
-                    JOIN {branches} b ON b.branch_inventory_id = f.branch_inventory_id
+                        risk.risk_score AS max_risk_score,
+                        risk.risk_band,
+                        risk.technical_score,
+                        risk.data_sensitivity_score,
+                        risk.context_score,
+                        risk.data_types,
+                        risk.active_findings,
+                        risk.critical_findings,
+                        COALESCE(overdue.overdue_findings, 0) AS overdue_findings
+                    FROM {asset_risks} risk
+                    JOIN {branches} b ON b.branch_inventory_id = risk.branch_inventory_id
                     JOIN {repositories} r ON r.repository_id = b.repository_id
-                    WHERE f.owner_user_id = %s AND f.status = ANY(%s::text[])
-                    GROUP BY b.branch_inventory_id, r.provider, r.organization, r.project,
-                             r.repo_name, b.branch_name
-                    ORDER BY max(f.risk_score) DESC, count(*) DESC
+                    LEFT JOIN LATERAL (
+                        SELECT count(*) AS overdue_findings
+                        FROM {findings} f
+                        WHERE f.branch_inventory_id = b.branch_inventory_id
+                          AND f.owner_user_id = risk.owner_user_id
+                          AND f.status = ANY(%s::text[])
+                          AND f.due_at < now()
+                    ) overdue ON true
+                    WHERE risk.owner_user_id = %s
+                      AND risk.active_findings > 0
+                    ORDER BY risk.risk_score DESC, risk.active_findings DESC
                     LIMIT 10
                     """
                 ).format(
                     findings=self._table("aspm_findings"),
+                    asset_risks=self._table("asset_risk_profiles"),
                     branches=self._table("branch_inventory"),
                     repositories=self._table("repositories"),
                 ),
-                (owner, list(ACTIVE_FINDING_STATUSES)),
+                (list(ACTIVE_FINDING_STATUSES), owner),
             ).fetchall()
             tools = connection.execute(
                 sql.SQL(
@@ -701,7 +1030,7 @@ class AspmRepository:
         with psycopg.connect(self.dsn, row_factory=dict_row) as connection:
             current = connection.execute(
                 sql.SQL(
-                    "SELECT finding_id, status, assignee, due_at FROM {table} WHERE finding_id = %s AND owner_user_id = %s FOR UPDATE"
+                    "SELECT finding_id, status, assignee, due_at, branch_inventory_id FROM {table} WHERE finding_id = %s AND owner_user_id = %s FOR UPDATE"
                 ).format(table=self._table("aspm_findings")),
                 (resolved_id, owner),
             ).fetchone()
@@ -744,6 +1073,14 @@ class AspmRepository:
                     "due_at": parsed_due_at.isoformat() if parsed_due_at else None,
                 },
             )
+            if current["branch_inventory_id"] is not None:
+                asset_id = int(current["branch_inventory_id"])
+                interactions = self._refresh_asset_data_interactions(
+                    connection, owner, asset_id, datetime.now(timezone.utc)
+                )
+                self._refresh_asset_risk_profile(
+                    connection, owner, asset_id, interactions
+                )
         return json_rows([updated])[0]
 
     def finding_detail(self, owner_user_id: str, finding_id: str) -> dict[str, Any]:
@@ -909,6 +1246,9 @@ class AspmRepository:
                 ),
             ).fetchone()
             self._rerisk_asset(connection, owner, branch_inventory_id)
+            self._refresh_asset_risk_profile(
+                connection, owner, branch_inventory_id
+            )
         return json_rows([row])[0]
 
     def asset_profile(
@@ -916,6 +1256,7 @@ class AspmRepository:
     ) -> dict[str, Any]:
         self.ensure_schema()
         owner = bounded_text(owner_user_id, 500) or "anonymous"
+        self._ensure_asset_risk_profiles(owner)
         with psycopg.connect(self.dsn, row_factory=dict_row) as connection:
             row = connection.execute(
                 sql.SQL(
@@ -933,11 +1274,37 @@ class AspmRepository:
                             SELECT 1 FROM {domains} d
                             WHERE d.branch_inventory_id = b.branch_inventory_id
                         ) AS domain_detected,
+                        COALESCE(risk.risk_score, 0) AS risk_score,
+                        COALESCE(risk.risk_band, 'low') AS risk_band,
+                        COALESCE(risk.technical_score, 0) AS technical_score,
+                        COALESCE(risk.data_sensitivity_score, 0) AS data_sensitivity_score,
+                        COALESCE(risk.context_score, 0) AS context_score,
+                        COALESCE(risk.active_findings, 0) AS active_findings,
+                        COALESCE(risk.data_types, '{{}}'::text[]) AS data_types,
+                        COALESCE(risk.risk_factors, '[]'::jsonb) AS risk_factors,
+                        COALESCE(interactions.items, '[]'::jsonb) AS data_interactions,
+                        risk.calculated_at AS risk_calculated_at,
                         p.updated_by,
                         p.updated_at
                     FROM {branches} b
                     JOIN {repositories} r ON r.repository_id = b.repository_id
                     LEFT JOIN {profiles} p ON p.branch_inventory_id = b.branch_inventory_id
+                    LEFT JOIN {asset_risks} risk ON risk.branch_inventory_id = b.branch_inventory_id
+                    LEFT JOIN LATERAL (
+                        SELECT jsonb_agg(
+                            jsonb_build_object(
+                                'dataType', interaction.data_type,
+                                'confidence', interaction.confidence,
+                                'findingCount', interaction.finding_count,
+                                'evidence', interaction.evidence,
+                                'firstObservedAt', interaction.first_observed_at,
+                                'lastObservedAt', interaction.last_observed_at
+                            ) ORDER BY interaction.confidence DESC, interaction.data_type
+                        ) AS items
+                        FROM {interactions} interaction
+                        WHERE interaction.branch_inventory_id = b.branch_inventory_id
+                          AND interaction.owner_user_id = b.owner_user_id
+                    ) interactions ON true
                     WHERE b.branch_inventory_id = %s AND b.owner_user_id = %s
                     """
                 ).format(
@@ -945,12 +1312,224 @@ class AspmRepository:
                     repositories=self._table("repositories"),
                     profiles=self._table("asset_security_profiles"),
                     domains=self._table("web_domains"),
+                    asset_risks=self._table("asset_risk_profiles"),
+                    interactions=self._table("asset_data_interactions"),
                 ),
                 (branch_inventory_id, owner),
             ).fetchone()
         if not row:
             raise KeyError("Inventory asset not found.")
         return json_rows([row])[0]
+
+    def asset_risks(
+        self,
+        owner_user_id: str,
+        query: str = "",
+        risk_bands: list[str] | None = None,
+        data_types: list[str] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        self.ensure_schema()
+        owner = bounded_text(owner_user_id, 500) or "anonymous"
+        self._ensure_asset_risk_profiles(owner)
+        bounded_limit = max(1, min(int(limit), 500))
+        bounded_offset = max(0, int(offset))
+        clauses = [sql.SQL("b.owner_user_id = %s")]
+        parameters: list[Any] = [owner]
+        search = bounded_text(query, 500)
+        if search:
+            clauses.append(
+                sql.SQL(
+                    "(b.search_vector @@ websearch_to_tsquery('simple'::regconfig, %s) OR r.repo_name ILIKE %s)"
+                )
+            )
+            parameters.extend((search, f"%{escape_like(search)}%"))
+        normalized_bands = sorted(
+            {
+                bounded_text(item, 20).casefold()
+                for item in risk_bands or []
+                if bounded_text(item, 20).casefold()
+                in {"low", "medium", "high", "critical"}
+            }
+        )
+        if normalized_bands:
+            clauses.append(
+                sql.SQL("COALESCE(risk.risk_band, 'low') = ANY(%s::text[])")
+            )
+            parameters.append(normalized_bands)
+        normalized_types = sorted(
+            {
+                bounded_text(item, 100).casefold()
+                for item in data_types or []
+                if bounded_text(item, 100)
+            }
+        )
+        if normalized_types:
+            clauses.append(sql.SQL("risk.data_types && %s::text[]"))
+            parameters.append(normalized_types)
+        where = sql.SQL(" AND ").join(clauses)
+        view = sql.SQL(
+            """
+            SELECT
+                b.branch_inventory_id,
+                COALESCE(b.inventory_name, b.mobile_name, r.repo_name) AS application,
+                r.provider, r.organization, r.project, r.repo_name AS repository,
+                r.web_url AS repository_url, b.branch_name AS branch,
+                COALESCE(types.inventory_types, '') AS application_types,
+                COALESCE(domains.primary_web_domain, '') AS primary_web_domain,
+                COALESCE(risk.risk_score, 0) AS risk_score,
+                COALESCE(risk.risk_band, 'low') AS risk_band,
+                COALESCE(risk.technical_score, 0) AS technical_score,
+                COALESCE(risk.data_sensitivity_score, 0) AS data_sensitivity_score,
+                COALESCE(risk.context_score, 0) AS context_score,
+                COALESCE(risk.active_findings, 0) AS active_findings,
+                COALESCE(risk.critical_findings, 0) AS critical_findings,
+                COALESCE(risk.high_findings, 0) AS high_findings,
+                COALESCE(risk.data_types, '{{}}'::text[]) AS data_types,
+                COALESCE(risk.risk_factors, '[]'::jsonb) AS risk_factors,
+                risk.calculated_at
+            FROM {branches} b
+            JOIN {repositories} r ON r.repository_id = b.repository_id
+            LEFT JOIN {asset_risks} risk ON risk.branch_inventory_id = b.branch_inventory_id
+            LEFT JOIN LATERAL (
+                SELECT string_agg(inventory_type, '; ' ORDER BY inventory_type) AS inventory_types
+                FROM {types} WHERE branch_inventory_id = b.branch_inventory_id
+            ) types ON true
+            LEFT JOIN LATERAL (
+                SELECT max(domain) FILTER (WHERE is_primary) AS primary_web_domain
+                FROM {domains} WHERE branch_inventory_id = b.branch_inventory_id
+            ) domains ON true
+            WHERE {where}
+            """
+        ).format(
+            branches=self._table("branch_inventory"),
+            repositories=self._table("repositories"),
+            asset_risks=self._table("asset_risk_profiles"),
+            types=self._table("inventory_types"),
+            domains=self._table("web_domains"),
+            where=where,
+        )
+        with psycopg.connect(self.dsn, row_factory=dict_row) as connection:
+            total = connection.execute(
+                sql.SQL("SELECT count(*) FROM ({view}) assets").format(view=view),
+                parameters,
+            ).fetchone()["count"]
+            rows = connection.execute(
+                sql.SQL(
+                    """
+                    SELECT * FROM ({view}) assets
+                    ORDER BY risk_score DESC, lower(application), branch_inventory_id
+                    LIMIT %s OFFSET %s
+                    """
+                ).format(view=view),
+                (*parameters, bounded_limit, bounded_offset),
+            ).fetchall()
+        return {
+            "rows": json_rows(rows),
+            "total": int(total),
+            "limit": bounded_limit,
+            "offset": bounded_offset,
+            "filters": {
+                "query": search,
+                "riskBands": normalized_bands,
+                "dataTypes": normalized_types,
+            },
+        }
+
+    def start_connector_sync(
+        self,
+        owner_user_id: str,
+        owner_user_login: str,
+        connector_key: str,
+        connector_name: str,
+        endpoint: str,
+    ) -> str:
+        self.ensure_schema()
+        sync_id = uuid.uuid4().hex
+        owner = bounded_text(owner_user_id, 500) or "anonymous"
+        with psycopg.connect(self.dsn) as connection:
+            connection.execute(
+                sql.SQL(
+                    """
+                    INSERT INTO {table} (
+                        sync_id, owner_user_id, owner_user_login, connector_key,
+                        connector_name, endpoint, status
+                    ) VALUES (%s, %s, %s, %s, %s, %s, 'running')
+                    """
+                ).format(table=self._table("aspm_connector_syncs")),
+                (
+                    sync_id,
+                    owner,
+                    bounded_text(owner_user_login, 500) or owner,
+                    bounded_text(connector_key, 100),
+                    bounded_text(connector_name, 200),
+                    bounded_text(endpoint, 2000) or None,
+                ),
+            )
+        return sync_id
+
+    def finish_connector_sync(
+        self,
+        owner_user_id: str,
+        sync_id: str,
+        status: str,
+        result: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> None:
+        self.ensure_schema()
+        owner = bounded_text(owner_user_id, 500) or "anonymous"
+        values = result or {}
+        with psycopg.connect(self.dsn) as connection:
+            updated = connection.execute(
+                sql.SQL(
+                    """
+                    UPDATE {table}
+                    SET status = %s, records_read = %s, findings_imported = %s,
+                        linked_findings = %s, unlinked_findings = %s,
+                        assets_covered = %s, error_message = %s, metadata = %s,
+                        completed_at = now()
+                    WHERE sync_id = %s AND owner_user_id = %s
+                    """
+                ).format(table=self._table("aspm_connector_syncs")),
+                (
+                    bounded_text(status, 50),
+                    int(values.get("recordsRead", 0)),
+                    int(values.get("findings", 0)),
+                    int(values.get("linkedFindings", 0)),
+                    int(values.get("unlinkedFindings", 0)),
+                    int(values.get("assetsCovered", 0)),
+                    bounded_text(error, 2000) or None,
+                    Jsonb(values.get("metadata", {})),
+                    bounded_text(sync_id, 100),
+                    owner,
+                ),
+            ).rowcount
+        if not updated:
+            raise KeyError("Connector sync not found.")
+
+    def connector_syncs(
+        self, owner_user_id: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        self.ensure_schema()
+        owner = bounded_text(owner_user_id, 500) or "anonymous"
+        with psycopg.connect(self.dsn, row_factory=dict_row) as connection:
+            rows = connection.execute(
+                sql.SQL(
+                    """
+                    SELECT sync_id, connector_key, connector_name, endpoint, status,
+                           records_read, findings_imported, linked_findings,
+                           unlinked_findings, assets_covered, error_message,
+                           metadata, started_at, completed_at
+                    FROM {table}
+                    WHERE owner_user_id = %s
+                    ORDER BY started_at DESC
+                    LIMIT %s
+                    """
+                ).format(table=self._table("aspm_connector_syncs")),
+                (owner, max(1, min(int(limit), 200))),
+            ).fetchall()
+        return json_rows(rows)
 
     def _upsert_tool(
         self, connection: Any, owner: str, document: FindingDocument
@@ -982,35 +1561,131 @@ class AspmRepository:
     def _resolve_asset(
         self, connection: Any, owner: str, location: SourceLocation
     ) -> dict[str, Any] | None:
-        if not location.repository:
-            return None
-        clauses = [
-            sql.SQL("b.owner_user_id = %s"),
-            sql.SQL("lower(r.repo_name) = lower(%s)"),
-        ]
-        parameters: list[Any] = [owner, location.repository]
-        for column, value in (
-            ("provider", location.provider),
-            ("organization", location.organization),
-            ("project", location.project),
-        ):
-            if value:
-                clauses.append(
-                    sql.SQL("lower(r.{column}) = lower(%s)").format(
-                        column=sql.Identifier(column)
-                    )
-                )
-                parameters.append(value)
+        branch_clause = sql.SQL("")
+        branch_parameters: list[Any] = []
         if location.branch:
-            clauses.append(sql.SQL("lower(b.branch_name) = lower(%s)"))
-            parameters.append(location.branch.removeprefix("refs/heads/"))
+            branch_clause = sql.SQL(" AND lower(b.branch_name) = lower(%s)")
+            branch_parameters.append(location.branch.removeprefix("refs/heads/"))
+        if location.repository:
+            clauses = [
+                sql.SQL("b.owner_user_id = %s"),
+                sql.SQL("lower(r.repo_name) = lower(%s)"),
+            ]
+            parameters: list[Any] = [owner, location.repository]
+            for column, value in (
+                ("provider", location.provider),
+                ("organization", location.organization),
+                ("project", location.project),
+            ):
+                if value:
+                    clauses.append(
+                        sql.SQL("lower(r.{column}) = lower(%s)").format(
+                            column=sql.Identifier(column)
+                        )
+                    )
+                    parameters.append(value)
+            result = self._unique_asset(
+                connection,
+                sql.SQL(" AND ").join(clauses) + branch_clause,
+                [*parameters, *branch_parameters],
+                "repository",
+            )
+            if result:
+                return result
+            if branch_parameters:
+                result = self._unique_asset(
+                    connection,
+                    sql.SQL(" AND ").join(clauses),
+                    parameters,
+                    "repository_default_branch",
+                )
+                if result:
+                    return result
+        if location.application_identifier:
+            result = self._unique_asset(
+                connection,
+                sql.SQL(
+                    """
+                    b.owner_user_id = %s AND (
+                        lower(COALESCE(b.mobile_identifier, '')) = lower(%s)
+                        OR EXISTS (
+                            SELECT 1 FROM {listings} listing
+                            WHERE listing.branch_inventory_id = b.branch_inventory_id
+                              AND lower(COALESCE(listing.app_identifier, '')) = lower(%s)
+                        )
+                    )
+                    """
+                ).format(listings=self._table("store_listings"))
+                + branch_clause,
+                [
+                    owner,
+                    location.application_identifier,
+                    location.application_identifier,
+                    *branch_parameters,
+                ],
+                "application_identifier",
+            )
+            if result:
+                return result
+        domain = web_domain(location.web_url)
+        if domain:
+            result = self._unique_asset(
+                connection,
+                sql.SQL(
+                    """
+                    b.owner_user_id = %s AND EXISTS (
+                        SELECT 1 FROM {domains} matched_domain
+                        WHERE matched_domain.branch_inventory_id = b.branch_inventory_id
+                          AND lower(matched_domain.domain) = ANY(%s::text[])
+                    )
+                    """
+                ).format(domains=self._table("web_domains"))
+                + branch_clause,
+                [owner, domain_candidates(domain), *branch_parameters],
+                "web_domain",
+            )
+            if result:
+                return result
+        if location.application:
+            result = self._unique_asset(
+                connection,
+                sql.SQL(
+                    """
+                    b.owner_user_id = %s AND (
+                        lower(COALESCE(b.inventory_name, '')) = lower(%s)
+                        OR lower(COALESCE(b.mobile_name, '')) = lower(%s)
+                        OR lower(r.repo_name) = lower(%s)
+                    )
+                    """
+                )
+                + branch_clause,
+                [
+                    owner,
+                    location.application,
+                    location.application,
+                    location.application,
+                    *branch_parameters,
+                ],
+                "application_name",
+            )
+            if result:
+                return result
+        return None
+
+    def _unique_asset(
+        self,
+        connection: Any,
+        where: Any,
+        parameters: list[Any],
+        correlation_method: str,
+    ) -> dict[str, Any] | None:
         rows = connection.execute(
             sql.SQL(
                 """
                 SELECT b.branch_inventory_id, b.owner_user_id,
                        COALESCE(domains.domain, '') AS primary_web_domain,
                        profile.criticality, profile.internet_exposed,
-                       profile.data_classification
+                       profile.data_classification, %s AS correlation_method
                 FROM {branches} b
                 JOIN {repositories} r ON r.repository_id = b.repository_id
                 LEFT JOIN LATERAL (
@@ -1028,11 +1703,38 @@ class AspmRepository:
                 repositories=self._table("repositories"),
                 domains=self._table("web_domains"),
                 profiles=self._table("asset_security_profiles"),
-                where=sql.SQL(" AND ").join(clauses),
+                where=where,
             ),
-            parameters,
+            [correlation_method, *parameters],
         ).fetchall()
         return rows[0] if len(rows) == 1 else None
+
+    def _asset_context_row(
+        self, connection: Any, owner: str, asset_id: int
+    ) -> dict[str, Any] | None:
+        return connection.execute(
+            sql.SQL(
+                """
+                SELECT b.branch_inventory_id, b.owner_user_id,
+                       COALESCE(domains.domain, '') AS primary_web_domain,
+                       profile.criticality, profile.internet_exposed,
+                       profile.data_classification
+                FROM {branches} b
+                LEFT JOIN LATERAL (
+                    SELECT domain FROM {domains}
+                    WHERE branch_inventory_id = b.branch_inventory_id
+                    ORDER BY is_primary DESC, domain LIMIT 1
+                ) domains ON true
+                LEFT JOIN {profiles} profile ON profile.branch_inventory_id = b.branch_inventory_id
+                WHERE b.branch_inventory_id = %s AND b.owner_user_id = %s
+                """
+            ).format(
+                branches=self._table("branch_inventory"),
+                domains=self._table("web_domains"),
+                profiles=self._table("asset_security_profiles"),
+            ),
+            (asset_id, owner),
+        ).fetchone()
 
     def _asset_risk_context(
         self,
@@ -1056,6 +1758,7 @@ class AspmRepository:
         tool_id: int,
         finding: FindingInput,
         asset_id: int | None,
+        correlation_method: str,
         risk_score: int,
         risk_band: str,
         risk_factors: tuple[dict[str, Any], ...],
@@ -1068,21 +1771,22 @@ class AspmRepository:
             sql.SQL(
                 """
                 INSERT INTO {findings} (
-                    finding_id, owner_user_id, tool_id, branch_inventory_id,
-                    fingerprint, external_id, title, description, rule_id, category,
-                    severity, status, confidence, provider, organization, project,
-                    repository, branch, path, start_line, end_line, scanner_url,
-                    remediation, package_name, package_version, fixed_version,
+                    finding_id, owner_user_id, tool_id, branch_inventory_id, correlation_method,
+                    fingerprint, external_id, title, description, rule_id,
+                    category, severity, status, confidence, provider, organization,
+                    project, repository, branch, path, start_line, end_line,
+                    scanner_url, remediation, package_name, package_version, fixed_version,
                     cvss_score, epss_score, exploit_available, risk_score, risk_band,
                     risk_factors, due_at, first_seen, last_seen, resolved_at, raw_data
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT (owner_user_id, tool_id, fingerprint) DO UPDATE SET
                     branch_inventory_id = COALESCE(EXCLUDED.branch_inventory_id, {findings}.branch_inventory_id),
+                    correlation_method = COALESCE(EXCLUDED.correlation_method, {findings}.correlation_method),
                     external_id = EXCLUDED.external_id,
                     title = EXCLUDED.title,
                     description = EXCLUDED.description,
@@ -1134,6 +1838,7 @@ class AspmRepository:
                 owner,
                 tool_id,
                 asset_id,
+                bounded_text(correlation_method, 100) or None,
                 finding.fingerprint(str(tool_id)),
                 finding.external_id or None,
                 finding.title,
@@ -1190,6 +1895,344 @@ class AspmRepository:
                 ).format(table=self._table("aspm_finding_identifiers")),
                 (finding_id, identifier_type, value),
             )
+
+    def _sync_finding_data_types(
+        self, connection: Any, finding_id: str, finding: FindingInput
+    ) -> None:
+        interactions = self.data_classifier.classify(finding)
+        connection.execute(
+            sql.SQL("DELETE FROM {table} WHERE finding_id = %s").format(
+                table=self._table("aspm_finding_data_types")
+            ),
+            (finding_id,),
+        )
+        for interaction in interactions:
+            connection.execute(
+                sql.SQL(
+                    """
+                    INSERT INTO {table} (
+                        finding_id, data_type, confidence, evidence_source, evidence
+                    ) VALUES (%s, %s, %s, %s, %s)
+                    """
+                ).format(table=self._table("aspm_finding_data_types")),
+                (
+                    finding_id,
+                    interaction.data_type,
+                    interaction.confidence,
+                    interaction.source,
+                    interaction.evidence or None,
+                ),
+            )
+
+    def _refresh_asset_data_interactions(
+        self,
+        connection: Any,
+        owner: str,
+        asset_id: int,
+        now: datetime,
+    ) -> tuple[AssetDataInteraction, ...]:
+        rows = connection.execute(
+            sql.SQL(
+                """
+                SELECT d.data_type, d.confidence, d.evidence_source, d.evidence,
+                       f.finding_id, f.title
+                FROM {data_types} d
+                JOIN {findings} f ON f.finding_id = d.finding_id
+                WHERE f.owner_user_id = %s
+                  AND f.branch_inventory_id = %s
+                  AND f.status = ANY(%s::text[])
+                ORDER BY d.data_type, d.confidence DESC, f.last_seen DESC
+                """
+            ).format(
+                data_types=self._table("aspm_finding_data_types"),
+                findings=self._table("aspm_findings"),
+            ),
+            (owner, asset_id, list(ACTIVE_FINDING_STATUSES)),
+        ).fetchall()
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            item = grouped.setdefault(
+                row["data_type"],
+                {"confidence": 0.0, "findings": set(), "evidence": []},
+            )
+            item["confidence"] = max(item["confidence"], float(row["confidence"]))
+            item["findings"].add(row["finding_id"])
+            if len(item["evidence"]) < 10:
+                item["evidence"].append(
+                    {
+                        "findingId": row["finding_id"],
+                        "title": row["title"],
+                        "source": row["evidence_source"],
+                        "evidence": row["evidence"] or "",
+                        "confidence": float(row["confidence"]),
+                    }
+                )
+        existing = {
+            row["data_type"]: row["first_observed_at"]
+            for row in connection.execute(
+                sql.SQL(
+                    "SELECT data_type, first_observed_at FROM {table} WHERE branch_inventory_id = %s AND owner_user_id = %s"
+                ).format(table=self._table("asset_data_interactions")),
+                (asset_id, owner),
+            ).fetchall()
+        }
+        if grouped:
+            connection.execute(
+                sql.SQL(
+                    "DELETE FROM {table} WHERE branch_inventory_id = %s AND owner_user_id = %s AND NOT (data_type = ANY(%s::text[]))"
+                ).format(table=self._table("asset_data_interactions")),
+                (asset_id, owner, list(grouped)),
+            )
+        else:
+            connection.execute(
+                sql.SQL(
+                    "DELETE FROM {table} WHERE branch_inventory_id = %s AND owner_user_id = %s"
+                ).format(table=self._table("asset_data_interactions")),
+                (asset_id, owner),
+            )
+        interactions: list[AssetDataInteraction] = []
+        for data_type, item in sorted(grouped.items()):
+            finding_count = len(item["findings"])
+            evidence = tuple(item["evidence"])
+            confidence = float(item["confidence"])
+            connection.execute(
+                sql.SQL(
+                    """
+                    INSERT INTO {table} (
+                        branch_inventory_id, owner_user_id, data_type, confidence,
+                        finding_count, evidence, first_observed_at, last_observed_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (branch_inventory_id, data_type) DO UPDATE SET
+                        confidence = EXCLUDED.confidence,
+                        finding_count = EXCLUDED.finding_count,
+                        evidence = EXCLUDED.evidence,
+                        last_observed_at = EXCLUDED.last_observed_at
+                    """
+                ).format(table=self._table("asset_data_interactions")),
+                (
+                    asset_id,
+                    owner,
+                    data_type,
+                    confidence,
+                    finding_count,
+                    Jsonb(list(evidence)),
+                    existing.get(data_type) or now,
+                    now,
+                ),
+            )
+            interactions.append(
+                AssetDataInteraction(data_type, confidence, finding_count, evidence)
+            )
+        return tuple(interactions)
+
+    def _ensure_asset_risk_profiles(self, owner: str) -> None:
+        with psycopg.connect(self.dsn, row_factory=dict_row) as connection:
+            assets = connection.execute(
+                sql.SQL(
+                    """
+                    SELECT
+                        b.branch_inventory_id,
+                        COALESCE(domain.domain, '') AS primary_web_domain,
+                        profile.criticality,
+                        profile.internet_exposed,
+                        profile.data_classification
+                    FROM {branches} b
+                    LEFT JOIN {profiles} profile
+                      ON profile.branch_inventory_id = b.branch_inventory_id
+                    LEFT JOIN {asset_risks} risk
+                      ON risk.branch_inventory_id = b.branch_inventory_id
+                    LEFT JOIN LATERAL (
+                        SELECT d.domain
+                        FROM {domains} d
+                        WHERE d.branch_inventory_id = b.branch_inventory_id
+                        ORDER BY d.is_primary DESC, d.domain
+                        LIMIT 1
+                    ) domain ON true
+                    WHERE b.owner_user_id = %s
+                      AND risk.branch_inventory_id IS NULL
+                    ORDER BY b.branch_inventory_id
+                    """
+                ).format(
+                    branches=self._table("branch_inventory"),
+                    profiles=self._table("asset_security_profiles"),
+                    asset_risks=self._table("asset_risk_profiles"),
+                    domains=self._table("web_domains"),
+                ),
+                (owner,),
+            ).fetchall()
+            if not assets:
+                return
+            asset_ids = [int(row["branch_inventory_id"]) for row in assets]
+            findings_by_asset: dict[int, list[tuple[int, str]]] = {}
+            for row in connection.execute(
+                sql.SQL(
+                    """
+                    SELECT branch_inventory_id, risk_score, severity
+                    FROM {findings}
+                    WHERE owner_user_id = %s
+                      AND branch_inventory_id = ANY(%s::bigint[])
+                      AND status = ANY(%s::text[])
+                    """
+                ).format(findings=self._table("aspm_findings")),
+                (owner, asset_ids, list(ACTIVE_FINDING_STATUSES)),
+            ).fetchall():
+                findings_by_asset.setdefault(
+                    int(row["branch_inventory_id"]), []
+                ).append((int(row["risk_score"]), row["severity"]))
+            interactions_by_asset: dict[int, list[AssetDataInteraction]] = {}
+            for row in connection.execute(
+                sql.SQL(
+                    """
+                    SELECT branch_inventory_id, data_type, confidence,
+                           finding_count, evidence
+                    FROM {interactions}
+                    WHERE owner_user_id = %s
+                      AND branch_inventory_id = ANY(%s::bigint[])
+                    ORDER BY branch_inventory_id, confidence DESC, data_type
+                    """
+                ).format(interactions=self._table("asset_data_interactions")),
+                (owner, asset_ids),
+            ).fetchall():
+                interactions_by_asset.setdefault(
+                    int(row["branch_inventory_id"]), []
+                ).append(
+                    AssetDataInteraction(
+                        data_type=row["data_type"],
+                        confidence=float(row["confidence"]),
+                        finding_count=int(row["finding_count"]),
+                        evidence=tuple(row["evidence"] or ()),
+                    )
+                )
+            calculated_at = datetime.now(timezone.utc)
+            values = []
+            for asset in assets:
+                asset_id = int(asset["branch_inventory_id"])
+                assessment = self.asset_risk_engine.assess(
+                    findings_by_asset.get(asset_id, []),
+                    tuple(interactions_by_asset.get(asset_id, [])),
+                    self._asset_risk_context(asset),
+                )
+                values.append(
+                    (
+                        asset_id,
+                        owner,
+                        assessment.score,
+                        assessment.band,
+                        assessment.technical_score,
+                        assessment.data_sensitivity_score,
+                        assessment.context_score,
+                        assessment.active_findings,
+                        assessment.critical_findings,
+                        assessment.high_findings,
+                        list(assessment.data_types),
+                        Jsonb(list(assessment.factors)),
+                        calculated_at,
+                    )
+                )
+            with connection.cursor() as cursor:
+                cursor.executemany(
+                    sql.SQL(
+                        """
+                        INSERT INTO {asset_risks} (
+                            branch_inventory_id, owner_user_id, risk_score,
+                            risk_band, technical_score, data_sensitivity_score,
+                            context_score, active_findings, critical_findings,
+                            high_findings, data_types, risk_factors, calculated_at
+                        ) VALUES (
+                            %s, %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s
+                        )
+                        ON CONFLICT (branch_inventory_id) DO NOTHING
+                        """
+                    ).format(asset_risks=self._table("asset_risk_profiles")),
+                    values,
+                )
+
+    def _refresh_asset_risk_profile(
+        self,
+        connection: Any,
+        owner: str,
+        asset_id: int,
+        interactions: tuple[AssetDataInteraction, ...] | None = None,
+    ) -> None:
+        finding_rows = connection.execute(
+            sql.SQL(
+                """
+                SELECT risk_score, severity
+                FROM {findings}
+                WHERE owner_user_id = %s AND branch_inventory_id = %s
+                  AND status = ANY(%s::text[])
+                """
+            ).format(findings=self._table("aspm_findings")),
+            (owner, asset_id, list(ACTIVE_FINDING_STATUSES)),
+        ).fetchall()
+        if interactions is None:
+            interaction_rows = connection.execute(
+                sql.SQL(
+                    """
+                    SELECT data_type, confidence, finding_count, evidence
+                    FROM {table}
+                    WHERE owner_user_id = %s AND branch_inventory_id = %s
+                    ORDER BY data_type
+                    """
+                ).format(table=self._table("asset_data_interactions")),
+                (owner, asset_id),
+            ).fetchall()
+            interactions = tuple(
+                AssetDataInteraction(
+                    row["data_type"],
+                    float(row["confidence"]),
+                    int(row["finding_count"]),
+                    tuple(row["evidence"] or []),
+                )
+                for row in interaction_rows
+            )
+        context_row = self._asset_context_row(connection, owner, asset_id)
+        if not context_row:
+            return
+        profile = self.asset_risk_engine.assess(
+            [(int(row["risk_score"]), row["severity"]) for row in finding_rows],
+            interactions,
+            self._asset_risk_context(context_row),
+        )
+        connection.execute(
+            sql.SQL(
+                """
+                INSERT INTO {table} (
+                    branch_inventory_id, owner_user_id, risk_score, risk_band,
+                    technical_score, data_sensitivity_score, context_score,
+                    active_findings, critical_findings, high_findings, data_types,
+                    risk_factors, calculated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                ON CONFLICT (branch_inventory_id) DO UPDATE SET
+                    risk_score = EXCLUDED.risk_score,
+                    risk_band = EXCLUDED.risk_band,
+                    technical_score = EXCLUDED.technical_score,
+                    data_sensitivity_score = EXCLUDED.data_sensitivity_score,
+                    context_score = EXCLUDED.context_score,
+                    active_findings = EXCLUDED.active_findings,
+                    critical_findings = EXCLUDED.critical_findings,
+                    high_findings = EXCLUDED.high_findings,
+                    data_types = EXCLUDED.data_types,
+                    risk_factors = EXCLUDED.risk_factors,
+                    calculated_at = now()
+                """
+            ).format(table=self._table("asset_risk_profiles")),
+            (
+                asset_id,
+                owner,
+                profile.score,
+                profile.band,
+                profile.technical_score,
+                profile.data_sensitivity_score,
+                profile.context_score,
+                profile.active_findings,
+                profile.critical_findings,
+                profile.high_findings,
+                list(profile.data_types),
+                Jsonb(list(profile.factors)),
+            ),
+        )
 
     def _upsert_coverage(
         self,
@@ -1553,6 +2596,19 @@ class AspmRepository:
             clauses.append(sql.SQL("f.branch_inventory_id IS NOT NULL"))
         if filters.get("has_asset") is False:
             clauses.append(sql.SQL("f.branch_inventory_id IS NULL"))
+        if filters.get("scanned_in_last_30_days") is True:
+            clauses.append(
+                sql.SQL(
+                    """
+                    EXISTS (
+                        SELECT 1 FROM {coverage} coverage
+                        WHERE coverage.branch_inventory_id = f.branch_inventory_id
+                          AND coverage.owner_user_id = f.owner_user_id
+                          AND coverage.last_scan_at >= now() - interval '30 days'
+                    )
+                    """
+                ).format(coverage=self._table("aspm_coverage"))
+            )
         return sql.SQL(" AND ").join(clauses), parameters
 
     def _finding_view(self) -> Any:
@@ -1572,13 +2628,23 @@ class AspmRepository:
                     COALESCE(b.inventory_name, b.mobile_name, f.repository, 'Unlinked finding') AS application,
                     COALESCE(types.inventory_types, '') AS application_types,
                     COALESCE(domains.primary_web_domain, '') AS primary_web_domain,
+                    COALESCE(
+                        f.correlation_method,
+                        CASE WHEN f.branch_inventory_id IS NULL THEN 'unlinked' ELSE 'inventory_asset' END
+                    ) AS correlation_method,
+                    COALESCE(b.branch_name, f.branch, '') AS correlated_branch,
+                    COALESCE(profile.technical_owner, '') AS technical_owner,
+                    COALESCE(profile.business_owner, '') AS business_owner,
+                    COALESCE(contributors.developers, '') AS contributing_developers,
                     COALESCE(ids.cwes, '') AS cwes,
                     COALESCE(ids.cves, '') AS cves,
+                    COALESCE(finding_data.data_types, '') AS data_types,
                     r.web_url AS repository_url
                 FROM {findings} f
                 JOIN {tools} t ON t.tool_id = f.tool_id
                 LEFT JOIN {branches} b ON b.branch_inventory_id = f.branch_inventory_id
                 LEFT JOIN {repositories} r ON r.repository_id = b.repository_id
+                LEFT JOIN {profiles} profile ON profile.branch_inventory_id = b.branch_inventory_id
                 LEFT JOIN LATERAL (
                     SELECT string_agg(inventory_type, '; ' ORDER BY inventory_type) AS inventory_types
                     FROM {types} WHERE branch_inventory_id = b.branch_inventory_id
@@ -1588,11 +2654,19 @@ class AspmRepository:
                     FROM {domains} WHERE branch_inventory_id = b.branch_inventory_id
                 ) domains ON true
                 LEFT JOIN LATERAL (
+                    SELECT string_agg(developer, '; ' ORDER BY developer) AS developers
+                    FROM {contributors} WHERE branch_inventory_id = b.branch_inventory_id
+                ) contributors ON true
+                LEFT JOIN LATERAL (
                     SELECT
                         string_agg(identifier, '; ' ORDER BY identifier) FILTER (WHERE identifier_type = 'cwe') AS cwes,
                         string_agg(identifier, '; ' ORDER BY identifier) FILTER (WHERE identifier_type = 'cve') AS cves
                     FROM {identifiers} WHERE finding_id = f.finding_id
                 ) ids ON true
+                LEFT JOIN LATERAL (
+                    SELECT string_agg(data_type, '; ' ORDER BY data_type) AS data_types
+                    FROM {finding_data_types} WHERE finding_id = f.finding_id
+                ) finding_data ON true
             )
             """
         ).format(
@@ -1600,9 +2674,12 @@ class AspmRepository:
             tools=self._table("aspm_tools"),
             branches=self._table("branch_inventory"),
             repositories=self._table("repositories"),
+            profiles=self._table("asset_security_profiles"),
             types=self._table("inventory_types"),
             domains=self._table("web_domains"),
+            contributors=self._table("branch_contributors"),
             identifiers=self._table("aspm_finding_identifiers"),
+            finding_data_types=self._table("aspm_finding_data_types"),
         )
 
     def _table(self, name: str) -> Any:
@@ -1629,6 +2706,11 @@ def normalize_finding_filters(filters: dict[str, Any] | None) -> dict[str, Any]:
         normalized[key] = bounded_text(value.get(key), 500)
     for key in ("overdue", "unassigned", "has_asset"):
         normalized[key] = value.get(key) if isinstance(value.get(key), bool) else None
+    normalized["scanned_in_last_30_days"] = (
+        value.get("scanned_in_last_30_days")
+        if isinstance(value.get("scanned_in_last_30_days"), bool)
+        else None
+    )
     sort_by = bounded_text(value.get("sort_by"), 50)
     normalized["sort_by"] = (
         sort_by
@@ -1687,6 +2769,21 @@ def identifier(schema: str, name: str) -> Any:
 
 def escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def web_domain(value: str) -> str:
+    raw = bounded_text(value, 2000)
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    return (parsed.hostname or "").casefold().rstrip(".")
+
+
+def domain_candidates(value: str) -> list[str]:
+    normalized = value.casefold().rstrip(".")
+    if normalized.startswith("www."):
+        return [normalized, normalized[4:]]
+    return [normalized, f"www.{normalized}"]
 
 
 def json_rows(rows: Any) -> list[dict[str, Any]]:

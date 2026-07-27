@@ -2503,6 +2503,23 @@ button:focus-visible {
   border-radius: 7px;
 }
 
+button.posture-kpi {
+  display: block;
+  width: 100%;
+  color: inherit;
+  text-align: left;
+}
+
+button.posture-kpi:hover {
+  background: var(--surface-raised);
+  border-color: var(--border-strong);
+}
+
+button.posture-kpi:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
 .posture-kpi::before,
 .coverage-kpis > div::before {
   position: absolute;
@@ -2753,6 +2770,67 @@ button:focus-visible {
   margin: 0;
 }
 
+.connector-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.connector-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.connector-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.connector-item.not-configured {
+  cursor: default;
+  opacity: 0.78;
+}
+
+.connector-item input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+}
+
+.connector-copy,
+.connector-copy strong,
+.connector-copy small {
+  display: block;
+  min-width: 0;
+}
+
+.connector-copy strong {
+  font-size: 12px;
+}
+
+.connector-copy small,
+.connector-sync-summary {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.connector-sync-summary {
+  min-height: 18px;
+  margin-top: 12px;
+}
+
 .empty-inline {
   color: var(--muted);
   font-size: 12px;
@@ -2809,6 +2887,33 @@ button:focus-visible {
   gap: 10px;
 }
 
+.asset-risk-toolbar {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(140px, 0.3fr) minmax(210px, 0.45fr) auto auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.asset-risk-table {
+  min-width: 1120px;
+}
+
+.asset-risk-table th:nth-child(1) {
+  width: 76px;
+}
+
+.asset-risk-table th:nth-child(2),
+.asset-risk-table th:nth-child(3) {
+  width: 20%;
+}
+
+.table-subtext {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .finding-search-field {
   min-width: 0;
 }
@@ -2841,7 +2946,7 @@ button:focus-visible {
 }
 
 .finding-table {
-  min-width: 1050px;
+  min-width: 1440px;
 }
 
 .finding-table th:nth-child(1) {
@@ -2853,7 +2958,15 @@ button:focus-visible {
 }
 
 .finding-table th:nth-child(3) {
-  width: 22%;
+  width: 18%;
+}
+
+.finding-table th:nth-child(4) {
+  width: 16%;
+}
+
+.finding-table th:nth-child(5) {
+  width: 20%;
 }
 
 .finding-table tbody tr {
@@ -2881,6 +2994,13 @@ button:focus-visible {
   margin-top: 3px;
   color: var(--muted);
   font-size: 10px;
+}
+
+.finding-scope {
+  margin: 14px 0 0;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .risk-score-badge,
@@ -3022,6 +3142,41 @@ button:focus-visible {
   margin-top: 14px;
 }
 
+.asset-profile-risk {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin-top: 16px;
+  overflow: hidden;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.asset-profile-risk > div {
+  min-width: 0;
+  padding: 12px;
+  background: var(--surface-muted);
+}
+
+.asset-profile-risk span,
+.asset-profile-risk strong {
+  display: block;
+}
+
+.asset-profile-risk span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.asset-profile-risk strong {
+  margin-top: 5px;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
 .finding-history-item strong {
   font-size: 11px;
 }
@@ -3053,6 +3208,18 @@ button:focus-visible {
     grid-template-columns: repeat(3, minmax(150px, 1fr));
   }
 
+  .asset-risk-toolbar {
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
+  }
+
+  .connector-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .asset-profile-risk {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .finding-search-field {
     grid-column: 1 / -1;
   }
@@ -3081,6 +3248,19 @@ button:focus-visible {
   .asset-profile-grid,
   .finding-detail-summary {
     grid-template-columns: 1fr;
+  }
+
+  .asset-risk-toolbar,
+  .asset-profile-risk {
+    grid-template-columns: 1fr;
+  }
+
+  .connector-actions {
+    width: 100%;
+  }
+
+  .connector-actions button {
+    flex: 1;
   }
 
   .finding-search-field,

@@ -38,7 +38,7 @@ CONTROL_CHARACTER_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 SQL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SCHEMA_READY_LOCK = threading.Lock()
 SCHEMA_READY: set[tuple[str, str, str]] = set()
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SCHEMA_VERSION_COMPONENT = "inventory"
 MOBILE_ROUTING_FIELDS = ("nowsecure_target", *STORE_FIELDNAMES)
 
@@ -59,9 +59,13 @@ NORMALIZED_TABLES = (
     "asset_security_profiles",
     "aspm_findings",
     "aspm_finding_identifiers",
+    "aspm_finding_data_types",
     "aspm_import_findings",
     "aspm_finding_events",
     "aspm_coverage",
+    "aspm_connector_syncs",
+    "asset_data_interactions",
+    "asset_risk_profiles",
 )
 
 EXPORT_COLUMNS = (
@@ -74,6 +78,7 @@ EXPORT_COLUMNS = (
     "branch_name",
     "branch_last_updated",
     "branch_age_bucket",
+    "inventory_status",
     "web_url",
     "source_url",
     "primary_web_domain",
@@ -142,6 +147,7 @@ SEARCHABLE_EXPORT_COLUMNS = (
     "web_domain_sources",
     "branch_contributing_developers",
     "confidence",
+    "inventory_status",
     "categories",
     "mobile_name",
     "mobile_version",
@@ -508,6 +514,7 @@ class PostgresInventoryWriter:
                     branch_name,
                     branch_last_updated,
                     branch_age_bucket,
+                    inventory_status,
                     inventory_name,
                     inventory_version,
                     primary_language,
@@ -535,7 +542,8 @@ class PostgresInventoryWriter:
                 )
                 VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, now()
                 )
                 ON CONFLICT (repository_id, branch_name, owner_user_id)
                 DO UPDATE SET
@@ -543,6 +551,7 @@ class PostgresInventoryWriter:
                     owner_user_login = EXCLUDED.owner_user_login,
                     branch_last_updated = EXCLUDED.branch_last_updated,
                     branch_age_bucket = EXCLUDED.branch_age_bucket,
+                    inventory_status = EXCLUDED.inventory_status,
                     inventory_name = EXCLUDED.inventory_name,
                     inventory_version = EXCLUDED.inventory_version,
                     primary_language = EXCLUDED.primary_language,
@@ -578,6 +587,7 @@ class PostgresInventoryWriter:
                 text_value(result.get("branch_name")),
                 timestamp_value(result.get("branch_last_updated")),
                 text_value(result.get("branch_age_bucket")),
+                text_value(result.get("inventory_status") or "classified"),
                 text_value(result.get("inventory_name")),
                 text_value(result.get("inventory_version")),
                 text_value(result.get("primary_language")),
@@ -858,6 +868,9 @@ class PostgresInventoryWriter:
             "branch_name": text_value(result.get("branch_name")),
             "branch_last_updated": timestamp_value(result.get("branch_last_updated")),
             "branch_age_bucket": text_value(result.get("branch_age_bucket")),
+            "inventory_status": text_value(
+                result.get("inventory_status") or "classified"
+            ),
             "web_url": text_value(result.get("web_url")),
             "source_url": text_value(result.get("source_url")),
             "primary_web_domain": text_value(result.get("primary_web_domain")),
@@ -1029,6 +1042,7 @@ def create_flat_table(connection: Any, schema: str, table: str) -> None:
                 branch_name text NOT NULL,
                 branch_last_updated timestamptz,
                 branch_age_bucket text,
+                inventory_status text NOT NULL DEFAULT 'classified',
                 web_url text,
                 source_url text,
                 primary_web_domain text,
@@ -1192,6 +1206,7 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
                 branch_name text NOT NULL,
                 branch_last_updated timestamptz,
                 branch_age_bucket text,
+                inventory_status text NOT NULL DEFAULT 'classified',
                 inventory_name text,
                 inventory_version text,
                 primary_language text,
@@ -1237,6 +1252,11 @@ def create_normalized_tables(connection: Any, schema: str) -> None:
     connection.execute(
         sql.SQL(
             "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS nowsecure_target text"
+        ).format(table=branch_inventory)
+    )
+    connection.execute(
+        sql.SQL(
+            "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS inventory_status text NOT NULL DEFAULT 'classified'"
         ).format(table=branch_inventory)
     )
     connection.execute(
@@ -1836,7 +1856,8 @@ def create_export_view(connection: Any, schema: str) -> None:
                 COALESCE(domains.web_domain_evidence, '[]'::jsonb) AS web_domain_evidence,
                 b.branch_inventory_id,
                 b.search_vector,
-                b.nowsecure_target
+                b.nowsecure_target,
+                b.inventory_status
             FROM {branch_inventory} b
             JOIN {repositories} r ON r.repository_id = b.repository_id
             LEFT JOIN LATERAL (
@@ -1931,6 +1952,12 @@ def database_status(
             branch_count = normalized_row_count(
                 connection, resolved_schema, owner_user_id
             )
+            repository_count = repository_row_count(
+                connection, resolved_schema, owner_user_id
+            )
+            status_counts = inventory_status_row_counts(
+                connection, resolved_schema, owner_user_id
+            )
             flat_count = flat_row_count(
                 connection, resolved_schema, resolved_table, owner_user_id
             )
@@ -1942,7 +1969,10 @@ def database_status(
                 "schema": resolved_schema,
                 "flatTable": resolved_table,
                 "normalizedTables": list(NORMALIZED_TABLES),
+                "repositoryRows": repository_count,
                 "branchRows": branch_count,
+                "classifiedRows": status_counts.get("classified", 0),
+                "inventoryStatusRows": status_counts,
                 "flatRows": flat_count,
                 "observabilityRows": observability_row_count(
                     connection, resolved_schema
@@ -2222,6 +2252,7 @@ def inventory_search_filter(
         ("project", resolved.projects),
         ("repo_name", resolved.repositories),
         ("confidence", resolved.confidences),
+        ("inventory_status", resolved.inventory_statuses),
         ("web_domain_status", resolved.domain_statuses),
     ):
         if values:
@@ -2376,6 +2407,30 @@ def normalized_row_count(connection: Any, schema: str, owner_user_id: str) -> in
     )
 
 
+def repository_row_count(connection: Any, schema: str, owner_user_id: str) -> int:
+    return int(
+        connection.execute(
+            sql.SQL(
+                "SELECT count(*) FROM {table} WHERE (%s = '' OR owner_user_id = %s)"
+            ).format(table=object_identifier(schema, "repositories")),
+            (owner_user_id, owner_user_id),
+        ).fetchone()[0]
+    )
+
+
+def inventory_status_row_counts(
+    connection: Any, schema: str, owner_user_id: str
+) -> dict[str, int]:
+    rows = connection.execute(
+        sql.SQL(
+            "SELECT inventory_status, count(*) FROM {table} "
+            "WHERE (%s = '' OR owner_user_id = %s) GROUP BY inventory_status"
+        ).format(table=object_identifier(schema, "branch_inventory")),
+        (owner_user_id, owner_user_id),
+    ).fetchall()
+    return {str(status or "unclassified"): int(count) for status, count in rows}
+
+
 def flat_row_count(connection: Any, schema: str, table: str, owner_user_id: str) -> int:
     return int(
         connection.execute(
@@ -2427,6 +2482,7 @@ POSTGRES_COLUMNS = (
     "branch_name",
     "branch_last_updated",
     "branch_age_bucket",
+    "inventory_status",
     "web_url",
     "source_url",
     "primary_web_domain",
@@ -2480,6 +2536,7 @@ POSTGRES_COLUMNS = (
 FLAT_TABLE_MIGRATIONS = (
     ("owner_user_id", "text NOT NULL DEFAULT 'anonymous'"),
     ("owner_user_login", "text NOT NULL DEFAULT 'anonymous'"),
+    ("inventory_status", "text NOT NULL DEFAULT 'classified'"),
     ("branch_contributing_developers", "text"),
     ("primary_web_domain", "text"),
     ("web_domains", "text[] NOT NULL DEFAULT '{}'"),

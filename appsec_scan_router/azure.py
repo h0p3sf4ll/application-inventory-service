@@ -180,7 +180,17 @@ class AzureDevOpsClient:
                 return projects
 
     def list_repos(self, project_name: str) -> list[dict[str, Any]]:
-        data = self.get_json(f"/{project_name}/_apis/git/repositories")
+        data = self.get_json(
+            f"/{project_name}/_apis/git/repositories",
+            {"includeHidden": "true"},
+        )
+        return data.get("value", [])
+
+    def list_all_repos(self) -> list[dict[str, Any]]:
+        data = self.get_json(
+            "/_apis/git/repositories",
+            {"includeHidden": "true"},
+        )
         return data.get("value", [])
 
     def list_branches(self, project_name: str, repo_id: str) -> list[dict[str, Any]]:

@@ -78,6 +78,9 @@ class SourceLocation:
     path: str = ""
     start_line: int | None = None
     end_line: int | None = None
+    application: str = ""
+    application_identifier: str = ""
+    web_url: str = ""
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | None) -> SourceLocation:
@@ -104,6 +107,23 @@ class SourceLocation:
                 item.get("start_line") or item.get("startLine") or item.get("line")
             ),
             end_line=positive_int_or_none(item.get("end_line") or item.get("endLine")),
+            application=bounded_text(
+                item.get("application") or item.get("application_name"), 500
+            ),
+            application_identifier=bounded_text(
+                item.get("application_identifier")
+                or item.get("applicationIdentifier")
+                or item.get("app_identifier")
+                or item.get("package_key"),
+                500,
+            ),
+            web_url=bounded_text(
+                item.get("web_url")
+                or item.get("webUrl")
+                or item.get("target_url")
+                or item.get("targetUrl"),
+                2000,
+            ),
         )
 
     def identity(self) -> str:
@@ -116,6 +136,9 @@ class SourceLocation:
                 self.repository,
                 self.branch,
                 self.path,
+                self.application,
+                self.application_identifier,
+                self.web_url,
             )
         )
 
@@ -128,8 +151,27 @@ class SourceLocation:
                 self.project,
                 self.repository,
                 self.branch,
+                self.application,
+                self.application_identifier,
+                self.web_url,
             )
         )
+
+    def has_asset_anchor(self) -> bool:
+        return bool(
+            self.repository
+            or self.application_identifier
+            or self.web_url
+            or self.application
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DataInteraction:
+    data_type: str
+    confidence: float
+    source: str
+    evidence: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +198,7 @@ class FindingInput:
     exploit_available: bool = False
     first_seen: datetime | None = None
     last_seen: datetime | None = None
+    data_interactions: tuple[DataInteraction, ...] = ()
     raw_data: Mapping[str, Any] = field(default_factory=dict)
 
     def fingerprint(self, tool_key: str) -> str:
@@ -233,11 +276,15 @@ def normalize_status(value: Any, default: str = "open") -> str:
     aliases = {
         "new": "open",
         "confirmed": "triaged",
+        "reviewing": "triaged",
+        "provisionally_ignored": "triaged",
         "reopened": "open",
         "in_progress": "in_progress",
         "inprogress": "in_progress",
         "closed": "resolved",
         "fixed": "resolved",
+        "fixing": "in_progress",
+        "ignored": "accepted",
         "dismissed": "false_positive",
         "wont_fix": "accepted",
         "won_t_fix": "accepted",

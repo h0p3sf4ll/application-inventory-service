@@ -492,7 +492,7 @@ def main(argv: list[str] | None = None) -> int:
     except AzureDevOpsError as exc:
         LOGGER.error("Scan aborted: %s", exc)
         return 1
-    print(f"Done. Found {result_count} inventory branches.")
+    print(f"Done. Inventoried {result_count} repositories or branches.")
     print(f"XLSX:              {xlsx_path}")
     print(f"Semgrep targets:   {semgrep_path}")
     print(f"SonarQube targets: {sonarqube_path}")

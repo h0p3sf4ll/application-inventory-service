@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+from .aspm_connectors import ConnectorService
 from .aspm_ingest import parse_finding_document
 from .aspm_postgres import AspmRepository
 from .auth import (
@@ -116,6 +117,8 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         started = time.monotonic()
         try:
             super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
         finally:
             method = clean_text(getattr(self, "command", ""))
             path = urlparse(clean_text(getattr(self, "path", ""))).path
@@ -250,6 +253,18 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/aspm/assets/profile":
             self.handle_aspm_asset_profile()
+            return
+        if path == "/api/aspm/assets/risks":
+            self.handle_aspm_asset_risks()
+            return
+        if path == "/api/aspm/connectors/status":
+            self.handle_aspm_connector_status()
+            return
+        if path == "/api/aspm/connectors/sync":
+            self.handle_aspm_connector_sync()
+            return
+        if path == "/api/aspm/connectors/history":
+            self.handle_aspm_connector_history()
             return
         if path.startswith("/api/scans/") and path.rsplit("/", 1)[-1] in {
             "pause",
@@ -920,6 +935,102 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except Exception:
             self.handle_aspm_error("asset.profile")
+
+    def handle_aspm_asset_risks(self) -> None:
+        try:
+            record, repository, payload = self.aspm_request()
+            if not record:
+                return
+            risk_bands = payload.get("riskBands")
+            data_types = payload.get("dataTypes")
+            result = repository.asset_risks(
+                owner_scope(record),
+                query=clean_text(payload.get("query")),
+                risk_bands=risk_bands if isinstance(risk_bands, list) else None,
+                data_types=data_types if isinstance(data_types, list) else None,
+                limit=positive_int(payload.get("limit"), 100),
+                offset=max(0, integer_value(payload.get("offset"), 0)),
+            )
+            self.send_json({"assets": result})
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception:
+            self.handle_aspm_error("assets.risks")
+
+    def handle_aspm_connector_status(self) -> None:
+        service = None
+        try:
+            record, repository, payload = self.aspm_request()
+            if not record:
+                return
+            service = ConnectorService(
+                repository,
+                owner_scope(record),
+                owner_login(record),
+                positive_int(payload.get("timeout"), 30),
+            )
+            self.send_json(
+                {
+                    "connectors": service.status(),
+                    "syncs": repository.connector_syncs(owner_scope(record), 20),
+                }
+            )
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception:
+            self.handle_aspm_error("connectors.status")
+        finally:
+            if service:
+                service.close()
+
+    def handle_aspm_connector_sync(self) -> None:
+        service = None
+        try:
+            record, repository, payload = self.aspm_request()
+            if not record:
+                return
+            values = payload.get("connectors")
+            connectors = values if isinstance(values, list) else None
+            service = ConnectorService(
+                repository,
+                owner_scope(record),
+                owner_login(record),
+                positive_int(payload.get("timeout"), 30),
+            )
+            result = service.sync(connectors)
+            status = {
+                "completed": HTTPStatus.CREATED,
+                "partial": HTTPStatus.MULTI_STATUS,
+                "failed": HTTPStatus.BAD_GATEWAY,
+            }[result["status"]]
+            response: dict[str, Any] = {"sync": result}
+            if result["status"] == "failed":
+                response["error"] = "No security scanner completed successfully."
+            self.send_json(response, status)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception:
+            self.handle_aspm_error("connectors.sync")
+        finally:
+            if service:
+                service.close()
+
+    def handle_aspm_connector_history(self) -> None:
+        try:
+            record, repository, payload = self.aspm_request()
+            if not record:
+                return
+            self.send_json(
+                {
+                    "syncs": repository.connector_syncs(
+                        owner_scope(record), positive_int(payload.get("limit"), 50)
+                    )
+                }
+            )
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception:
+            self.handle_aspm_error("connectors.history")
 
     def aspm_request(
         self, max_bytes: int | None = None

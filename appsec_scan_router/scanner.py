@@ -143,7 +143,7 @@ def scan_ado_organizations(
     results.sort(key=row_sort_key)
     if retain_results:
         LOGGER.info(
-            "Finished multi-organization Azure DevOps scan in %.1fs; found %s inventory branches",
+            "Finished multi-organization Azure DevOps scan in %.1fs; inventoried %s repositories or branches",
             time.monotonic() - start,
             len(results),
         )
@@ -173,7 +173,7 @@ def scan_github_organizations(
     results.sort(key=row_sort_key)
     if retain_results:
         LOGGER.info(
-            "Finished multi-owner GitHub scan in %.1fs; found %s inventory branches",
+            "Finished multi-owner GitHub scan in %.1fs; inventoried %s repositories or branches",
             time.monotonic() - start,
             len(results),
         )
@@ -213,7 +213,11 @@ def scan_mixed(
         results = [row for future in futures for row in future.result()]
     results.sort(key=row_sort_key)
     if retain_results:
-        LOGGER.info("Finished mixed-source scan in %.1fs; found %s inventory branches", time.monotonic() - start, len(results))
+        LOGGER.info(
+            "Finished mixed-source scan in %.1fs; inventoried %s repositories or branches",
+            time.monotonic() - start,
+            len(results),
+        )
     else:
         LOGGER.info("Finished streaming mixed-source scan in %.1fs", time.monotonic() - start)
     return results
@@ -273,11 +277,11 @@ def scan_single_org(
             LOGGER.info("Filtering inventory to application types: %s", ", ".join(config.application_types))
 
         results: list[dict[str, Any]] | None = [] if retain_results else None
-        detected_count = 0
+        inventory_count = 0
 
         def consume_result(result: dict[str, Any]) -> None:
-            nonlocal detected_count
-            detected_count += 1
+            nonlocal inventory_count
+            inventory_count += 1
             if on_result:
                 on_result(result)
 
@@ -366,7 +370,11 @@ def scan_single_org(
 
         if results is not None:
             results.sort(key=row_sort_key)
-        LOGGER.info("Finished in %.1fs; found %s inventory branches", time.monotonic() - start, detected_count)
+        LOGGER.info(
+            "Finished in %.1fs; inventoried %s repositories or branches",
+            time.monotonic() - start,
+            inventory_count,
+        )
         return results or []
     finally:
         client.close()
@@ -411,7 +419,7 @@ def handle_branch_scan_future(
 
     if result and on_result:
         on_result(result)
-    if result:
+    if result and result.get("inventory_status") == "classified":
         log_detected_result(result)
     return result
 
@@ -427,23 +435,47 @@ def scan_branch_target(
     store_client: StoreLookupClient | None,
     application_types: Iterable[str] = (),
 ) -> dict[str, Any] | None:
-    return scan_branch(
-        client=client,
-        target=RepoScanTarget(
-            project_name=target.project_name,
-            repo=target.repo,
-            organization=target.organization,
-            provider=target.provider,
-        ),
-        branch_name=target.branch_name,
-        content_executor=content_executor,
-        min_confidence_rank=min_confidence_rank,
-        max_commits_per_repo=max_commits_per_repo,
-        branch_age_days=branch_age_days,
-        activity_mode=activity_mode,
-        store_client=store_client,
-        application_types=application_types,
+    repo_target = RepoScanTarget(
+        project_name=target.project_name,
+        repo=target.repo,
+        organization=target.organization,
+        provider=target.provider,
     )
+    selected_types = normalize_application_types(application_types)
+    if target.inventory_status:
+        return None if selected_types else build_repository_inventory_row(
+            repo_target,
+            target.branch_name,
+            target.inventory_status,
+            branch_age_days,
+        )
+    try:
+        return scan_branch(
+            client=client,
+            target=repo_target,
+            branch_name=target.branch_name,
+            content_executor=content_executor,
+            min_confidence_rank=min_confidence_rank,
+            max_commits_per_repo=max_commits_per_repo,
+            branch_age_days=branch_age_days,
+            activity_mode=activity_mode,
+            store_client=store_client,
+            application_types=selected_types,
+        )
+    except Exception as exc:
+        LOGGER.warning(
+            "Failed to inventory branch %s/%s@%s: %s",
+            target.project_name,
+            target.repo.get("name", ""),
+            target.branch_name,
+            exc,
+        )
+        return None if selected_types else build_repository_inventory_row(
+            repo_target,
+            target.branch_name,
+            "scan_failed",
+            branch_age_days,
+        )
 
 
 def scan_repo(
@@ -494,22 +526,49 @@ def list_branch_targets(
     repo_name = repo.get("name", "")
 
     if not repo_id:
-        LOGGER.warning("Skipping repo without id in project %s: %s", target.project_name, repo)
-        return []
+        LOGGER.warning("Repository has no id in project %s: %s", target.project_name, repo)
+        return [
+            BranchScanTarget(
+                project_name=target.project_name,
+                repo=repo,
+                branch_name=default_branch_name_from_repo(repo),
+                organization=target.organization,
+                provider=target.provider,
+                inventory_status="scan_failed",
+            )
+        ]
     if repo.get("isDisabled"):
-        LOGGER.info("Skipping disabled repo: %s/%s", target.project_name, repo_name)
-        return []
+        LOGGER.info("Inventorying disabled repo: %s/%s", target.project_name, repo_name)
+        return [
+            BranchScanTarget(
+                project_name=target.project_name,
+                repo=repo,
+                branch_name=default_branch_name_from_repo(repo),
+                organization=target.organization,
+                provider=target.provider,
+                inventory_status="disabled",
+            )
+        ]
 
     branch_name = default_branch_name_from_repo(repo)
     if not branch_name:
         branch_name = fallback_branch_name(client, target)
     if not branch_name:
         LOGGER.info(
-            "Skipping repo without a scannable default or fallback branch: %s/%s",
+            "Inventorying repo without a scannable default or fallback branch: %s/%s",
             target.project_name,
             repo_name,
         )
-        return []
+        return [
+            BranchScanTarget(
+                project_name=target.project_name,
+                repo=repo,
+                branch_name="",
+                organization=target.organization,
+                provider=target.provider,
+                inventory_status="no_branch",
+            )
+        ]
 
     return [
         BranchScanTarget(
@@ -537,43 +596,80 @@ def scan_branch(
     repo = target.repo
     repo_id = repo.get("id", "")
     repo_name = repo.get("name", "")
+    normalized_application_types = normalize_application_types(application_types)
 
     try:
         items = client.list_repo_items(target.project_name, repo_id, branch_name)
     except AzureDevOpsError as exc:
         if exc.status_code == 404:
-            LOGGER.debug("Skipping unavailable branch contents: %s/%s@%s", target.project_name, repo_name, branch_name)
-            return None
+            LOGGER.info("Inventorying unavailable branch contents: %s/%s@%s", target.project_name, repo_name, branch_name)
+            return None if normalized_application_types else build_repository_inventory_row(
+                target,
+                branch_name,
+                "unavailable",
+                branch_age_days,
+            )
         raise
 
     paths = [item.get("path", "") for item in items if item.get("path")]
     if not paths:
-        LOGGER.debug("Skipping empty branch: %s/%s@%s", target.project_name, repo_name, branch_name)
-        return None
+        LOGGER.debug("Inventorying empty branch: %s/%s@%s", target.project_name, repo_name, branch_name)
+        return None if normalized_application_types else build_repository_inventory_row(
+            target,
+            branch_name,
+            "empty",
+            branch_age_days,
+        )
 
     content_paths = [path for path in paths if should_fetch_content(path)]
     contents = fetch_contents(client, target.project_name, repo_id, branch_name, content_paths, content_executor)
     confidence, evidence, score = detect_inventory_repo(paths, contents)
-
-    if confidence == "none" or confidence_rank(confidence) < min_confidence_rank:
-        LOGGER.debug("No match: %s/%s@%s", target.project_name, repo_name, branch_name)
-        return None
-
     categories = sorted({item.category for item in evidence})
     inventory_types = inventory_types_from_categories(categories)
-    normalized_application_types = normalize_application_types(application_types)
-    if not inventory_type_matches(inventory_types, normalized_application_types):
+    meets_confidence = (
+        confidence != "none" and confidence_rank(confidence) >= min_confidence_rank
+    )
+    if normalized_application_types and (
+        not meets_confidence
+        or not inventory_type_matches(inventory_types, normalized_application_types)
+    ):
         LOGGER.debug(
-            "Skipping type-filtered match: %s/%s@%s types=%s filter=%s",
+            "Skipping filtered branch: %s/%s@%s confidence=%s types=%s filter=%s",
             target.project_name,
             repo_name,
             branch_name,
+            confidence,
             ", ".join(inventory_types) or "(unknown)",
             ", ".join(normalized_application_types),
         )
         return None
 
     metadata = extract_mobile_metadata(contents)
+    if not meets_confidence:
+        latest_activity = fetch_repo_activity(
+            client=client,
+            project_name=target.project_name,
+            repo_id=repo_id,
+            branch_name=branch_name,
+            max_commits=1,
+            activity_mode="latest",
+        )
+        return build_scan_row(
+            target=target,
+            branch_name=branch_name,
+            metadata=metadata,
+            contents=contents,
+            paths=paths,
+            activity=latest_activity,
+            confidence=confidence,
+            score=score,
+            categories=categories,
+            evidence=evidence,
+            branch_age_days=branch_age_days,
+            store_client=None,
+            inventory_status="candidate" if evidence else "unclassified",
+        )
+
     deployment_endpoints = fetch_web_endpoints(
         client,
         target.project_name,
@@ -603,7 +699,41 @@ def scan_branch(
         branch_age_days=branch_age_days,
         store_client=store_client,
         deployment_endpoints=deployment_endpoints,
+        inventory_status="classified",
     )
+
+
+def build_repository_inventory_row(
+    target: RepoScanTarget,
+    branch_name: str,
+    inventory_status: str,
+    branch_age_days: int,
+) -> dict[str, Any]:
+    result = build_scan_row(
+        target=target,
+        branch_name=branch_name,
+        metadata=MobileAppMetadata(),
+        contents={},
+        paths=[],
+        activity=RepoActivityMetadata(),
+        confidence="none",
+        score=0,
+        categories=[],
+        evidence=[],
+        branch_age_days=branch_age_days,
+        store_client=None,
+        inventory_status=inventory_status,
+    )
+    if inventory_status in {"disabled", "no_branch", "scan_failed", "unavailable"}:
+        for field in (
+            "scanner_target",
+            "semgrep_target",
+            "sonarqube_project_key",
+            "sonarqube_project_name",
+            "nowsecure_target",
+        ):
+            result[field] = ""
+    return result
 
 
 def build_scan_row(
@@ -620,6 +750,7 @@ def build_scan_row(
     branch_age_days: int,
     store_client: StoreLookupClient | None,
     deployment_endpoints: Iterable[dict[str, Any]] = (),
+    inventory_status: str = "classified",
 ) -> dict[str, Any]:
     repo = target.repo
     age_bucket = branch_age_bucket(activity.last_updated, branch_age_days)
@@ -651,6 +782,7 @@ def build_scan_row(
         "branch_name": branch_name,
         "branch_last_updated": activity.last_updated,
         "branch_age_bucket": age_bucket,
+        "inventory_status": inventory_status,
         "web_url": repo.get("webUrl", ""),
         "source_url": source_url,
         **domain_metadata,
@@ -1271,17 +1403,31 @@ def collect_targets(
     organization = source_organization(client)
     provider = source_provider(client)
     project_names = selected_project_names(organization, project_name, target_filters)
+    organization_repo_loader = getattr(client, "list_all_repos", None)
+    if not project_names and callable(organization_repo_loader):
+        LOGGER.info("Listing all repositories in organization: %s", organization)
+        repositories = organization_repo_loader()
+        targets = organization_repo_targets(
+            repositories,
+            organization,
+            provider,
+        )
+        LOGGER.info(
+            "Discovered %s repositories across %s projects in organization %s",
+            len(targets),
+            len({target.project_name for target in targets}),
+            organization,
+        )
+        return targets
+
     projects = [{"name": name} for name in project_names] if project_names else client.list_projects()
+
     def repositories(project: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
         name = project.get("name")
         if not name:
             return "", []
         LOGGER.info("Listing repositories in project: %s", name)
-        try:
-            return name, client.list_repos(name)
-        except Exception as exc:
-            LOGGER.warning("Failed to list repos for %s: %s", name, exc)
-            return name, []
+        return name, client.list_repos(name)
 
     workers = max(1, min(max_workers, len(projects) or 1))
     if workers == 1:
@@ -1300,6 +1446,45 @@ def collect_targets(
             seen_repo_ids.add(repo_id)
             targets.append(RepoScanTarget(project_name=name, repo=repo, organization=organization, provider=provider))
     targets.sort(key=lambda target: (target.project_name.lower(), str(target.repo.get("name", "")).lower()))
+    LOGGER.info(
+        "Discovered %s repositories across %s projects in organization %s",
+        len(targets),
+        len({target.project_name for target in targets}),
+        organization,
+    )
+    return targets
+
+
+def organization_repo_targets(
+    repositories: Iterable[dict[str, Any]],
+    organization: str,
+    provider: str,
+) -> list[RepoScanTarget]:
+    targets: list[RepoScanTarget] = []
+    seen_repo_ids: set[str] = set()
+    for repo in repositories:
+        repo_id = clean_value(repo.get("id"))
+        project = repo.get("project")
+        project_name = clean_value(
+            project.get("name") if isinstance(project, dict) else ""
+        )
+        if not repo_id or not project_name or repo_id in seen_repo_ids:
+            continue
+        seen_repo_ids.add(repo_id)
+        targets.append(
+            RepoScanTarget(
+                project_name=project_name,
+                repo=repo,
+                organization=organization,
+                provider=provider,
+            )
+        )
+    targets.sort(
+        key=lambda target: (
+            target.project_name.lower(),
+            str(target.repo.get("name", "")).lower(),
+        )
+    )
     return targets
 
 

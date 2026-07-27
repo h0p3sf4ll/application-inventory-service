@@ -24,16 +24,20 @@ The package remains `application-inventory-service` to preserve existing integra
 ## What It Does
 
 - Normalizes SARIF, Semgrep JSON, SonarQube issue JSON, and generic findings into one deduplicated remediation queue.
+- Pulls current findings from Semgrep, Invicti, and NowSecure through server-managed API connectors.
 - Correlates findings to the branch-level application inventory and retains unlinked findings for review.
-- Scores risk from severity, CVSS, EPSS, exploit evidence, finding age, internet exposure, application criticality, and data classification.
+- Correlates by exact repository identity, mobile package identifier, or web domain, with exact application name as a guarded fallback.
+- Builds asset risk profiles from technical findings, observed data interactions, internet exposure, application criticality, and data classification.
 - Tracks open, triaged, in-progress, resolved, accepted-risk, and false-positive workflows with an immutable event history.
 - Measures scanner coverage by application and flags current, stale, expired, and untested assets.
 - Exports filtered security findings as XLSX, CSV, or JSON and exposes the same operations through the Python SDK and authenticated API.
 - Scans one or more Azure DevOps organizations, each with its own PAT.
+- Discovers Azure DevOps repositories organization-wide, including hidden repositories visible to the PAT.
 - Scans one or more GitHub owners and repositories.
 - Scans Azure DevOps and GitHub Enterprise together in one run when both source types are configured.
 - Pulls Azure DevOps projects and GitHub repositories into the UI for targeted scans.
 - Scans default branches, with production-like fallback branch resolution when no default branch exists.
+- Retains every discovered repository in full scans, including unclassified, disabled, empty, unavailable, and branchless records.
 - Captures inventory name, version, type, language, mobile identifiers, contributors, last activity, and evidence.
 - Links deployable source branches to web domains using provider deployment records and structured deployment configuration.
 - Optionally validates detected mobile identifiers against Apple App Store and Google Play.
@@ -44,6 +48,7 @@ The package remains `application-inventory-service` to preserve existing integra
 
 ## Documentation
 
+- [How the Application Works](docs/HOW_THE_APPLICATION_WORKS.md)
 - [Application Intent](docs/APP_INTENT.md)
 - [ASPM Operations Guide](docs/ASPM_OPERATIONS.md)
 - [Security Baseline](SECURITY.md)
@@ -114,6 +119,24 @@ Available frequencies are once, daily, and weekly. Each schedule can be run imme
 4. Set criticality, internet exposure, data classification, and owners from an application's inventory record. Risk scores recalculate in the same transaction.
 5. Assign, triage, accept, resolve, or mark findings false positive. Every workflow change is retained in the finding history.
 
+### Direct scanner connections
+
+Store connector credentials in a deployment secret manager and inject them as environment variables. They are read only by the backend and are never returned to the browser.
+
+```bash
+export SEMGREP_APP_TOKEN="..."
+export APPLICATION_INVENTORY_INVICTI_API_URL="https://www.netsparkercloud.com/api/1.0/"
+export APPLICATION_INVENTORY_INVICTI_USER_ID="..."
+export APPLICATION_INVENTORY_INVICTI_TOKEN="..."
+export APPLICATION_INVENTORY_NOWSECURE_TOKEN="..."
+
+application-inventory-aspm connectors status
+application-inventory-aspm connectors sync --connector semgrep --connector invicti --connector nowsecure
+application-inventory-aspm assets --risk-band critical
+```
+
+Open **Posture**, then use **Scanner connections** to select and synchronize ready connectors. Open **Asset risk** to filter contextual risk profiles and observed data interactions. Invicti defaults to its public cloud API root and supports an environment override for private deployments.
+
 Use complete snapshots only when a result file represents every finding produced by that tool for the listed targets. Findings absent from a complete snapshot are resolved automatically. Partial imports never resolve existing findings.
 
 Automation can use the dedicated ASPM CLI without changing existing inventory scan commands:
@@ -169,6 +192,10 @@ result = aspm.ingest(
         ],
     }
 )
+
+connector_status = aspm.connector_status()
+sync_result = aspm.sync_connectors(["semgrep", "invicti", "nowsecure"])
+asset_risks = aspm.asset_risks(risk_bands=["critical", "high"])
 ```
 
 See the [ASPM Operations Guide](docs/ASPM_OPERATIONS.md) for data contracts, automation patterns, risk factors, lifecycle rules, API routes, and production controls.
@@ -182,7 +209,7 @@ docker run --rm \
   -p 48731:48731 \
   --env-file .env \
   -v "$PWD/reports:/reports" \
-  h0p3sf4ll/application-inventory-service:1.7.0 \
+  h0p3sf4ll/application-inventory-service:1.8.0 \
   ui \
   --host 0.0.0.0 \
   --port 48731 \
@@ -340,7 +367,9 @@ The local defaults are host `localhost`, port `5432`, database `postgres`, user 
 
 At startup, the service tests PostgreSQL and applies versioned, advisory-lock-protected schema migrations before accepting scan work. Unchanged schemas take the fast readiness path. A scan with database sync enabled is rejected if its configured database is unavailable. Findings commit at least once per second while a scan is active, and the **Inventory** table refreshes as those transactions become visible.
 
-The schema separates repositories, branch inventory, application types, categories, contributors, web domains, domain evidence, store listings, scan runs, and observability events. Inventory identity is scoped by signed-in user, provider, organization, project, repository, and branch. Repeated scans update current rows and synchronize child values instead of inserting duplicate records. Full-text search uses a PostgreSQL GIN index; common type, owner, activity, domain, and validation filters use selective indexes.
+The schema separates repositories, branch inventory, application types, categories, contributors, web domains, domain evidence, store listings, scan runs, and observability events. Inventory identity is scoped by signed-in user, provider, organization, project, repository, and branch. Repeated scans update current rows and synchronize child values instead of inserting duplicate records. `inventory_status` distinguishes classified applications from candidates, unclassified repositories, empty repositories, disabled repositories, unavailable branches, branchless repositories, and failed branch analysis. Full-text search uses a PostgreSQL GIN index; common type, owner, activity, domain, and validation filters use selective indexes.
+
+A full scan with no application-type filter inventories every repository visible to the source credential. The **Inventory** page reports repository, inventory-record, and classified-application counts separately. Selecting application types intentionally limits reports and database updates to matching applications at or above the configured confidence threshold.
 
 The **Inventory** page provides sortable columns, per-column filters, multi-select Language and Types filters, full-text search, activity/domain/type quick filters, record details, and XLSX, CSV, or JSON exports. The **Settings** page contains connection, synchronization, and schema settings. Results and exports use the same filters, sort order, and signed-in user scope. XLSX, CSV, and JSON exports consume a server-side database cursor to bound application memory. Operational scan and observability records remain event-based because each execution and log entry is a distinct audit record.
 
@@ -386,6 +415,19 @@ The UI detects Ollama at `http://127.0.0.1:11434` and defaults to `llama3.1:late
 | `APPLICATION_INVENTORY_ASPM_CLI_MAX_IMPORT_BYTES` | Maximum ASPM CLI input file size; defaults to 256 MiB |
 | `APPLICATION_INVENTORY_OWNER_USER_ID` | Default stable ASPM CLI owner scope; defaults to `cli` |
 | `APPLICATION_INVENTORY_OWNER_USER_LOGIN` | Default ASPM CLI actor recorded in workflow events |
+| `SEMGREP_APP_TOKEN` | Semgrep App token used by the backend connector |
+| `APPLICATION_INVENTORY_SEMGREP_API_URL` | Semgrep API root; defaults to `https://semgrep.dev/api/v1` |
+| `APPLICATION_INVENTORY_SEMGREP_ISSUE_TYPES` | Comma-separated Semgrep products; defaults to `sast,sca,ai_sast` |
+| `APPLICATION_INVENTORY_SEMGREP_STATUSES` | Comma-separated Semgrep states synchronized as the current snapshot |
+| `APPLICATION_INVENTORY_INVICTI_API_URL` | Invicti API root; defaults to `https://www.netsparkercloud.com/api/1.0` |
+| `APPLICATION_INVENTORY_INVICTI_USER_ID` | Invicti API user ID |
+| `APPLICATION_INVENTORY_INVICTI_TOKEN` | Invicti API token |
+| `APPLICATION_INVENTORY_INVICTI_WORKERS` | Bounded Invicti page-fetch concurrency; defaults to `1`, maximum `16` |
+| `APPLICATION_INVENTORY_NOWSECURE_API_URL` | NowSecure GraphQL endpoint; defaults to `https://api.nowsecure.com/graphql` |
+| `APPLICATION_INVENTORY_NOWSECURE_TOKEN` | NowSecure Platform token |
+| `APPLICATION_INVENTORY_CONNECTOR_SYSTEM_TRUST` | Uses the operating-system certificate store; defaults to `true` |
+| `APPLICATION_INVENTORY_CONNECTOR_CA_BUNDLE` | Optional CA bundle for private PKI or TLS inspection |
+| `APPLICATION_INVENTORY_CONNECTOR_MAX_RESPONSE_BYTES` | Maximum decoded JSON response per connector request; defaults to 64 MiB |
 | `APPLICATION_INVENTORY_SERVICE_MAX_CONCURRENT_SCANS` | Concurrent interactive and scheduled scan processes; defaults to `2` |
 | `APPLICATION_INVENTORY_SERVICE_GHE_BASE_URL` | GitHub Enterprise base URL used for OAuth sign-in |
 | `APPLICATION_INVENTORY_SERVICE_GHE_CLIENT_ID` | GitHub Enterprise OAuth client ID |
@@ -487,7 +529,7 @@ results, xlsx_path, semgrep_path, sonarqube_path = scan_to_reports(config)
 result_count, xlsx_path, semgrep_path, sonarqube_path = scan_reports(config)
 ```
 
-`scan_to_reports` returns every finding for in-process consumers. `scan_reports` writes the same outputs and returns only the finding count and paths, which keeps memory bounded for large inventories. The CLI uses the bounded-memory path.
+`scan_to_reports` returns every inventory record for in-process consumers. `scan_reports` writes the same outputs and returns only the record count and paths, which keeps memory bounded for large inventories. The CLI uses the bounded-memory path.
 
 ## Performance
 
@@ -503,7 +545,7 @@ application-inventory-service \
   --out-dir reports
 ```
 
-For long commit histories, contributor extraction consumes provider pages as an iterator instead of retaining every commit in memory. Source and repository discovery run concurrently, GitHub installation tokens and throttles are shared across owners, manifest work uses bounded backpressure, PostgreSQL commits are batched, database exports use server-side cursors, and CLI findings stream without accumulating a result list. Generated dependency directories and unused lockfiles are excluded from content retrieval.
+For long commit histories, contributor extraction consumes provider pages as an iterator instead of retaining every commit in memory. Azure DevOps full-organization scans use the organization repository endpoint instead of one request per project and request hidden repositories explicitly. Unclassified repositories use one latest-commit request for accurate activity bucketing; full contributor history remains reserved for classified applications. GitHub installation tokens and throttles are shared across owners, manifest work uses bounded backpressure, PostgreSQL commits are batched, database exports use server-side cursors, and CLI inventory records stream without accumulating a result list. Generated dependency directories and unused lockfiles are excluded from content retrieval.
 
 GitHub domain attribution reads at most 30 recent deployments, inspects no more than two deployments per environment, and caps the environment count with `APPLICATION_INVENTORY_GITHUB_DOMAIN_ENVIRONMENTS`. Deployment lookups run only for network-deployable inventory types.
 

@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from .aspm_models import (
+    DataInteraction,
     FindingDocument,
     FindingInput,
     SourceLocation,
@@ -383,6 +384,12 @@ def parse_generic(document: Any, context: Mapping[str, Any]) -> dict[str, Any]:
                 last_seen=utc_datetime(
                     finding.get("last_seen") or finding.get("lastSeen")
                 ),
+                data_interactions=parse_data_interactions(
+                    finding.get("data_interactions")
+                    or finding.get("dataInteractions")
+                    or finding.get("data_types")
+                    or finding.get("dataTypes")
+                ),
                 raw_data=json_safe_mapping(finding),
             )
         )
@@ -401,7 +408,38 @@ def parse_scanned_targets(
     targets = []
     for item in sequence_value(value):
         targets.append(SourceLocation.from_mapping({**context, **mapping_value(item)}))
-    return tuple(target for target in targets if target.repository)
+    return tuple(target for target in targets if target.has_asset_anchor())
+
+
+def parse_data_interactions(value: Any) -> tuple[DataInteraction, ...]:
+    if isinstance(value, str):
+        items: list[Any] = [item for item in re.split(r"[,;]", value) if item.strip()]
+    else:
+        items = sequence_value(value)
+    interactions: list[DataInteraction] = []
+    for item in items:
+        if isinstance(item, Mapping):
+            data = mapping_value(item)
+            data_type = bounded_text(
+                data.get("dataType") or data.get("data_type") or data.get("type"),
+                100,
+            )
+            try:
+                confidence = float(data.get("confidence", 0.95))
+            except (TypeError, ValueError):
+                confidence = 0.95
+            source = bounded_text(data.get("source"), 100) or "scanner"
+            evidence = bounded_text(data.get("evidence"), 500)
+        else:
+            data_type = bounded_text(item, 100)
+            confidence = 0.95
+            source = "scanner"
+            evidence = bounded_text(item, 500)
+        if data_type:
+            interactions.append(
+                DataInteraction(data_type, confidence, source, evidence)
+            )
+    return tuple(interactions[:50])
 
 
 def sarif_location(

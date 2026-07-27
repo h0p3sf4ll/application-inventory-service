@@ -1,5 +1,5 @@
 API_VERSION = "7.1"
-APPLICATION_VERSION = "1.7.0"
+APPLICATION_VERSION = "1.8.0"
 APPLICATION_USER_AGENT = f"application-inventory-service/{APPLICATION_VERSION}"
 DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_GITHUB_APP_ID = ""
@@ -280,6 +280,7 @@ CORE_INVENTORY_FIELDNAMES = (
     "branch_name",
     "branch_last_updated",
     "branch_age_bucket",
+    "inventory_status",
     "web_url",
     "source_url",
     *WEB_DOMAIN_FIELDNAMES,

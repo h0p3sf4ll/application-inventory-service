@@ -13,6 +13,9 @@ flowchart LR
   Runtime --> Core
   Core --> ADO["Azure DevOps API"]
   Core --> GHE["GitHub Enterprise API"]
+  Core --> Semgrep["Semgrep API"]
+  Core --> Invicti["Invicti API"]
+  Core --> NowSecure["NowSecure GraphQL"]
   Core --> Stores["Apple / Google Store Lookup"]
   Core --> Reports["XLSX / Semgrep Targets / SonarQube Targets"]
   Core --> DB["PostgreSQL Inventory Schema"]
@@ -38,6 +41,9 @@ flowchart LR
 | CLI | Non-interactive scans for automation and scheduled inventory jobs |
 | SDK | Importable API for other applications and orchestration processes |
 | Finding ingestion | SARIF, Semgrep, SonarQube, and generic normalization with atomic import audit |
+| Direct connectors | Paged Semgrep, Invicti, and NowSecure synchronization with bounded retries and sync audit |
+| Data interaction analysis | Structured scanner taxonomy, privacy metadata, regulation, CWE, and bounded evidence normalization |
+| Asset risk profiles | Explainable technical, data-sensitivity, and context components per inventory asset |
 | Finding correlation | Deterministic deduplication and conservative branch-inventory matching |
 | Risk engine | Explainable technical and business-context scoring from 0 to 100 |
 | Remediation workflow | Status, assignment, due date, notes, immutable events, search, and export |
@@ -56,17 +62,20 @@ flowchart LR
 2. Interactive or scheduled work enters the same bounded scan runtime.
 3. For a mixed scan, the engine resolves Azure DevOps organizations and GitHub Enterprise owners as separate, concurrent source contexts.
 4. The service lists accessible projects and repositories concurrently within configured limits. GitHub owners sharing an App installation also share installation-token state and request pacing.
-5. The engine resolves one branch per repository.
-6. The engine reads repository trees and selected manifest/configuration files through a bounded queue.
-7. Detection evidence is converted into inventory types, categories, metadata, contributors, timestamps, and a provider value.
-8. Network-deployable findings collect bounded domain evidence and select a primary domain by evidence strength and environment.
-9. Results from every source stream through the same report writer and PostgreSQL writer. Pending rows commit on a bounded time interval and appear in the active UI table.
-10. Database search applies owner scope, indexed text search, structured filters, and a bounded result window. Exports stream through a server-side cursor.
-11. Scanner manifests are consumed by downstream security tooling.
-12. Scanner result files return through the ASPM ingestion contract and commit atomically.
-13. Findings correlate to branch inventory, deduplicate within the source tool, and retain unlinked results when identity is ambiguous.
-14. Asset context and exploitability produce explainable risk; users manage remediation through an audited workflow.
-15. Scanner target snapshots update coverage and resolve findings absent from declared complete snapshots.
+5. Azure DevOps full scans request all visible repositories organization-wide with hidden repositories included. Explicit project filters use project-scoped repository discovery.
+6. The engine resolves one default or production-like fallback branch per repository and retains disabled or branchless repositories as status records.
+7. The engine reads repository trees and selected manifest/configuration files through a bounded queue.
+8. Detection evidence is converted into inventory types, categories, metadata, contributors, timestamps, and a provider value.
+9. Network-deployable findings collect bounded domain evidence and select a primary domain by evidence strength and environment.
+10. Results from every source stream through the same report writer and PostgreSQL writer. Pending rows commit on a bounded time interval and appear in the active UI table.
+11. Database search applies owner scope, indexed text search, structured filters, and a bounded result window. Exports stream through a server-side cursor.
+12. Scanner manifests are consumed by downstream security tooling.
+13. Scanner result files return through the ASPM ingestion contract and commit atomically; large direct-connector snapshots commit bounded pages.
+14. Findings correlate to branch inventory, deduplicate within the source tool, and retain unlinked results when identity is ambiguous.
+15. Asset context and exploitability produce explainable risk; users manage remediation through an audited workflow.
+16. Scanner target snapshots update coverage and resolve findings absent from declared complete snapshots.
+17. Correlation attempts exact repository identity, mobile package identifier, and web domain before a guarded exact-name fallback.
+18. Finding evidence updates normalized asset data interactions and recalculates the asset risk profile.
 
 The service emits structured lifecycle, request, scan, and provider-authentication events to the configured PostgreSQL observability table. The UI exposes health and metrics endpoints without exposing provider secrets.
 
@@ -85,6 +94,8 @@ The UI writes reports, private scan logs, encrypted run state, encrypted provide
 - Repeated inventory and scanner findings update current-state rows; normalized child values are synchronized without duplicate insertion.
 - Failed finding imports retain an audit record while finding, identifier, event, and coverage updates roll back atomically.
 - Complete scanner snapshots resolve only active findings for explicitly matched application branches.
+- Connector credentials remain backend-only and enter the process through secret-backed environment variables.
+- TLS certificate verification is mandatory; operating-system trust or an explicit CA bundle supports enterprise inspection roots.
 - Domains and domain evidence sources use separate normalized child tables keyed to branch inventory.
 - Domain attribution never performs HTTP or DNS requests to discovered hosts.
 - Database search and filtered exports enforce the signed-in user scope in SQL.

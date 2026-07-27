@@ -968,7 +968,7 @@ function renderDatabaseStatus() {
   databaseStatus.innerHTML = `
     <strong>${connected ? "Connected" : "Unavailable"}</strong>
     <span>${escapeHtml(database.message || database.status || "")}</span>
-    <span>${escapeHtml(database.schema || form.elements.postgresSchema.value || defaultValues.postgresSchema)} · ${escapeHtml(String(database.branchRows ?? 0))} records${database.latencyMs ? ` · ${escapeHtml(String(database.latencyMs))} ms` : ""}</span>
+    <span>${escapeHtml(database.schema || form.elements.postgresSchema.value || defaultValues.postgresSchema)} · ${Number(database.repositoryRows ?? 0).toLocaleString()} repositories · ${Number(database.branchRows ?? 0).toLocaleString()} inventory records · ${Number(database.classifiedRows ?? 0).toLocaleString()} classified${database.latencyMs ? ` · ${escapeHtml(String(database.latencyMs))} ms` : ""}</span>
   `;
 }
 
@@ -1024,11 +1024,19 @@ function databaseCell(value) {
 
 function databaseApplicationCell(row, index) {
   const name = row.inventory_name || row.mobile_name || row.repo_name || "Not detected";
-  const metadata = row.inventory_version || row.mobile_version || "";
+  const metadata = row.inventory_version || row.mobile_version || inventoryStatusLabel(row.inventory_status);
   return `
     <button class="inventory-record-link" type="button" data-record-index="${index}">${escapeHtml(name)}</button>
     ${metadata ? `<small class="database-cell-meta">${escapeHtml(metadata)}</small>` : ""}
   `;
+}
+
+function inventoryStatusLabel(value) {
+  const status = String(value || "").trim().toLowerCase();
+  if (!status || status === "classified") {
+    return "";
+  }
+  return status.split("_").map(capitalize).join(" ");
 }
 
 function databaseRepositoryCell(row) {
@@ -1104,6 +1112,7 @@ function openInventoryRecordFromEvent(event) {
     {label: "Project", value: row.project},
     {label: "Repository", value: row.repo_name},
     {label: "Branch", value: row.branch_name},
+    {label: "Inventory status", value: inventoryStatusLabel(row.inventory_status)},
     {label: "Application version", value: row.inventory_version || row.mobile_version},
     {label: "Application types", value: row.inventory_types},
     {label: "Language", value: row.primary_language},
@@ -1421,6 +1430,7 @@ function activateInventoryFilter(name) {
 
 function inventoryFilterCriteria(name) {
   const filters = {
+    "needs-classification": {inventory_statuses: ["candidate", "unclassified", "empty", "no_branch", "unavailable", "disabled", "scan_failed"]},
     active: {updated_within_days: 90},
     older: {older_than_days: 90},
     "has-domain": {has_domain: true},

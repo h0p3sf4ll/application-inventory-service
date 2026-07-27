@@ -55,6 +55,12 @@ class InventorySearchCriteriaTests(unittest.TestCase):
                     "made_up",
                     "web_app",
                 ],
+                "inventory_statuses": [
+                    "unclassified",
+                    "disabled",
+                    "unsupported",
+                    "unclassified",
+                ],
                 "updated_within_days": 90,
                 "has_domain": False,
                 "application_search": "Inventory Service",
@@ -71,6 +77,7 @@ class InventorySearchCriteriaTests(unittest.TestCase):
         self.assertEqual(criteria.text, "payment service")
         self.assertEqual(criteria.providers, ("github-enterprise",))
         self.assertEqual(criteria.application_types, ("microservice", "web_app"))
+        self.assertEqual(criteria.inventory_statuses, ("disabled", "unclassified"))
         self.assertEqual(criteria.updated_within_days, 90)
         self.assertFalse(criteria.has_domain)
         self.assertEqual(criteria.application_search, "Inventory Service")

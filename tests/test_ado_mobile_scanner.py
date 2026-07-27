@@ -3,6 +3,7 @@ import stat
 import tempfile
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -124,6 +125,30 @@ class PublicApiTests(unittest.TestCase):
         before = time.monotonic()
         throttle.observe(Response())
         self.assertGreaterEqual(throttle.block_until, before + 0.9)
+
+    def test_azure_repository_discovery_includes_hidden_repositories(self):
+        client = object.__new__(azure_module.AzureDevOpsClient)
+        client.get_json = Mock(return_value={"value": [{"id": "repo-1"}]})
+
+        project_repositories = client.list_repos("Payments")
+        organization_repositories = client.list_all_repos()
+
+        self.assertEqual(project_repositories, [{"id": "repo-1"}])
+        self.assertEqual(organization_repositories, [{"id": "repo-1"}])
+        self.assertEqual(
+            client.get_json.call_args_list[0].args,
+            (
+                "/Payments/_apis/git/repositories",
+                {"includeHidden": "true"},
+            ),
+        )
+        self.assertEqual(
+            client.get_json.call_args_list[1].args,
+            (
+                "/_apis/git/repositories",
+                {"includeHidden": "true"},
+            ),
+        )
 
     def test_azure_throttle_backs_off_when_rate_limit_remaining_is_empty(self):
         class Response:
@@ -1028,6 +1053,34 @@ class ProviderClientTests(unittest.TestCase):
         self.assertEqual(
             [(target.project_name, target.repo["name"]) for target in targets],
             [("Payments", "Payments-repo"), ("Shared", "Shared-repo")],
+        )
+
+    def test_collect_targets_uses_organization_repository_discovery(self):
+        class FakeClient:
+            org = "FabrikamCloud"
+
+            def list_all_repos(self):
+                return [
+                    {
+                        "id": "repo-2",
+                        "name": "storefront",
+                        "project": {"name": "Commerce"},
+                    },
+                    {
+                        "id": "repo-1",
+                        "name": "payments",
+                        "project": {"name": "Finance"},
+                    },
+                ]
+
+            def list_projects(self):
+                raise AssertionError("organization discovery must not list projects")
+
+        targets = scanner.collect_targets(FakeClient(), None)
+
+        self.assertEqual(
+            [(target.project_name, target.repo["name"]) for target in targets],
+            [("Commerce", "storefront"), ("Finance", "payments")],
         )
 
     def test_parse_args_supports_multiple_ado_org_pats(self):
@@ -2877,6 +2930,97 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(len(branch_targets), 1)
         self.assertEqual(branch_targets[0].branch_name, "release")
         self.assertEqual(client.branch_calls, 0)
+
+    def test_list_branch_targets_retains_disabled_and_branchless_repositories(self):
+        disabled = scanner.RepoScanTarget(
+            project_name="Project",
+            repo={
+                "id": "disabled-id",
+                "name": "Disabled",
+                "defaultBranch": "refs/heads/main",
+                "isDisabled": True,
+            },
+        )
+        branchless = scanner.RepoScanTarget(
+            project_name="Project",
+            repo={"id": "branchless-id", "name": "Branchless"},
+        )
+
+        disabled_targets = scanner.list_branch_targets(self.FakeBranchClient(), disabled)
+        branchless_targets = scanner.list_branch_targets(
+            self.FakeBranchClient(refs=[]), branchless
+        )
+
+        self.assertEqual(disabled_targets[0].inventory_status, "disabled")
+        self.assertEqual(disabled_targets[0].branch_name, "main")
+        self.assertEqual(branchless_targets[0].inventory_status, "no_branch")
+        self.assertEqual(branchless_targets[0].branch_name, "")
+
+    def test_scan_branch_retains_unclassified_repository_for_full_inventory(self):
+        class FakeClient:
+            def list_repo_items(self, project_name, repo_id, branch_name):
+                return [{"path": "/README.md"}]
+
+            def list_commits(self, **kwargs):
+                return [
+                    {
+                        "author": {"name": "Alice", "email": "alice@example.com"},
+                        "committer": {"date": "2026-07-01T12:00:00Z"},
+                    }
+                ]
+
+        target = scanner.RepoScanTarget(
+            project_name="Project",
+            repo={
+                "id": "repo-id",
+                "name": "documentation",
+                "remoteUrl": "https://example.invalid/documentation.git",
+            },
+        )
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            result = scanner.scan_branch(
+                client=FakeClient(),
+                target=target,
+                branch_name="main",
+                content_executor=scanner_module.BoundedExecutor(executor, 1),
+                min_confidence_rank=2,
+                max_commits_per_repo=0,
+                branch_age_days=90,
+                activity_mode="contributors",
+                store_client=None,
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["inventory_status"], "unclassified")
+        self.assertEqual(result["confidence"], "none")
+        self.assertEqual(result["inventory_name"], "documentation")
+        self.assertEqual(result["branch_last_updated"], "2026-07-01T12:00:00Z")
+        self.assertTrue(result["semgrep_target"].endswith("#branch=main"))
+
+    def test_scan_branch_excludes_unclassified_repository_from_type_scan(self):
+        class FakeClient:
+            def list_repo_items(self, project_name, repo_id, branch_name):
+                return [{"path": "/README.md"}]
+
+        target = scanner.RepoScanTarget(
+            project_name="Project",
+            repo={"id": "repo-id", "name": "documentation"},
+        )
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            result = scanner.scan_branch(
+                client=FakeClient(),
+                target=target,
+                branch_name="main",
+                content_executor=scanner_module.BoundedExecutor(executor, 1),
+                min_confidence_rank=2,
+                max_commits_per_repo=0,
+                branch_age_days=90,
+                activity_mode="contributors",
+                store_client=None,
+                application_types=("web_app",),
+            )
+
+        self.assertIsNone(result)
 
     def test_select_fallback_branch_name_prefers_deployment_names(self):
         self.assertEqual(

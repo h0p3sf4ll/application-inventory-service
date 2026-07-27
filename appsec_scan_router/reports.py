@@ -30,6 +30,7 @@ WORKBOOK_COLUMN_WIDTHS = {
     "branch_name": 24,
     "branch_last_updated": 22,
     "branch_age_bucket": 14,
+    "inventory_status": 20,
     "web_url": 42,
     "source_url": 52,
     "primary_web_domain": 34,

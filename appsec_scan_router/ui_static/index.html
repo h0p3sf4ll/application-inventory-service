@@ -73,6 +73,7 @@
       <nav class="app-nav" aria-label="Application pages" role="tablist">
         <button class="tab-button active" type="button" data-view="postureView" role="tab" aria-controls="postureView" aria-selected="true">Posture</button>
         <button class="tab-button" type="button" data-view="findingsView" role="tab" aria-controls="findingsView" aria-selected="false">Findings</button>
+        <button class="tab-button" type="button" data-view="riskProfilesView" role="tab" aria-controls="riskProfilesView" aria-selected="false">Asset risk</button>
         <button class="tab-button" type="button" data-view="inventoryView" role="tab" aria-controls="inventoryView" aria-selected="false">Inventory</button>
         <button class="tab-button" type="button" data-view="coverageView" role="tab" aria-controls="coverageView" aria-selected="false">Coverage</button>
         <button class="tab-button" type="button" data-view="setupView" role="tab" aria-controls="setupView" aria-selected="false">New scan</button>
@@ -98,36 +99,36 @@
             </div>
 
             <div class="posture-kpis" aria-label="Security posture summary">
-              <div class="posture-kpi risk-critical">
+              <button class="posture-kpi risk-critical" type="button" data-posture-drilldown="critical" aria-label="View critical active findings">
                 <span>Critical findings</span>
                 <strong id="postureCritical">0</strong>
                 <small>Active and actionable</small>
-              </div>
-              <div class="posture-kpi risk-high">
+              </button>
+              <button class="posture-kpi risk-high" type="button" data-posture-drilldown="high" aria-label="View high active findings">
                 <span>High findings</span>
                 <strong id="postureHigh">0</strong>
                 <small>Active and actionable</small>
-              </div>
-              <div class="posture-kpi">
+              </button>
+              <button class="posture-kpi" type="button" data-posture-drilldown="affected-assets" aria-label="View active findings linked to affected assets">
                 <span>Affected assets</span>
                 <strong id="postureAffectedAssets">0</strong>
                 <small id="postureAssetContext">of 0 inventoried</small>
-              </div>
-              <div class="posture-kpi risk-overdue">
+              </button>
+              <button class="posture-kpi risk-overdue" type="button" data-posture-drilldown="overdue" aria-label="View overdue active findings">
                 <span>Overdue</span>
                 <strong id="postureOverdue">0</strong>
                 <small>Past severity SLA</small>
-              </div>
-              <div class="posture-kpi">
+              </button>
+              <button class="posture-kpi" type="button" data-posture-drilldown="coverage" aria-label="View findings on assets scanned in the last 30 days">
                 <span>Scanner coverage</span>
                 <strong id="postureCoverage">0%</strong>
                 <small>Scanned in 30 days</small>
-              </div>
-              <div class="posture-kpi">
+              </button>
+              <button class="posture-kpi" type="button" data-posture-drilldown="average-risk" aria-label="View risk-ranked active findings on inventoried assets">
                 <span>Average risk</span>
                 <strong id="postureAverageRisk">0</strong>
                 <small>Explainable score of 100</small>
-              </div>
+              </button>
             </div>
 
             <div class="posture-workspace">
@@ -168,6 +169,23 @@
               <div class="tool-health-grid" id="toolHealthGrid">
                 <p class="empty-state">Import scanner results to establish tool coverage.</p>
               </div>
+            </section>
+
+            <section class="posture-region connector-region" aria-labelledby="connectorTitle">
+              <div class="subsection-heading">
+                <div>
+                  <h3 id="connectorTitle">Scanner connections</h3>
+                  <p>Pull current findings directly from configured security platforms.</p>
+                </div>
+                <div class="connector-actions">
+                  <button class="ghost compact-button" id="refreshConnectors" type="button">Refresh</button>
+                  <button class="primary compact-button" id="syncConnectors" type="button">Sync ready scanners</button>
+                </div>
+              </div>
+              <div class="connector-grid" id="connectorGrid">
+                <p class="empty-state">Checking scanner configuration.</p>
+              </div>
+              <div class="connector-sync-summary" id="connectorSyncSummary" aria-live="polite"></div>
             </section>
           </section>
 
@@ -277,6 +295,8 @@
               <button type="button" data-finding-quick-filter="all">All findings</button>
             </div>
 
+            <p class="finding-scope" id="findingScope" hidden></p>
+
             <div class="database-results-toolbar finding-results-toolbar">
               <strong id="findingResultSummary" aria-live="polite">Loading findings</strong>
               <div class="database-export-actions">
@@ -293,6 +313,8 @@
                     <th scope="col">Risk</th>
                     <th scope="col">Finding</th>
                     <th scope="col">Application</th>
+                    <th scope="col">Correlation</th>
+                    <th scope="col">Branch responsibility</th>
                     <th scope="col">Severity</th>
                     <th scope="col">Status</th>
                     <th scope="col">Tool</th>
@@ -300,7 +322,7 @@
                   </tr>
                 </thead>
                 <tbody id="findingResultRows">
-                  <tr><td class="database-empty-row" colspan="7">Loading security findings.</td></tr>
+                  <tr><td class="database-empty-row" colspan="9">Loading security findings.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -340,6 +362,47 @@
                 <div id="findingHistory"></div>
               </section>
             </dialog>
+          </section>
+
+          <section class="panel aspm-panel tab-view hidden" id="riskProfilesView" role="tabpanel" hidden>
+            <div class="section-heading aspm-heading">
+              <div>
+                <p class="eyebrow">Contextual risk</p>
+                <h2>Asset risk profiles</h2>
+                <p>Technical findings prioritized by exposure, business criticality, and observed data interactions.</p>
+              </div>
+              <button class="ghost compact-button" id="refreshAssetRisks" type="button">Refresh profiles</button>
+            </div>
+            <div class="asset-risk-toolbar">
+              <label class="finding-search-field">
+                <span>Search assets</span>
+                <input id="assetRiskQuery" type="search" maxlength="500" placeholder="Application, repository, domain, or owner">
+              </label>
+              <label>
+                <span>Risk band</span>
+                <select id="assetRiskBand"><option value="">All bands</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>
+              </label>
+              <label>
+                <span>Data interaction</span>
+                <select id="assetRiskDataType"><option value="">Any data</option><option value="payment_card_data">Payment card data</option><option value="health_data">Health data</option><option value="biometric_data">Biometric data</option><option value="credentials">Credentials</option><option value="secrets">Secrets</option><option value="authentication_data">Authentication data</option><option value="financial_data">Financial data</option><option value="personal_data">Personal data</option><option value="location_data">Location data</option><option value="device_identifiers">Device identifiers</option><option value="tracking_data">Tracking data</option><option value="confidential_business_data">Confidential business data</option><option value="source_code">Source code</option></select>
+              </label>
+              <button class="primary compact-button" id="searchAssetRisks" type="button">Apply</button>
+              <button class="ghost compact-button" id="clearAssetRisks" type="button">Clear</button>
+            </div>
+            <div class="database-results-toolbar">
+              <strong id="assetRiskSummary" aria-live="polite">Loading asset risk profiles</strong>
+            </div>
+            <div class="database-table-wrap">
+              <table class="database-table asset-risk-table">
+                <thead><tr><th scope="col">Risk</th><th scope="col">Application</th><th scope="col">Repository</th><th scope="col">Active findings</th><th scope="col">Data sensitivity</th><th scope="col">Data interactions</th><th scope="col">Context</th></tr></thead>
+                <tbody id="assetRiskRows"><tr><td class="database-empty-row" colspan="7">Loading asset risk profiles.</td></tr></tbody>
+              </table>
+            </div>
+            <div class="database-pagination">
+              <button class="ghost" id="assetRiskPrevious" type="button" disabled>Previous</button>
+              <span class="database-page-summary"><strong id="assetRiskPagePosition">Page 1</strong><small id="assetRiskRecordCount">Loading assets</small></span>
+              <button class="ghost" id="assetRiskNext" type="button" disabled>Next</button>
+            </div>
           </section>
 
           <section class="panel aspm-panel tab-view hidden" id="coverageView" role="tabpanel" hidden>
@@ -778,6 +841,7 @@
                 <strong>Quick filters</strong>
                 <div class="inventory-quick-filters" role="group" aria-label="Inventory quick filters">
                   <button class="filter-button active" type="button" data-inventory-filter="all">All records</button>
+                  <button class="filter-button" type="button" data-inventory-filter="needs-classification">Needs classification</button>
                   <button class="filter-button" type="button" data-inventory-filter="active">Updated 90d</button>
                   <button class="filter-button" type="button" data-inventory-filter="older">Older 90d</button>
                   <button class="filter-button" type="button" data-inventory-filter="has-domain">Has domain</button>
@@ -914,6 +978,7 @@
                   <label><span>Technical owner <span class="field-badge optional">Optional</span></span><input id="assetTechnicalOwner" maxlength="500" placeholder="Engineering team"></label>
                   <label><span>Tags <span class="field-badge optional">Optional</span></span><input id="assetSecurityTags" maxlength="1000" placeholder="pci, tier-0, customer-facing"></label>
                 </div>
+                <div class="asset-profile-risk" id="assetProfileRisk" aria-live="polite"></div>
                 <div class="form-actions compact-actions">
                   <span id="assetProfileMessage">Risk is recalculated when this profile changes.</span>
                   <button class="primary" id="saveAssetProfile" type="button">Save security context</button>

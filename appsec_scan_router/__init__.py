@@ -1,6 +1,16 @@
 from .aspm_ingest import SUPPORTED_FINDING_FORMATS, parse_finding_document
+from .aspm_asset_risk import AssetRiskProfile, AssetRiskProfileEngine
+from .aspm_connector_models import ConnectorPullResult, ConnectorStatus
+from .aspm_connectors import CONNECTOR_KEYS, ConnectorService
+from .aspm_data import (
+    DATA_TYPE_LABELS,
+    DATA_TYPE_WEIGHTS,
+    AssetDataInteraction,
+    DataInteractionClassifier,
+)
 from .aspm_models import (
     ACTIVE_FINDING_STATUSES,
+    DataInteraction,
     FindingDocument,
     FindingInput,
     FindingSeverity,
@@ -276,7 +286,18 @@ __all__ = [
     "ApplicationSecurityPostureManagementService",
     "AspmRepository",
     "AspmService",
+    "AssetDataInteraction",
+    "AssetRiskProfile",
+    "AssetRiskProfileEngine",
     "AssetRiskContext",
+    "CONNECTOR_KEYS",
+    "ConnectorPullResult",
+    "ConnectorService",
+    "ConnectorStatus",
+    "DATA_TYPE_LABELS",
+    "DATA_TYPE_WEIGHTS",
+    "DataInteraction",
+    "DataInteractionClassifier",
     "FindingDocument",
     "FindingInput",
     "FindingSeverity",

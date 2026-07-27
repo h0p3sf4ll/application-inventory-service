@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .aspm_connectors import CONNECTOR_KEYS
 from .aspm_ingest import SUPPORTED_FINDING_FORMATS
 from .aspm_models import FindingSeverity, FindingStatus, bounded_text
 from .constants import DEFAULT_POSTGRES_SCHEMA
@@ -49,6 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_findings_parser(commands)
     add_update_parser(commands)
     add_profile_parser(commands)
+    add_connectors_parser(commands)
+    add_asset_risks_parser(commands)
     commands.add_parser("posture", help="Show the current security posture.")
     coverage = commands.add_parser(
         "coverage", help="List application scanner coverage."
@@ -56,6 +59,31 @@ def build_parser() -> argparse.ArgumentParser:
     coverage.add_argument("--limit", type=positive_int, default=100)
     coverage.add_argument("--offset", type=nonnegative_int, default=0)
     return parser
+
+
+def add_connectors_parser(commands: Any) -> None:
+    connectors = commands.add_parser(
+        "connectors", help="Inspect or synchronize security scanner connectors."
+    )
+    connectors.add_argument("action", choices=("status", "sync", "history"))
+    connectors.add_argument(
+        "--connector", action="append", choices=(*CONNECTOR_KEYS, "all")
+    )
+    connectors.add_argument("--timeout", type=positive_int, default=30)
+    connectors.add_argument("--limit", type=positive_int, default=50)
+
+
+def add_asset_risks_parser(commands: Any) -> None:
+    assets = commands.add_parser(
+        "assets", help="List asset risk profiles and inferred data interactions."
+    )
+    assets.add_argument("--query", default="")
+    assets.add_argument(
+        "--risk-band", action="append", choices=("low", "medium", "high", "critical")
+    )
+    assets.add_argument("--data-type", action="append")
+    assets.add_argument("--limit", type=positive_int, default=100)
+    assets.add_argument("--offset", type=nonnegative_int, default=0)
 
 
 def add_ingest_parser(commands: Any) -> None:
@@ -139,6 +167,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = execute(service, args, parser)
         if result is not None:
             write_json(result)
+        if (
+            args.command == "connectors"
+            and args.action == "sync"
+            and isinstance(result, dict)
+            and result.get("status") == "failed"
+        ):
+            return 1
         return 0
     except (OSError, ValueError, KeyError, RuntimeError) as exc:
         message = str(exc).strip("'")
@@ -155,6 +190,20 @@ def execute(
         return service.posture()
     if args.command == "coverage":
         return service.coverage(limit=args.limit, offset=args.offset)
+    if args.command == "connectors":
+        if args.action == "status":
+            return {"connectors": service.connector_status(args.timeout)}
+        if args.action == "history":
+            return {"syncs": service.connector_syncs(args.limit)}
+        return service.sync_connectors(args.connector, args.timeout)
+    if args.command == "assets":
+        return service.asset_risks(
+            query=args.query,
+            risk_bands=args.risk_band,
+            data_types=args.data_type,
+            limit=args.limit,
+            offset=args.offset,
+        )
     if args.command == "update":
         return service.update_finding(
             args.finding_id,

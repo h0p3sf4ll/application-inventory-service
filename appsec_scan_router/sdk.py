@@ -4,6 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .aspm_connectors import ConnectorService
 from .aspm_ingest import parse_finding_document
 from .aspm_postgres import AspmRepository
 from .models import ScanConfig
@@ -115,6 +116,54 @@ class ApplicationSecurityPostureManagementService:
             self.owner_user_login,
             branch_inventory_id,
             profile,
+        )
+
+    def connector_status(self, timeout_seconds: int = 30) -> list[dict[str, Any]]:
+        service = ConnectorService(
+            self.repository,
+            self.owner_user_id,
+            self.owner_user_login,
+            timeout_seconds,
+        )
+        try:
+            return service.status()
+        finally:
+            service.close()
+
+    def sync_connectors(
+        self,
+        connectors: list[str] | tuple[str, ...] | None = None,
+        timeout_seconds: int = 30,
+    ) -> dict[str, Any]:
+        service = ConnectorService(
+            self.repository,
+            self.owner_user_id,
+            self.owner_user_login,
+            timeout_seconds,
+        )
+        try:
+            return service.sync(connectors)
+        finally:
+            service.close()
+
+    def connector_syncs(self, limit: int = 50) -> list[dict[str, Any]]:
+        return self.repository.connector_syncs(self.owner_user_id, limit)
+
+    def asset_risks(
+        self,
+        query: str = "",
+        risk_bands: list[str] | None = None,
+        data_types: list[str] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        return self.repository.asset_risks(
+            self.owner_user_id,
+            query=query,
+            risk_bands=risk_bands,
+            data_types=data_types,
+            limit=limit,
+            offset=offset,
         )
 
 

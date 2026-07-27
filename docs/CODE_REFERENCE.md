@@ -36,7 +36,7 @@ Compatibility packages and commands delegate to the same implementation. New int
 
 | Module | Responsibility |
 | --- | --- |
-| `azure.py` | Azure DevOps REST traversal, connection reuse, retry policy, pacing, and commit streaming |
+| `azure.py` | Azure DevOps organization-wide and project-scoped repository discovery, REST traversal, connection reuse, retry policy, pacing, and commit streaming |
 | `github.py` | GitHub App authentication, installation-token refresh, REST traversal, pagination, and commit streaming |
 | `source_access.py` | Builds provider clients and validates every selected source before inventory collection |
 | `org_tokens.py` | Parses and serializes Azure organization/PAT pairs |
@@ -67,13 +67,22 @@ Provider clients expose a common operational shape: validate access, list projec
 | `aspm_models.py` | Immutable finding, source-location, severity, workflow, and risk contracts |
 | `aspm_ingest.py` | Detects and normalizes SARIF, Semgrep, SonarQube, and generic scanner documents |
 | `aspm_risk.py` | Produces bounded explainable risk assessments from findings and application context |
-| `aspm_postgres.py` | Owns ASPM schema, atomic imports, correlation, deduplication, workflow events, search, exports, profiles, posture, and coverage |
+| `aspm_asset_risk.py` | Produces explainable technical, data-sensitivity, and context scores for each asset |
+| `aspm_data.py` | Normalizes data categories and classifies structured scanner, CWE, and bounded textual evidence |
+| `aspm_connector_http.py` | Enforces TLS, system trust, retry, timeout, pooling, URL validation, and JSON response limits for scanner APIs |
+| `aspm_connector_models.py` | Defines connector status, pull result, and adapter protocol contracts |
+| `aspm_connector_utils.py` | Maps scanner repository URLs and response structures into source locations |
+| `semgrep_connector.py` | Streams Semgrep projects and SAST, SCA, and AI-powered findings in bounded pages |
+| `invicti_connector.py` | Pages Invicti issues and maps website targets into DAST findings |
+| `nowsecure_connector.py` | Pages NowSecure applications and normalizes affected findings from latest complete assessments |
+| `aspm_connectors.py` | Coordinates configured adapters, repository ingestion, redacted results, and sync audit state |
+| `aspm_postgres.py` | Owns ASPM schema, atomic and streamed imports, correlation, deduplication, data interactions, asset risk, workflow events, search, exports, profiles, posture, and coverage |
 | `aspm_cli.py` | Provides the dedicated automation CLI without changing the inventory scanner argument contract |
-| `ui_static/aspm-ui.js` | Drives posture, finding import/search/workflow, asset context, and scanner coverage views |
+| `ui_static/aspm-ui.js` | Drives posture, connector sync, finding workflow, asset risk, inventory, and coverage views |
 
-`FindingDocument` is the canonical ingestion boundary. `AspmRepository.ingest()` first commits an import audit record, then applies every finding, identifier, coverage, and snapshot change in one transaction. Failure rolls back that transaction and marks the import failed. Asset resolution is cached per source scope during an import, so a large repository result set does not repeat the same inventory lookup for every finding.
+`FindingDocument` is the canonical ingestion boundary. `AspmRepository.ingest()` first commits an import audit record, then applies every finding, identifier, coverage, and snapshot change in one transaction. `ingest_batches()` commits bounded connector pages under one import identity and performs snapshot reconciliation only after every page succeeds. Asset resolution is cached per source scope within each transaction.
 
-`RiskEngine` is deterministic and side-effect free. `AspmRepository` stores the score, band, and complete factor list used for that assessment. Application profile changes rerun the engine for linked findings in one transaction.
+`RiskEngine` and `AssetRiskProfileEngine` are deterministic and side-effect free. `AspmRepository` stores finding factors, data-interaction evidence, the three asset score components, and the resulting risk band. Application profile or workflow changes recalculate affected risk records in the same transaction.
 
 The report writer creates all output files at scan start. Text targets flush per finding. XLSX checkpoints use bounded adaptive intervals, atomically replace the prior workbook, and save once more at close. PostgreSQL uses short transactions controlled by row and time thresholds, with a background flush for live visibility. Schema changes are versioned and serialized with a PostgreSQL advisory lock; unchanged schemas use a fast readiness path. Inventory keys include the owning user and source identity, so repeated scans update rows instead of creating duplicate findings. Child types, categories, contributors, web domains, domain sources, and store listings are synchronized by value.
 
@@ -97,14 +106,15 @@ The report writer creates all output files at scan start. Text targets flush per
 
 1. CLI or UI input is normalized into `ScanConfig`.
 2. Source contexts are created for each Azure organization and GitHub owner.
-3. Source contexts and project-level repository discovery run concurrently within configured limits.
-4. One default or production-like fallback branch is resolved per repository.
+3. Source contexts run concurrently. Azure DevOps full scans request all visible repositories in one organization-level call with hidden repositories included; filtered scans use project-level calls.
+4. One default or production-like fallback branch is resolved per repository. Disabled and branchless repositories remain in inventory with an explicit status.
 5. Repository trees are read and selected manifests enter a bounded content-fetch queue.
 6. Detection produces evidence, categories, confidence, and score.
 7. Metadata and commit iterators produce names, versions, identifiers, contributors, and timestamps.
-8. Deployable types combine provider deployment URLs, repository metadata, and structured source configuration into ranked domain evidence.
-9. Mobile findings receive NowSecure routing metadata; optional store validation runs only when lookup is enabled.
-10. Findings stream to reports and PostgreSQL. SDK list-returning calls retain rows; CLI and `scan_reports` calls retain only a count.
+8. Records below the confidence threshold remain searchable as candidates or unclassified repositories during full scans; type-specific scans exclude them.
+9. Deployable types combine provider deployment URLs, repository metadata, and structured source configuration into ranked domain evidence.
+10. Mobile findings receive NowSecure routing metadata; optional store validation runs only when lookup is enabled.
+11. Findings stream to reports and PostgreSQL. SDK list-returning calls retain rows; CLI and `scan_reports` calls retain only a count.
 
 ## Concurrency Controls
 

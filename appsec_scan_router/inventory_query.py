@@ -9,6 +9,18 @@ from .constants import APPLICATION_TYPE_LABELS, KNOWN_INVENTORY_TYPES
 
 PROVIDERS = frozenset({"azure-devops", "github-enterprise"})
 CONFIDENCE_LEVELS = frozenset({"low", "medium", "high"})
+INVENTORY_STATUSES = frozenset(
+    {
+        "candidate",
+        "classified",
+        "disabled",
+        "empty",
+        "no_branch",
+        "scan_failed",
+        "unavailable",
+        "unclassified",
+    }
+)
 DOMAIN_STATUSES = frozenset({"confirmed", "configured", "inferred", "not_detected"})
 SORT_FIELDS = frozenset(
     {
@@ -39,6 +51,7 @@ QUERY_FIELDS = frozenset(
         "application_types",
         "languages",
         "confidences",
+        "inventory_statuses",
         "domain_statuses",
         "updated_within_days",
         "older_than_days",
@@ -92,6 +105,7 @@ class InventorySearchCriteria:
     application_types: tuple[str, ...] = ()
     languages: tuple[str, ...] = ()
     confidences: tuple[str, ...] = ()
+    inventory_statuses: tuple[str, ...] = ()
     domain_statuses: tuple[str, ...] = ()
     updated_within_days: int | None = None
     older_than_days: int | None = None
@@ -123,6 +137,9 @@ class InventorySearchCriteria:
             ),
             languages=text_values(source.get("languages")),
             confidences=choice_values(source.get("confidences"), CONFIDENCE_LEVELS),
+            inventory_statuses=choice_values(
+                source.get("inventory_statuses"), INVENTORY_STATUSES
+            ),
             domain_statuses=choice_values(
                 source.get("domain_statuses"), DOMAIN_STATUSES
             ),
@@ -156,6 +173,7 @@ class InventorySearchCriteria:
             "application_types": list(self.application_types),
             "languages": list(self.languages),
             "confidences": list(self.confidences),
+            "inventory_statuses": list(self.inventory_statuses),
             "domain_statuses": list(self.domain_statuses),
             "updated_within_days": self.updated_within_days,
             "older_than_days": self.older_than_days,
@@ -217,6 +235,11 @@ def criteria_summary(criteria: InventorySearchCriteria) -> str:
         parts.append(f"languages: {', '.join(criteria.languages)}")
     if criteria.confidences:
         parts.append(f"confidence: {', '.join(criteria.confidences)}")
+    if criteria.inventory_statuses:
+        parts.append(
+            "inventory status: "
+            + ", ".join(value.replace("_", " ") for value in criteria.inventory_statuses)
+        )
     if criteria.updated_within_days is not None:
         parts.append(f"updated within {criteria.updated_within_days} days")
     if criteria.older_than_days is not None:

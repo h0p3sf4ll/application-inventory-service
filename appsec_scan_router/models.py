@@ -86,6 +86,7 @@ class BranchScanTarget:
     branch_name: str
     organization: str = ""
     provider: str = "azure-devops"
+    inventory_status: str = ""
 
 
 @dataclass(frozen=True)

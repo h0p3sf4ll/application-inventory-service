@@ -9,6 +9,7 @@ from unittest.mock import patch
 from openpyxl import load_workbook
 
 from appsec_scan_router.aspm_ingest import parse_finding_document
+from appsec_scan_router.aspm_models import FindingDocument, FindingInput, SourceLocation
 from appsec_scan_router.aspm_postgres import AspmRepository
 from appsec_scan_router.postgres import create_database_schema
 
@@ -70,6 +71,14 @@ class AspmPostgresIntegrationTests(unittest.TestCase):
                 ).format(domains=sql.Identifier(self.schema, "web_domains")),
                 (self.branch_inventory_id,),
             )
+            connection.execute(
+                sql.SQL(
+                    "INSERT INTO {contributors} (branch_inventory_id, developer) VALUES (%s, 'Ada Lovelace <ada@example.test>')"
+                ).format(
+                    contributors=sql.Identifier(self.schema, "branch_contributors")
+                ),
+                (self.branch_inventory_id,),
+            )
         self.repository = AspmRepository(POSTGRES_TEST_DSN, self.schema)
 
     def tearDown(self) -> None:
@@ -129,9 +138,18 @@ class AspmPostgresIntegrationTests(unittest.TestCase):
         finding = search["rows"][0]
         self.assertEqual(finding["branch_inventory_id"], self.branch_inventory_id)
         self.assertEqual(finding["primary_web_domain"], "payments.example.test")
+        self.assertEqual(finding["correlation_method"], "repository")
+        self.assertEqual(finding["correlated_branch"], "main")
+        self.assertEqual(
+            finding["contributing_developers"], "Ada Lovelace <ada@example.test>"
+        )
         self.assertGreaterEqual(finding["risk_score"], 60)
         self.assertEqual(search["facets"]["tools"][0]["value"], "codeql")
         self.assertEqual(search["facets"]["tools"][0]["label"], "CodeQL")
+        covered_findings = self.repository.search_findings(
+            "user-a", filters={"scanned_in_last_30_days": True}
+        )
+        self.assertEqual(covered_findings["total"], 1)
         posture = self.repository.posture("user-a")
         self.assertEqual(posture["summary"]["assets"], 1)
         self.assertEqual(posture["summary"]["active_findings"], 1)
@@ -218,6 +236,8 @@ class AspmPostgresIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(stored_profile["technical_owner"], "payments-team")
         self.assertEqual(stored_profile["tags"], ["pci", "tier-0"])
+        finding = self.repository.search_findings("user-a")["rows"][0]
+        self.assertEqual(finding["technical_owner"], "payments-team")
         self.assertGreater(after, before)
         self.assertEqual(self.repository.search_findings("user-b")["total"], 0)
         with self.assertRaises(KeyError):
@@ -266,6 +286,159 @@ class AspmPostgresIntegrationTests(unittest.TestCase):
         self.assertEqual(imported["error_count"], 1)
         self.assertIn("simulated persistence failure", imported["error_message"])
         self.assertEqual(finding_count, 0)
+
+    def test_mobile_identifier_and_web_domain_correlation_build_asset_risk(self) -> None:
+        with psycopg.connect(POSTGRES_TEST_DSN) as connection:
+            connection.execute(
+                sql.SQL(
+                    "UPDATE {branches} SET mobile_identifier = 'com.example.payments' WHERE branch_inventory_id = %s"
+                ).format(branches=sql.Identifier(self.schema, "branch_inventory")),
+                (self.branch_inventory_id,),
+            )
+        mobile_document = parse_finding_document(
+            {
+                "format": "generic",
+                "tool": {
+                    "key": "nowsecure",
+                    "name": "NowSecure",
+                    "type": "mobile_security",
+                },
+                "findings": [
+                    {
+                        "id": "mobile-1",
+                        "title": "Hardcoded payment service credential",
+                        "severity": "high",
+                        "cwe": "CWE-798",
+                        "application_identifier": "com.example.payments",
+                        "dataInteractions": [
+                            {
+                                "dataType": "payment_card_data",
+                                "confidence": 0.98,
+                                "source": "scanner",
+                                "evidence": "PCI data",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        web_document = parse_finding_document(
+            {
+                "format": "generic",
+                "tool": {"key": "invicti", "name": "Invicti", "type": "dast"},
+                "findings": [
+                    {
+                        "id": "web-1",
+                        "title": "Personal data exposure",
+                        "severity": "critical",
+                        "web_url": "https://payments.example.test/account",
+                        "cwe": "CWE-200",
+                    }
+                ],
+            }
+        )
+
+        mobile_result = self.repository.ingest("user-a", "alice", mobile_document)
+        web_result = self.repository.ingest("user-a", "alice", web_document)
+
+        self.assertEqual(mobile_result["linkedFindings"], 1)
+        self.assertEqual(web_result["linkedFindings"], 1)
+        profile = self.repository.asset_profile("user-a", self.branch_inventory_id)
+        self.assertIn("payment_card_data", profile["data_types"])
+        self.assertIn("credentials", profile["data_types"])
+        self.assertGreater(profile["risk_score"], 0)
+        assets = self.repository.asset_risks(
+            "user-a", data_types=["payment_card_data"]
+        )
+        self.assertEqual(assets["total"], 1)
+        self.assertEqual(
+            assets["rows"][0]["branch_inventory_id"], self.branch_inventory_id
+        )
+
+    def test_asset_without_findings_receives_an_explainable_baseline_risk(self) -> None:
+        assets = self.repository.asset_risks("user-a")
+
+        self.assertEqual(assets["total"], 1)
+        self.assertGreater(assets["rows"][0]["context_score"], 0)
+        self.assertGreater(assets["rows"][0]["risk_score"], 0)
+        profile = self.repository.asset_profile("user-a", self.branch_inventory_id)
+        self.assertEqual(profile["active_findings"], 0)
+        self.assertEqual(profile["risk_factors"][2]["factor"], "asset_context")
+
+    def test_streamed_batches_share_one_import_and_reconcile_after_completion(
+        self,
+    ) -> None:
+        location = SourceLocation(
+            provider="github-enterprise",
+            organization="ExampleEngineering",
+            repository="payments-api",
+            branch="main",
+        )
+        previous = FindingDocument(
+            tool_key="semgrep",
+            tool_name="Semgrep",
+            tool_type="sast",
+            source_format="semgrep-api",
+            findings=(
+                FindingInput(
+                    external_id="previous",
+                    title="Previous finding",
+                    severity="medium",
+                    location=location,
+                ),
+            ),
+        )
+        self.repository.ingest("user-a", "alice", previous)
+        batches = (
+            FindingDocument(
+                tool_key="semgrep",
+                tool_name="Semgrep",
+                tool_type="sast",
+                source_format="semgrep-api",
+                findings=(
+                    FindingInput(
+                        external_id="current",
+                        title="Current finding",
+                        severity="high",
+                        location=location,
+                    ),
+                ),
+                scanned_targets=(location,),
+                metadata={"page": 0},
+            ),
+            FindingDocument(
+                tool_key="semgrep",
+                tool_name="Semgrep",
+                tool_type="sast",
+                source_format="semgrep-api",
+                findings=(),
+                complete_snapshot=True,
+                metadata={"recordsRead": 1},
+            ),
+        )
+
+        result = self.repository.ingest_batches("user-a", "alice", iter(batches))
+
+        self.assertEqual(result["findings"], 1)
+        self.assertEqual(result["inserted"], 1)
+        self.assertEqual(result["resolved"], 1)
+        self.assertEqual(result["metadata"]["recordsRead"], 1)
+        resolved = self.repository.search_findings(
+            "user-a", filters={"statuses": ["resolved"]}
+        )
+        self.assertEqual(resolved["total"], 1)
+        with psycopg.connect(
+            POSTGRES_TEST_DSN, row_factory=psycopg.rows.dict_row
+        ) as connection:
+            imported = connection.execute(
+                sql.SQL(
+                    "SELECT status, finding_count, complete_snapshot FROM {imports} WHERE import_id = %s"
+                ).format(imports=sql.Identifier(self.schema, "aspm_imports")),
+                (result["importId"],),
+            ).fetchone()
+        self.assertEqual(imported["status"], "completed")
+        self.assertEqual(imported["finding_count"], 1)
+        self.assertTrue(imported["complete_snapshot"])
 
 
 if __name__ == "__main__":
