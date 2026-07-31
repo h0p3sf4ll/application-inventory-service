@@ -34,7 +34,7 @@ flowchart LR
 | Component | Responsibility |
 | --- | --- |
 | UI service | Login, credential handling, scan configuration, live logs, report download, database export |
-| Scan runtime | Bounded subprocess admission, durable worker recovery, pause, resume, stop, and event delivery |
+| Scan runtime | Bounded subprocess admission, durable worker recovery, pause, resume, stop, failed-run retry lineage, and event delivery |
 | Scheduler | Encrypted user-scoped recurrence definitions and due-run dispatch |
 | Request compiler | Scan request validation, command construction, redaction, and restricted child environments |
 | Source discovery | Concurrent project and repository discovery for interactive filtering |

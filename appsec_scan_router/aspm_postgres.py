@@ -38,7 +38,7 @@ except ImportError:
 
 
 SQL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-ASPM_SCHEMA_VERSION = 4
+ASPM_SCHEMA_VERSION = 3
 ASPM_SCHEMA_LOCK = threading.Lock()
 ASPM_SCHEMA_READY: set[tuple[str, str]] = set()
 FINDING_EXPORT_COLUMNS = (
@@ -63,11 +63,6 @@ FINDING_EXPORT_COLUMNS = (
     "application",
     "application_types",
     "primary_web_domain",
-    "correlation_method",
-    "correlated_branch",
-    "technical_owner",
-    "business_owner",
-    "contributing_developers",
     "path",
     "start_line",
     "package_name",
@@ -139,7 +134,6 @@ def create_aspm_schema(connection: Any, schema: str) -> None:
                 owner_user_id text NOT NULL,
                 tool_id bigint NOT NULL REFERENCES {tools}(tool_id) ON DELETE CASCADE,
                 branch_inventory_id bigint REFERENCES {branches}(branch_inventory_id) ON DELETE SET NULL,
-                correlation_method text,
                 fingerprint text NOT NULL,
                 external_id text,
                 title text NOT NULL,
@@ -310,8 +304,6 @@ def create_aspm_schema(connection: Any, schema: str) -> None:
 
             ALTER TABLE {imports}
                 ADD COLUMN IF NOT EXISTS error_message text;
-            ALTER TABLE {findings}
-                ADD COLUMN IF NOT EXISTS correlation_method text;
             """
         ).format(
             tools=identifier(resolved, "aspm_tools"),
@@ -371,6 +363,31 @@ def create_aspm_schema(connection: Any, schema: str) -> None:
     )
 
 
+def current_aspm_schema_version(connection: Any, schema: str) -> int:
+    resolved = schema_name(schema)
+    exists = connection.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_class tables
+            JOIN pg_catalog.pg_namespace schemas
+              ON schemas.oid = tables.relnamespace
+            WHERE schemas.nspname = %s
+              AND tables.relname = 'schema_versions'
+        )
+        """,
+        (resolved,),
+    ).fetchone()[0]
+    if not exists:
+        return 0
+    row = connection.execute(
+        sql.SQL(
+            "SELECT version FROM {versions} WHERE component = 'aspm'"
+        ).format(versions=identifier(resolved, "schema_versions"))
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
 class AspmRepository:
     def __init__(
         self, dsn: str, schema: str, risk_engine: RiskEngine | None = None
@@ -391,7 +408,17 @@ class AspmRepository:
             if key in ASPM_SCHEMA_READY:
                 return
             with psycopg.connect(self.dsn) as connection:
-                create_aspm_schema(connection, self.schema)
+                if current_aspm_schema_version(connection, self.schema) < ASPM_SCHEMA_VERSION:
+                    lock_name = f"application-inventory:{self.schema}:schema"
+                    connection.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (lock_name,),
+                    )
+                    if (
+                        current_aspm_schema_version(connection, self.schema)
+                        < ASPM_SCHEMA_VERSION
+                    ):
+                        create_aspm_schema(connection, self.schema)
             ASPM_SCHEMA_READY.add(key)
 
     def ingest(
@@ -503,6 +530,7 @@ class AspmRepository:
             "linkedFindings": 0,
         }
         linked_assets: dict[int, int] = {}
+        affected_assets: set[int] = set()
         complete_snapshot = False
         metadata: dict[str, Any] = dict(first.metadata)
         try:
@@ -528,6 +556,14 @@ class AspmRepository:
                     for asset_id, finding_count in batch["linkedAssets"].items():
                         linked_assets[asset_id] = (
                             linked_assets.get(asset_id, 0) + finding_count
+                        )
+                    affected_assets.update(batch["affectedAssets"])
+                    for asset_id in batch["affectedAssets"]:
+                        interactions = self._refresh_asset_data_interactions(
+                            connection, owner, asset_id, datetime.now(timezone.utc)
+                        )
+                        self._refresh_asset_risk_profile(
+                            connection, owner, asset_id, interactions
                         )
                     connection.execute(
                         sql.SQL(
@@ -572,7 +608,7 @@ class AspmRepository:
                         tuple(linked_assets),
                         completed_at,
                     )
-                for asset_id in linked_assets:
+                for asset_id in affected_assets:
                     interactions = self._refresh_asset_data_interactions(
                         connection, owner, asset_id, completed_at
                     )
@@ -645,6 +681,7 @@ class AspmRepository:
             updated = batch["updated"]
             linked_findings = batch["linkedFindings"]
             linked_assets = batch["linkedAssets"]
+            affected_assets = batch["affectedAssets"]
             for asset_id, finding_count in linked_assets.items():
                 self._upsert_coverage(
                     connection,
@@ -666,7 +703,7 @@ class AspmRepository:
                     tuple(linked_assets),
                     now,
                 )
-            for asset_id in linked_assets:
+            for asset_id in affected_assets:
                 interactions = self._refresh_asset_data_interactions(
                     connection, owner, asset_id, now
                 )
@@ -707,6 +744,7 @@ class AspmRepository:
         updated = 0
         linked_findings = 0
         linked_assets: dict[int, int] = {}
+        affected_assets: set[int] = set()
         asset_cache: dict[str, dict[str, Any] | None] = {}
         for finding in document.findings:
             location_key = finding.location.scope_key()
@@ -718,18 +756,19 @@ class AspmRepository:
             asset_id = int(asset["branch_inventory_id"]) if asset else None
             context = self._asset_risk_context(asset)
             assessment = self.risk_engine.assess(finding, context, now)
-            finding_id, was_inserted = self._upsert_finding(
+            finding_id, was_inserted, previous_asset_id = self._upsert_finding(
                 connection,
                 owner,
                 tool_id,
                 finding,
                 asset_id,
-                asset.get("correlation_method") if asset else "",
                 assessment.score,
                 assessment.band,
                 assessment.factors,
                 now,
             )
+            if previous_asset_id is not None:
+                affected_assets.add(previous_asset_id)
             self._sync_identifiers(connection, finding_id, finding)
             self._sync_finding_data_types(connection, finding_id, finding)
             connection.execute(
@@ -756,6 +795,7 @@ class AspmRepository:
             if asset_id is not None:
                 linked_findings += 1
                 linked_assets[asset_id] = linked_assets.get(asset_id, 0) + 1
+                affected_assets.add(asset_id)
         for target in document.scanned_targets:
             location_key = target.scope_key()
             if location_key not in asset_cache:
@@ -770,6 +810,7 @@ class AspmRepository:
             "updated": updated,
             "linkedFindings": linked_findings,
             "linkedAssets": linked_assets,
+            "affectedAssets": affected_assets,
         }
 
     def posture(self, owner_user_id: str) -> dict[str, Any]:
@@ -792,12 +833,14 @@ class AspmRepository:
                             SELECT round(avg(asset_risk.risk_score))
                             FROM {asset_risks} asset_risk
                             WHERE asset_risk.owner_user_id = %s
+                              AND asset_risk.active_findings > 0
                         ), 0) AS average_risk,
                         COALESCE((
                             SELECT count(*)
                             FROM {asset_risks} asset_risk
                             WHERE asset_risk.owner_user_id = %s
                               AND asset_risk.risk_band = 'critical'
+                              AND asset_risk.active_findings > 0
                         ), 0) AS critical_risk_assets
                     FROM {findings} f
                     WHERE f.owner_user_id = %s
@@ -1758,35 +1801,41 @@ class AspmRepository:
         tool_id: int,
         finding: FindingInput,
         asset_id: int | None,
-        correlation_method: str,
         risk_score: int,
         risk_band: str,
         risk_factors: tuple[dict[str, Any], ...],
         now: datetime,
-    ) -> tuple[str, bool]:
+    ) -> tuple[str, bool, int | None]:
         first_seen = finding.first_seen or now
         last_seen = finding.last_seen or now
         due_at = first_seen + timedelta(days=severity_sla_days(finding.severity))
+        fingerprint = finding.fingerprint(str(tool_id))
         row = connection.execute(
             sql.SQL(
                 """
+                WITH previous AS MATERIALIZED (
+                    SELECT branch_inventory_id
+                    FROM {findings}
+                    WHERE owner_user_id = %s
+                      AND tool_id = %s
+                      AND fingerprint = %s
+                ), upsert AS (
                 INSERT INTO {findings} (
-                    finding_id, owner_user_id, tool_id, branch_inventory_id, correlation_method,
-                    fingerprint, external_id, title, description, rule_id,
-                    category, severity, status, confidence, provider, organization,
-                    project, repository, branch, path, start_line, end_line,
-                    scanner_url, remediation, package_name, package_version, fixed_version,
+                    finding_id, owner_user_id, tool_id, branch_inventory_id,
+                    fingerprint, external_id, title, description, rule_id, category,
+                    severity, status, confidence, provider, organization, project,
+                    repository, branch, path, start_line, end_line, scanner_url,
+                    remediation, package_name, package_version, fixed_version,
                     cvss_score, epss_score, exploit_available, risk_score, risk_band,
                     risk_factors, due_at, first_seen, last_seen, resolved_at, raw_data
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT (owner_user_id, tool_id, fingerprint) DO UPDATE SET
                     branch_inventory_id = COALESCE(EXCLUDED.branch_inventory_id, {findings}.branch_inventory_id),
-                    correlation_method = COALESCE(EXCLUDED.correlation_method, {findings}.correlation_method),
                     external_id = EXCLUDED.external_id,
                     title = EXCLUDED.title,
                     description = EXCLUDED.description,
@@ -1831,15 +1880,22 @@ class AspmRepository:
                     raw_data = EXCLUDED.raw_data,
                     updated_at = now()
                 RETURNING finding_id, (xmax = 0) AS inserted
+                )
+                SELECT upsert.finding_id, upsert.inserted,
+                       previous.branch_inventory_id AS previous_asset_id
+                FROM upsert
+                LEFT JOIN previous ON true
                 """
             ).format(findings=self._table("aspm_findings")),
             (
+                owner,
+                tool_id,
+                fingerprint,
                 uuid.uuid4().hex,
                 owner,
                 tool_id,
                 asset_id,
-                bounded_text(correlation_method, 100) or None,
-                finding.fingerprint(str(tool_id)),
+                fingerprint,
                 finding.external_id or None,
                 finding.title,
                 finding.description or None,
@@ -1874,7 +1930,12 @@ class AspmRepository:
                 Jsonb(finding.as_raw_json()),
             ),
         ).fetchone()
-        return row["finding_id"], bool(row["inserted"])
+        previous_asset_id = row["previous_asset_id"]
+        return (
+            row["finding_id"],
+            bool(row["inserted"]),
+            int(previous_asset_id) if previous_asset_id is not None else None,
+        )
 
     def _sync_identifiers(
         self, connection: Any, finding_id: str, finding: FindingInput
@@ -2596,19 +2657,6 @@ class AspmRepository:
             clauses.append(sql.SQL("f.branch_inventory_id IS NOT NULL"))
         if filters.get("has_asset") is False:
             clauses.append(sql.SQL("f.branch_inventory_id IS NULL"))
-        if filters.get("scanned_in_last_30_days") is True:
-            clauses.append(
-                sql.SQL(
-                    """
-                    EXISTS (
-                        SELECT 1 FROM {coverage} coverage
-                        WHERE coverage.branch_inventory_id = f.branch_inventory_id
-                          AND coverage.owner_user_id = f.owner_user_id
-                          AND coverage.last_scan_at >= now() - interval '30 days'
-                    )
-                    """
-                ).format(coverage=self._table("aspm_coverage"))
-            )
         return sql.SQL(" AND ").join(clauses), parameters
 
     def _finding_view(self) -> Any:
@@ -2628,14 +2676,6 @@ class AspmRepository:
                     COALESCE(b.inventory_name, b.mobile_name, f.repository, 'Unlinked finding') AS application,
                     COALESCE(types.inventory_types, '') AS application_types,
                     COALESCE(domains.primary_web_domain, '') AS primary_web_domain,
-                    COALESCE(
-                        f.correlation_method,
-                        CASE WHEN f.branch_inventory_id IS NULL THEN 'unlinked' ELSE 'inventory_asset' END
-                    ) AS correlation_method,
-                    COALESCE(b.branch_name, f.branch, '') AS correlated_branch,
-                    COALESCE(profile.technical_owner, '') AS technical_owner,
-                    COALESCE(profile.business_owner, '') AS business_owner,
-                    COALESCE(contributors.developers, '') AS contributing_developers,
                     COALESCE(ids.cwes, '') AS cwes,
                     COALESCE(ids.cves, '') AS cves,
                     COALESCE(finding_data.data_types, '') AS data_types,
@@ -2644,7 +2684,6 @@ class AspmRepository:
                 JOIN {tools} t ON t.tool_id = f.tool_id
                 LEFT JOIN {branches} b ON b.branch_inventory_id = f.branch_inventory_id
                 LEFT JOIN {repositories} r ON r.repository_id = b.repository_id
-                LEFT JOIN {profiles} profile ON profile.branch_inventory_id = b.branch_inventory_id
                 LEFT JOIN LATERAL (
                     SELECT string_agg(inventory_type, '; ' ORDER BY inventory_type) AS inventory_types
                     FROM {types} WHERE branch_inventory_id = b.branch_inventory_id
@@ -2653,10 +2692,6 @@ class AspmRepository:
                     SELECT max(domain) FILTER (WHERE is_primary) AS primary_web_domain
                     FROM {domains} WHERE branch_inventory_id = b.branch_inventory_id
                 ) domains ON true
-                LEFT JOIN LATERAL (
-                    SELECT string_agg(developer, '; ' ORDER BY developer) AS developers
-                    FROM {contributors} WHERE branch_inventory_id = b.branch_inventory_id
-                ) contributors ON true
                 LEFT JOIN LATERAL (
                     SELECT
                         string_agg(identifier, '; ' ORDER BY identifier) FILTER (WHERE identifier_type = 'cwe') AS cwes,
@@ -2674,16 +2709,72 @@ class AspmRepository:
             tools=self._table("aspm_tools"),
             branches=self._table("branch_inventory"),
             repositories=self._table("repositories"),
-            profiles=self._table("asset_security_profiles"),
             types=self._table("inventory_types"),
             domains=self._table("web_domains"),
-            contributors=self._table("branch_contributors"),
             identifiers=self._table("aspm_finding_identifiers"),
             finding_data_types=self._table("aspm_finding_data_types"),
         )
 
     def _table(self, name: str) -> Any:
         return identifier(self.schema, name)
+
+
+def repository_asset_candidate(
+    location: SourceLocation, candidates: Iterable[dict[str, Any]]
+) -> dict[str, Any] | None:
+    matched = [
+        row
+        for row in candidates
+        if all(
+            not value or normalized_lookup(row[column]) == normalized_lookup(value)
+            for column, value in (
+                ("provider", location.provider),
+                ("organization", location.organization),
+                ("project", location.project),
+            )
+        )
+    ]
+    branch = normalized_lookup(location.branch.removeprefix("refs/heads/"))
+    if branch:
+        branch_matches = [
+            row
+            for row in matched
+            if normalized_lookup(row["branch_name"]) == branch
+        ]
+        if len(branch_matches) == 1:
+            return {**branch_matches[0], "correlation_method": "repository"}
+        if branch_matches:
+            return None
+        if len(matched) == 1:
+            return {
+                **matched[0],
+                "correlation_method": "repository_default_branch",
+            }
+        return None
+    if len(matched) == 1:
+        return {**matched[0], "correlation_method": "repository"}
+    return None
+
+
+def postgres_jsonb(value: Any) -> Any:
+    return Jsonb(postgres_json_value(value))
+
+
+def postgres_json_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {
+            postgres_json_value(key): postgres_json_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [postgres_json_value(item) for item in value]
+    return value
+
+
+def normalized_lookup(value: Any) -> str:
+    return bounded_text(value, 2000).strip().casefold()
 
 
 def normalize_finding_filters(filters: dict[str, Any] | None) -> dict[str, Any]:
@@ -2706,11 +2797,6 @@ def normalize_finding_filters(filters: dict[str, Any] | None) -> dict[str, Any]:
         normalized[key] = bounded_text(value.get(key), 500)
     for key in ("overdue", "unassigned", "has_asset"):
         normalized[key] = value.get(key) if isinstance(value.get(key), bool) else None
-    normalized["scanned_in_last_30_days"] = (
-        value.get("scanned_in_last_30_days")
-        if isinstance(value.get("scanned_in_last_30_days"), bool)
-        else None
-    )
     sort_by = bounded_text(value.get("sort_by"), 50)
     normalized["sort_by"] = (
         sort_by

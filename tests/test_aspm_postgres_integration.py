@@ -71,14 +71,6 @@ class AspmPostgresIntegrationTests(unittest.TestCase):
                 ).format(domains=sql.Identifier(self.schema, "web_domains")),
                 (self.branch_inventory_id,),
             )
-            connection.execute(
-                sql.SQL(
-                    "INSERT INTO {contributors} (branch_inventory_id, developer) VALUES (%s, 'Ada Lovelace <ada@example.test>')"
-                ).format(
-                    contributors=sql.Identifier(self.schema, "branch_contributors")
-                ),
-                (self.branch_inventory_id,),
-            )
         self.repository = AspmRepository(POSTGRES_TEST_DSN, self.schema)
 
     def tearDown(self) -> None:
@@ -138,25 +130,47 @@ class AspmPostgresIntegrationTests(unittest.TestCase):
         finding = search["rows"][0]
         self.assertEqual(finding["branch_inventory_id"], self.branch_inventory_id)
         self.assertEqual(finding["primary_web_domain"], "payments.example.test")
-        self.assertEqual(finding["correlation_method"], "repository")
-        self.assertEqual(finding["correlated_branch"], "main")
-        self.assertEqual(
-            finding["contributing_developers"], "Ada Lovelace <ada@example.test>"
-        )
         self.assertGreaterEqual(finding["risk_score"], 60)
         self.assertEqual(search["facets"]["tools"][0]["value"], "codeql")
         self.assertEqual(search["facets"]["tools"][0]["label"], "CodeQL")
-        covered_findings = self.repository.search_findings(
-            "user-a", filters={"scanned_in_last_30_days": True}
-        )
-        self.assertEqual(covered_findings["total"], 1)
         posture = self.repository.posture("user-a")
         self.assertEqual(posture["summary"]["assets"], 1)
         self.assertEqual(posture["summary"]["active_findings"], 1)
         self.assertEqual(posture["coverage"]["coverage_percent"], 100.0)
+        with psycopg.connect(POSTGRES_TEST_DSN, autocommit=True) as connection:
+            repository_id = connection.execute(
+                sql.SQL(
+                    "SELECT repository_id FROM {branches} WHERE branch_inventory_id = %s"
+                ).format(branches=sql.Identifier(self.schema, "branch_inventory")),
+                (self.branch_inventory_id,),
+            ).fetchone()[0]
+            connection.execute(
+                sql.SQL(
+                    """
+                    INSERT INTO {branches} (
+                        repository_id, scan_id, owner_user_id, owner_user_login,
+                        branch_name, inventory_name, primary_language, last_updated,
+                        confidence, score, row_data, detection_evidence, scan_started_at
+                    ) VALUES (%s, 'scan-1', 'user-a', 'alice', 'inactive', 'Inactive API',
+                              'Python', now(), 'high', 95, '{{}}'::jsonb, '{{}}'::jsonb, now())
+                    """
+                ).format(branches=sql.Identifier(self.schema, "branch_inventory")),
+                (repository_id,),
+            )
+        posture = self.repository.posture("user-a")
+        self.assertEqual(posture["summary"]["assets"], 2)
+        self.assertEqual(
+            posture["summary"]["average_risk"],
+            posture["topAssets"][0]["max_risk_score"],
+        )
         coverage = self.repository.coverage("user-a")
-        self.assertEqual(coverage["rows"][0]["coverage_status"], "current")
-        self.assertEqual(coverage["rows"][0]["tools"], "CodeQL")
+        active_coverage = next(
+            row
+            for row in coverage["rows"]
+            if row["branch_inventory_id"] == self.branch_inventory_id
+        )
+        self.assertEqual(active_coverage["coverage_status"], "current")
+        self.assertEqual(active_coverage["tools"], "CodeQL")
 
         updated = self.repository.update_finding(
             "user-a",
@@ -236,8 +250,6 @@ class AspmPostgresIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(stored_profile["technical_owner"], "payments-team")
         self.assertEqual(stored_profile["tags"], ["pci", "tier-0"])
-        finding = self.repository.search_findings("user-a")["rows"][0]
-        self.assertEqual(finding["technical_owner"], "payments-team")
         self.assertGreater(after, before)
         self.assertEqual(self.repository.search_findings("user-b")["total"], 0)
         with self.assertRaises(KeyError):
@@ -365,6 +377,79 @@ class AspmPostgresIntegrationTests(unittest.TestCase):
         self.assertEqual(profile["active_findings"], 0)
         self.assertEqual(profile["risk_factors"][2]["factor"], "asset_context")
 
+    def test_changed_correlation_refreshes_previous_and_current_assets(self) -> None:
+        with psycopg.connect(POSTGRES_TEST_DSN) as connection:
+            repository_id = connection.execute(
+                sql.SQL(
+                    "INSERT INTO {repositories} (owner_user_id, owner_user_login, provider, organization, project, repo_name, web_url) VALUES ('user-a', 'alice', 'github-enterprise', 'ExampleEngineering', '', 'payments-worker', 'https://github.com/ExampleEngineering/payments-worker') RETURNING repository_id"
+                ).format(repositories=sql.Identifier(self.schema, "repositories"))
+            ).fetchone()[0]
+            current_asset_id = connection.execute(
+                sql.SQL(
+                    """
+                    INSERT INTO {branches} (
+                        repository_id, scan_id, owner_user_id, owner_user_login,
+                        branch_name, inventory_name, primary_language, last_updated,
+                        confidence, score, row_data, detection_evidence, scan_started_at
+                    ) VALUES (%s, 'scan-1', 'user-a', 'alice', 'main',
+                              'Payments Worker', 'Python', now(), 'high', 90,
+                              '{{}}'::jsonb, '{{}}'::jsonb, now())
+                    RETURNING branch_inventory_id
+                    """
+                ).format(branches=sql.Identifier(self.schema, "branch_inventory")),
+                (repository_id,),
+            ).fetchone()[0]
+        initial = FindingDocument(
+            tool_key="semgrep",
+            tool_name="Semgrep",
+            tool_type="sast",
+            source_format="semgrep-api",
+            findings=(
+                FindingInput(
+                    external_id="stable-finding",
+                    fingerprint_hint="stable-fingerprint",
+                    title="SQL injection",
+                    severity="high",
+                    location=SourceLocation(
+                        provider="github-enterprise",
+                        organization="ExampleEngineering",
+                        repository="payments-api",
+                        branch="main",
+                    ),
+                ),
+            ),
+        )
+        corrected = FindingDocument(
+            tool_key="semgrep",
+            tool_name="Semgrep",
+            tool_type="sast",
+            source_format="semgrep-api",
+            findings=(
+                FindingInput(
+                    external_id="stable-finding",
+                    fingerprint_hint="stable-fingerprint",
+                    title="SQL injection",
+                    severity="high",
+                    location=SourceLocation(
+                        provider="github-enterprise",
+                        organization="ExampleEngineering",
+                        repository="payments-worker",
+                        branch="main",
+                    ),
+                ),
+            ),
+        )
+
+        self.repository.ingest("user-a", "alice", initial)
+        self.repository.ingest("user-a", "alice", corrected)
+
+        previous = self.repository.asset_profile(
+            "user-a", self.branch_inventory_id
+        )
+        current = self.repository.asset_profile("user-a", current_asset_id)
+        self.assertEqual(previous["active_findings"], 0)
+        self.assertEqual(current["active_findings"], 1)
+
     def test_streamed_batches_share_one_import_and_reconcile_after_completion(
         self,
     ) -> None:
@@ -389,40 +474,57 @@ class AspmPostgresIntegrationTests(unittest.TestCase):
             ),
         )
         self.repository.ingest("user-a", "alice", previous)
-        batches = (
-            FindingDocument(
-                tool_key="semgrep",
-                tool_name="Semgrep",
-                tool_type="sast",
-                source_format="semgrep-api",
-                findings=(
-                    FindingInput(
-                        external_id="current",
-                        title="Current finding",
-                        severity="high",
-                        location=location,
-                    ),
+        first_batch = FindingDocument(
+            tool_key="semgrep",
+            tool_name="Semgrep",
+            tool_type="sast",
+            source_format="semgrep-api",
+            findings=(
+                FindingInput(
+                    external_id="current",
+                    title="Hard-coded API key",
+                    severity="high",
+                    location=location,
+                    cwes=("CWE-798",),
+                    cves=("CVE-2026-1234",),
                 ),
-                scanned_targets=(location,),
-                metadata={"page": 0},
             ),
-            FindingDocument(
-                tool_key="semgrep",
-                tool_name="Semgrep",
-                tool_type="sast",
-                source_format="semgrep-api",
-                findings=(),
-                complete_snapshot=True,
-                metadata={"recordsRead": 1},
-            ),
+            scanned_targets=(location,),
+            metadata={"page": 0},
         )
+        final_batch = FindingDocument(
+            tool_key="semgrep",
+            tool_name="Semgrep",
+            tool_type="sast",
+            source_format="semgrep-api",
+            findings=(),
+            complete_snapshot=True,
+            metadata={"recordsRead": 1},
+        )
+        active_during_import: list[int] = []
 
-        result = self.repository.ingest_batches("user-a", "alice", iter(batches))
+        def batches():
+            yield first_batch
+            active_during_import.append(
+                self.repository.asset_profile(
+                    "user-a", self.branch_inventory_id
+                )["active_findings"]
+            )
+            yield final_batch
+
+        result = self.repository.ingest_batches("user-a", "alice", batches())
 
         self.assertEqual(result["findings"], 1)
         self.assertEqual(result["inserted"], 1)
         self.assertEqual(result["resolved"], 1)
         self.assertEqual(result["metadata"]["recordsRead"], 1)
+        self.assertEqual(active_during_import, [2])
+        self.assertEqual(
+            self.repository.asset_profile(
+                "user-a", self.branch_inventory_id
+            )["active_findings"],
+            1,
+        )
         resolved = self.repository.search_findings(
             "user-a", filters={"statuses": ["resolved"]}
         )
@@ -436,9 +538,38 @@ class AspmPostgresIntegrationTests(unittest.TestCase):
                 ).format(imports=sql.Identifier(self.schema, "aspm_imports")),
                 (result["importId"],),
             ).fetchone()
+            relationships = connection.execute(
+                sql.SQL(
+                    """
+                    SELECT
+                        (SELECT count(*) FROM {identifiers}) AS identifiers,
+                        (SELECT count(*) FROM {data_types}) AS data_types,
+                        (SELECT count(*) FROM {import_findings}
+                         WHERE import_id = %s) AS import_findings,
+                        (SELECT count(*) FROM {events}
+                         WHERE event_type = 'created') AS created_events
+                    """
+                ).format(
+                    identifiers=sql.Identifier(
+                        self.schema, "aspm_finding_identifiers"
+                    ),
+                    data_types=sql.Identifier(
+                        self.schema, "aspm_finding_data_types"
+                    ),
+                    import_findings=sql.Identifier(
+                        self.schema, "aspm_import_findings"
+                    ),
+                    events=sql.Identifier(self.schema, "aspm_finding_events"),
+                ),
+                (result["importId"],),
+            ).fetchone()
         self.assertEqual(imported["status"], "completed")
         self.assertEqual(imported["finding_count"], 1)
         self.assertTrue(imported["complete_snapshot"])
+        self.assertEqual(relationships["identifiers"], 2)
+        self.assertEqual(relationships["data_types"], 2)
+        self.assertEqual(relationships["import_findings"], 1)
+        self.assertEqual(relationships["created_events"], 2)
 
 
 if __name__ == "__main__":

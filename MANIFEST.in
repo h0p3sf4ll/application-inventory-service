@@ -3,3 +3,5 @@ include .env.example
 include SECURITY.md
 recursive-include docs *.md *.json
 recursive-include docs/assets *.svg
+global-exclude *.py[cod]
+global-exclude __pycache__

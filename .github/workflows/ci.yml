@@ -67,6 +67,7 @@ jobs:
         run: |
           node --check appsec_scan_router/ui_static/app.js
           node --check appsec_scan_router/ui_static/aspm-ui.js
+          node --check appsec_scan_router/ui_static/aspm/posture.js
 
       - name: Compile modules
         run: python -m compileall appsec_scan_router application_inventory_service tests

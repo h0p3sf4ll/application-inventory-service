@@ -25,9 +25,11 @@ Application Security Posture Management combines branch-level application invent
 
 Credentials belong in a deployment secret manager. Do not place them in source control, browser configuration, command output, or scanner metadata. The status API reports only whether a connector is configured and its non-secret endpoint.
 
-All three adapters stream bounded API pages into page-sized database commits. Semgrep uses zero-based pages of up to 3,000 findings and server-side ref deduplication. By default it synchronizes open, reviewing, fixing, and provisionally ignored findings for SAST, SCA, and AI-powered scans. Override `APPLICATION_INVENTORY_SEMGREP_STATUSES` or `APPLICATION_INVENTORY_SEMGREP_ISSUE_TYPES` only when the resulting snapshot semantics are understood.
+All three adapters stream bounded API pages into page-sized database commits. Semgrep uses zero-based pages of up to 3,000 findings, server-side ref deduplication, and four ordered page-prefetch workers by default. Set `APPLICATION_INVENTORY_SEMGREP_WORKERS` from `1` through `16` to match the vendor rate limit. By default it synchronizes open, reviewing, fixing, and provisionally ignored findings for SAST, SCA, and AI-powered scans. Override `APPLICATION_INVENTORY_SEMGREP_STATUSES` or `APPLICATION_INVENTORY_SEMGREP_ISSUE_TYPES` only when the resulting snapshot semantics are understood. `APPLICATION_INVENTORY_SEMGREP_MAX_FINDINGS` controls the per-sync safety limit and defaults to 5,000,000 for large deployments.
 
-Invicti defaults to `https://www.netsparkercloud.com/api/1.0` and permits an API-root override for private deployments. The connector requests `rawDetails=false` to avoid retaining unnecessary request and response content. NowSecure imports affected findings from each application's latest complete assessment and records all assessed applications as coverage targets.
+Invicti defaults to `https://www.netsparkercloud.com/api/1.0` and permits an API-root override for private deployments. It prefetches two pages by default to limit tenant throttling, commits ten pages per database batch, and applies a 120-second minimum page timeout. The connector requests `rawDetails=false` to avoid retaining unnecessary request and response content. NowSecure imports affected findings from each application's latest complete assessment and records all assessed applications as coverage targets.
+
+Connector requests retry rate limits and transient upstream errors within each HTTP attempt. DNS, connection, and timeout failures retry the complete request up to `APPLICATION_INVENTORY_CONNECTOR_NETWORK_ATTEMPTS` times with bounded exponential backoff. Retry events are written to application observability logs with redacted endpoints and no credentials.
 
 Vendor references: [Semgrep API](https://semgrep.dev/api/v1/docs/), [Invicti API](https://www.netsparkercloud.com/swagger/docs/v1), and [NowSecure findings GraphQL](https://support.nowsecure.com/hc/en-us/articles/21777208143629-Platform-Findings-GraphQL-API).
 
@@ -111,7 +113,7 @@ Set `completeSnapshot` to `true` only when the document contains the complete cu
 - A partial import never resolves an existing finding.
 - Empty complete snapshots are accepted only with at least one scanned target.
 
-File imports are atomic. Large direct-connector synchronizations commit bounded batches so progress is durable and memory remains bounded. A failed connector sync retains its audit record, does not reconcile absent findings, and leaves previously committed finding updates available for the next retry.
+File imports are atomic. Large direct-connector synchronizations commit bounded batches so progress is durable and memory remains bounded. Finding upserts and child-table synchronization use PostgreSQL pipeline mode within each batch, while asset correlation uses indexed, sync-wide resolution caching. A failed or interrupted connector sync retains its audit record, does not reconcile absent findings, and leaves previously committed finding updates available for the next retry.
 
 ## Risk Model
 
@@ -234,7 +236,7 @@ The container exposes the same command through its `aspm` dispatcher:
 docker run --rm \
   --env-file .env \
   -v "$PWD/results.sarif:/input/results.sarif:ro" \
-  h0p3sf4ll/application-inventory-service:1.8.0 \
+  h0p3sf4ll/application-inventory-service:1.8.1 \
   aspm --owner-user-id security-platform ingest /input/results.sarif
 ```
 

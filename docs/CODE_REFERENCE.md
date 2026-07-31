@@ -91,14 +91,14 @@ The report writer creates all output files at scan start. Text targets flush per
 | Module | Responsibility |
 | --- | --- |
 | `auth.py` | OAuth state, sessions, CSRF tokens, test login, and encrypted provider credentials |
-| `runtime.py` | Bounded scan process execution, pause/resume/stop, incremental metrics, live and failure-only logs, event listeners, recovery, and report discovery |
+| `runtime.py` | Bounded scan process execution, pause/resume/stop/retry, incremental metrics, live and failure-only logs, event listeners, recovery, and report discovery |
 | `scheduling.py` | Encrypted user-scoped schedules, recurrence calculation, due-run dispatch, and schedule lifecycle |
 | `scan_request.py` | Normalizes UI scan requests and builds redacted commands and restricted child environments |
 | `ui.py` | HTTP routes, owner-scoped database search and export, static delivery, SSE, and service startup |
 | `ui_static/app.js` | Browser state, scan configuration, live console, controls, schedules, reports, and database search/export actions |
 | `ui_static/styles.css` | Responsive dark interface and operational status presentation |
 
-`ScanManager` admits a bounded number of subprocesses. Extra scans remain queued. On POSIX hosts, each scanner starts in a detached process group so pause, resume, and stop apply to the complete process tree. Run configuration is encrypted, output is appended to a private log, and a replacement manager verifies the saved PID and process group before reconnecting to an active worker. `ScanRun.append_log()` classifies and sequences each line once, publishes it over SSE, and appends failures to an owner-only `failures.log`. Recovery rebuilds that file from the durable scan log before monitoring resumes. Browser sessions are stored in the same encrypted state directory, bounded to 1,000 active records, and removed on logout or expiry.
+`ScanManager` admits a bounded number of subprocesses. Extra scans remain queued. On POSIX hosts, each scanner starts in a detached process group so pause, resume, and stop apply to the complete process tree. `retry_scan()` accepts only completed failures, deep-copies the original configuration into a new run, persists lineage and attempt metadata, and prevents concurrent retries within the same lineage. Run configuration is encrypted, output is appended to a private log, and a replacement manager verifies the saved PID and process group before reconnecting to an active worker. `ScanRun.append_log()` classifies and sequences each line once, publishes it over SSE, and appends failures to an owner-only `failures.log`. Recovery rebuilds that file from the durable scan log before monitoring resumes. Browser sessions are stored in the same encrypted state directory, bounded to 1,000 active records, and removed on logout or expiry.
 
 `ScanScheduler` persists encrypted schedule definitions under the configured state directory. It dispatches due work through the same `ScanManager`, so scheduled and interactive scans share concurrency limits and reporting behavior.
 

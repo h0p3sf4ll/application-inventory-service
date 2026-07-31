@@ -1,3 +1,5 @@
+import {riskDistributionMarkup} from "/static/aspm/posture.js?v=1";
+
 export class AspmWorkspace {
   constructor(dependencies) {
     this.databasePayload = dependencies.databasePayload;
@@ -9,12 +11,11 @@ export class AspmWorkspace {
     this.setActiveView = dependencies.setActiveView;
     this.state = {
       posture: null,
-      findings: {rows: [], total: 0, limit: 100, offset: 0, facets: {}, loaded: false},
-      coverage: {rows: [], total: 0, limit: 100, offset: 0, summary: {}, loaded: false},
-      assetRisks: {rows: [], total: 0, limit: 100, offset: 0, loaded: false},
+      findings: {rows: [], total: 0, limit: 25, offset: 0, facets: {}, loaded: false, findingRequest: 0},
+      coverage: {rows: [], total: 0, limit: 100, offset: 0, summary: {}, loaded: false, requestId: 0},
+      assetRisks: {rows: [], total: 0, limit: 25, offset: 0, loaded: false, assetRiskRequest: 0},
       connectors: {items: [], syncs: [], loaded: false},
       findingFilters: {},
-      findingDrilldown: null,
       quickFilter: "active",
       activeFinding: null,
       activeAsset: null,
@@ -40,9 +41,8 @@ export class AspmWorkspace {
         "findingImportStatus", "submitFindingImport", "findingSearchQuery",
         "findingSeverityFilter", "findingStatusFilter", "findingToolFilter",
         "searchFindings", "clearFindingFilters", "findingResultSummary",
-        "findingScope",
         "findingResultRows", "findingPrevious", "findingNext",
-        "findingPagePosition", "findingRecordCount", "findingDialog",
+        "findingPageSize", "findingPagePosition", "findingRecordCount", "findingDialog",
         "findingDialogTitle", "closeFindingDialog", "findingDetailSummary",
         "findingWorkflowStatus", "findingWorkflowAssignee", "findingWorkflowDue",
         "findingWorkflowNote", "findingWorkflowMessage", "saveFindingWorkflow",
@@ -53,7 +53,7 @@ export class AspmWorkspace {
         "refreshAssetRisks", "assetRiskQuery", "assetRiskBand",
         "assetRiskDataType", "searchAssetRisks", "clearAssetRisks",
         "assetRiskSummary", "assetRiskRows", "assetRiskPrevious",
-        "assetRiskNext", "assetRiskPagePosition", "assetRiskRecordCount",
+        "assetRiskNext", "assetRiskPageSize", "assetRiskPagePosition", "assetRiskRecordCount",
         "assetProfile", "assetProfileStatus", "assetCriticality",
         "assetInternetExposure", "assetDataClassification", "assetBusinessOwner",
         "assetTechnicalOwner", "assetSecurityTags", "assetProfileMessage",
@@ -64,9 +64,6 @@ export class AspmWorkspace {
       return;
     }
     this.elements.refreshPosture.addEventListener("click", () => this.loadPosture(true));
-    document.querySelectorAll("[data-posture-drilldown]").forEach((card) => {
-      card.addEventListener("click", () => this.openPostureDrilldown(card.dataset.postureDrilldown));
-    });
     this.elements.viewAllFindings.addEventListener("click", () => this.openFindings());
     this.elements.openFindingImport.addEventListener("click", () => this.openFindings(true));
     this.elements.toggleFindingImport.addEventListener("click", () => this.toggleImport(true));
@@ -88,6 +85,15 @@ export class AspmWorkspace {
     });
     document.querySelectorAll("[data-finding-export]").forEach((button) => {
       button.addEventListener("click", () => this.exportFindings(button.dataset.findingExport));
+    });
+    this.elements.findingPageSize.addEventListener("change", () => {
+      const limit = Number.parseInt(this.elements.findingPageSize.value, 10);
+      if (![25, 50, 100].includes(limit)) {
+        this.elements.findingPageSize.value = String(this.state.findings.limit);
+        return;
+      }
+      this.state.findings.limit = limit;
+      this.searchFindings(0);
     });
     this.elements.findingPrevious.addEventListener("click", () => {
       this.searchFindings(Math.max(0, this.state.findings.offset - this.state.findings.limit));
@@ -118,6 +124,15 @@ export class AspmWorkspace {
     });
     [this.elements.assetRiskBand, this.elements.assetRiskDataType]
       .forEach((control) => control.addEventListener("change", () => this.loadAssetRisks(0, true)));
+    this.elements.assetRiskPageSize.addEventListener("change", () => {
+      const limit = Number.parseInt(this.elements.assetRiskPageSize.value, 10);
+      if (![25, 50, 100].includes(limit)) {
+        this.elements.assetRiskPageSize.value = String(this.state.assetRisks.limit);
+        return;
+      }
+      this.state.assetRisks.limit = limit;
+      this.loadAssetRisks(0, true);
+    });
     this.elements.assetRiskPrevious.addEventListener("click", () => {
       this.loadAssetRisks(Math.max(0, this.state.assetRisks.offset - this.state.assetRisks.limit));
     });
@@ -139,11 +154,10 @@ export class AspmWorkspace {
 
   reset() {
     this.state.posture = null;
-    this.state.findings = {rows: [], total: 0, limit: 100, offset: 0, facets: {}, loaded: false};
-    this.state.coverage = {rows: [], total: 0, limit: 100, offset: 0, summary: {}, loaded: false};
-    this.state.assetRisks = {rows: [], total: 0, limit: 100, offset: 0, loaded: false};
+    this.state.findings = {rows: [], total: 0, limit: 25, offset: 0, facets: {}, loaded: false, findingRequest: 0};
+    this.state.coverage = {rows: [], total: 0, limit: 100, offset: 0, summary: {}, loaded: false, requestId: 0};
+    this.state.assetRisks = {rows: [], total: 0, limit: 25, offset: 0, loaded: false, assetRiskRequest: 0};
     this.state.connectors = {items: [], syncs: [], loaded: false};
-    this.state.findingDrilldown = null;
     this.state.activeFinding = null;
     this.state.activeAsset = null;
     this.renderPosture();
@@ -215,22 +229,11 @@ export class AspmWorkspace {
   }
 
   renderRiskDistribution(items) {
-    if (!items.length) {
-      this.elements.riskDistribution.innerHTML = '<span class="empty-inline">No findings imported</span>';
-      return;
-    }
-    const total = items.reduce((sum, item) => sum + Number(item.count || 0), 0) || 1;
-    const order = ["critical", "high", "medium", "low", "info"];
-    const counts = new Map(items.map((item) => [item.name, Number(item.count || 0)]));
-    this.elements.riskDistribution.innerHTML = order.map((severity) => {
-      const count = counts.get(severity) || 0;
-      const width = Math.max(0, Math.round((count / total) * 100));
-      return `<div class="risk-bar" data-risk="${severity}">
-        <span class="risk-bar-label">${severity}</span>
-        <span class="risk-bar-track"><span class="risk-bar-fill" style="width:${width}%"></span></span>
-        <span class="risk-bar-count">${this.number(count)}</span>
-      </div>`;
-    }).join("");
+    this.elements.riskDistribution.innerHTML = riskDistributionMarkup(
+      items,
+      (value) => this.number(value),
+      (value) => this.readable(value),
+    );
   }
 
   renderStatusDistribution(items) {
@@ -347,6 +350,8 @@ export class AspmWorkspace {
     if (!force && this.state.busy.has("assetRisks")) {
       return;
     }
+    const requestId = this.state.assetRiskRequest + 1;
+    this.state.assetRiskRequest = requestId;
     this.setBusy("assetRisks", true);
     this.elements.assetRiskSummary.textContent = "Loading asset risk profiles";
     try {
@@ -358,15 +363,23 @@ export class AspmWorkspace {
         limit: this.state.assetRisks.limit,
         offset,
       });
-      this.state.assetRisks = {...data.assets, loaded: true};
+      if (requestId !== this.state.assetRiskRequest) {
+        return;
+      }
+      this.state.assetRisks = {...data.assets, loaded: true, assetRiskRequest: requestId};
       this.state.refreshedAt.assetRisks = Date.now();
       this.renderAssetRisks();
     } catch (error) {
+      if (requestId !== this.state.assetRiskRequest) {
+        return;
+      }
       this.elements.assetRiskSummary.textContent = "Asset risk unavailable";
       this.elements.assetRiskRows.innerHTML = `<tr><td class="database-empty-row" colspan="7">${this.escapeHtml(error.message || "Asset risk profiles could not be loaded.")}</td></tr>`;
       this.notify(error.message || "Asset risk profiles could not be loaded.");
     } finally {
-      this.setBusy("assetRisks", false);
+      if (requestId === this.state.assetRiskRequest) {
+        this.setBusy("assetRisks", false);
+      }
     }
   }
 
@@ -382,6 +395,7 @@ export class AspmWorkspace {
       return;
     }
     const assets = this.state.assetRisks;
+    this.elements.assetRiskPageSize.value = String(assets.limit);
     const start = assets.total ? assets.offset + 1 : 0;
     const end = Math.min(assets.offset + assets.rows.length, assets.total);
     this.elements.assetRiskSummary.textContent = `${this.number(start)}-${this.number(end)} of ${this.number(assets.total)} assets`;
@@ -409,54 +423,6 @@ export class AspmWorkspace {
     if (openImport) {
       this.toggleImport(true);
     }
-  }
-
-  openPostureDrilldown(name) {
-    const drills = {
-      critical: {
-        quickFilter: "critical",
-        label: "Critical active findings",
-        filters: {},
-      },
-      high: {
-        quickFilter: "active",
-        label: "High active findings",
-        filters: {severities: ["high"]},
-      },
-      "affected-assets": {
-        quickFilter: "active",
-        label: "Active findings linked to affected inventory assets",
-        filters: {has_asset: true},
-      },
-      overdue: {
-        quickFilter: "overdue",
-        label: "Overdue active findings",
-        filters: {},
-      },
-      coverage: {
-        quickFilter: "all",
-        label: "Findings on inventory assets scanned in the last 30 days",
-        filters: {has_asset: true, scanned_in_last_30_days: true},
-      },
-      "average-risk": {
-        quickFilter: "active",
-        label: "Risk-ranked active findings on inventoried assets",
-        filters: {has_asset: true},
-      },
-    };
-    const drill = drills[name];
-    if (!drill) {
-      return;
-    }
-    this.state.quickFilter = drill.quickFilter;
-    this.state.findingDrilldown = drill;
-    this.elements.findingSearchQuery.value = "";
-    this.elements.findingSeverityFilter.value = drill.filters.severities && drill.filters.severities[0] || "";
-    this.elements.findingStatusFilter.value = "";
-    this.elements.findingToolFilter.value = "";
-    this.updateQuickFilterButtons();
-    this.openFindings();
-    this.searchFindings(0);
   }
 
   toggleImport(open) {
@@ -523,36 +489,44 @@ export class AspmWorkspace {
     if (this.state.busy.has("findings")) {
       return;
     }
+    const requestId = this.state.findingRequest + 1;
+    this.state.findingRequest = requestId;
     this.setBusy("findings", true);
     this.elements.findingResultSummary.textContent = "Loading findings";
     try {
       const filters = this.findingFilters();
+      const includeFacets = !this.state.findings.loaded;
       const data = await this.postJson("/api/aspm/findings/search", {
         ...this.databasePayload(),
         query: this.elements.findingSearchQuery.value.trim(),
         filters,
         limit: this.state.findings.limit,
         offset,
-        includeFacets: true,
+        includeFacets,
       });
-      this.state.findings = {...data.findings, loaded: true};
+      if (requestId !== this.state.findingRequest) {
+        return;
+      }
+      this.state.findings = {...data.findings, loaded: true, findingRequest: requestId};
       this.state.findingFilters = filters;
       this.state.refreshedAt.findings = Date.now();
       this.renderFindings();
     } catch (error) {
+      if (requestId !== this.state.findingRequest) {
+        return;
+      }
       this.elements.findingResultSummary.textContent = "Findings unavailable";
       this.elements.findingResultRows.innerHTML = `<tr><td class="database-empty-row" colspan="9">${this.escapeHtml(error.message || "Findings could not be loaded.")}</td></tr>`;
       this.notify(error.message || "Findings could not be loaded.");
     } finally {
-      this.setBusy("findings", false);
+      if (requestId === this.state.findingRequest) {
+        this.setBusy("findings", false);
+      }
     }
   }
 
   findingFilters() {
-    const filters = {
-      ...this.quickFilterCriteria(this.state.quickFilter),
-      ...(this.state.findingDrilldown && this.state.findingDrilldown.filters || {}),
-    };
+    const filters = {...this.quickFilterCriteria(this.state.quickFilter)};
     if (this.elements.findingSeverityFilter.value) {
       filters.severities = [this.elements.findingSeverityFilter.value];
     }
@@ -579,19 +553,13 @@ export class AspmWorkspace {
 
   activateQuickFilter(name) {
     this.state.quickFilter = name;
-    this.state.findingDrilldown = null;
-    this.updateQuickFilterButtons();
+    document.querySelectorAll("[data-finding-quick-filter]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.findingQuickFilter === name);
+    });
     this.searchFindings(0);
   }
 
-  updateQuickFilterButtons() {
-    document.querySelectorAll("[data-finding-quick-filter]").forEach((button) => {
-      button.classList.toggle("active", button.dataset.findingQuickFilter === this.state.quickFilter);
-    });
-  }
-
   clearFindingFilters() {
-    this.state.findingDrilldown = null;
     this.elements.findingSearchQuery.value = "";
     this.elements.findingSeverityFilter.value = "";
     this.elements.findingStatusFilter.value = "";
@@ -605,12 +573,10 @@ export class AspmWorkspace {
     }
     const findings = this.state.findings;
     this.populateToolFilter(findings.facets && findings.facets.tools || []);
+    this.elements.findingPageSize.value = String(findings.limit);
     const start = findings.total ? findings.offset + 1 : 0;
     const end = Math.min(findings.offset + findings.rows.length, findings.total);
     this.elements.findingResultSummary.textContent = `${this.number(start)}-${this.number(end)} of ${this.number(findings.total)} findings`;
-    const drilldown = this.state.findingDrilldown;
-    this.elements.findingScope.hidden = !drilldown;
-    this.elements.findingScope.textContent = drilldown ? drilldown.label : "";
     this.elements.findingPagePosition.textContent = `Page ${Math.floor(findings.offset / findings.limit) + 1} of ${Math.max(1, Math.ceil(findings.total / findings.limit))}`;
     this.elements.findingRecordCount.textContent = `${this.number(findings.total)} matching records`;
     this.elements.findingPrevious.disabled = findings.offset <= 0;
@@ -633,7 +599,7 @@ export class AspmWorkspace {
       <td><span class="finding-title"><strong>${this.escapeHtml(row.title)}</strong><small>${this.escapeHtml(row.rule_id || row.category || "No rule identifier")}</small></span></td>
       <td><span class="finding-application"><strong>${this.escapeHtml(row.application)}</strong><small>${this.escapeHtml(`${row.organization || ""} / ${row.repository || "Unlinked"}`)}</small></span></td>
       <td><span class="finding-application"><strong>${this.escapeHtml(this.readable(row.correlation_method || "unlinked"))}</strong><small>${this.escapeHtml(correlationContext)}</small></span></td>
-      <td><span class="finding-application"><strong>${this.escapeHtml(responsibility)}</strong><small>${this.escapeHtml(developers)}</small></span></td>
+      <td class="finding-responsibility"><span><strong>${this.escapeHtml(responsibility)}</strong><small>${this.escapeHtml(developers)}</small></span></td>
       <td><span class="severity-badge severity-${this.classToken(row.severity)}">${this.escapeHtml(row.severity)}</span></td>
       <td><span class="workflow-badge">${this.escapeHtml(this.readable(row.status))}</span></td>
       <td>${this.escapeHtml(row.tool_name)}</td>
@@ -680,9 +646,9 @@ export class AspmWorkspace {
       ["Severity", this.readable(finding.severity)],
       ["Application", finding.application],
       ["Repository", `${finding.organization || ""} / ${finding.repository || "Unlinked"}`],
+      ["Location", `${finding.path || "Not provided"}${finding.start_line ? `:${finding.start_line}` : ""}`],
       ["Correlation", `${this.readable(finding.correlation_method || "unlinked")} · ${finding.correlated_branch || "No branch"}`],
       ["Branch responsibility", [finding.technical_owner && `Technical: ${finding.technical_owner}`, finding.business_owner && `Business: ${finding.business_owner}`, finding.contributing_developers].filter(Boolean).join(" | ") || "Not provided"],
-      ["Location", `${finding.path || "Not provided"}${finding.start_line ? `:${finding.start_line}` : ""}`],
       ["Tool", `${finding.tool_name} · ${finding.rule_id || "No rule ID"}`],
       ["Identifiers", [finding.cwes, finding.cves].filter(Boolean).join("; ") || "Not provided"],
       ["Package", finding.package_name ? `${finding.package_name} ${finding.package_version || ""}`.trim() : "Not applicable"],

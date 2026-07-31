@@ -12,10 +12,8 @@ import sys
 import time
 import uuid
 from datetime import datetime, timezone
-from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from importlib.resources import files
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -84,6 +82,15 @@ DEFAULT_UI_PORT = 48731
 DEFAULT_MAX_JSON_BODY_BYTES = 1_048_576
 DEFAULT_MAX_FINDING_IMPORT_BYTES = 25_165_824
 HOST_HEADER_RE = re.compile(r"^[A-Za-z0-9.:\-\[\]]+$")
+STATIC_ROOT = Path(__file__).resolve().parent / "ui_static"
+STATIC_CONTENT_TYPES = {
+    ".css": "text/css; charset=utf-8",
+    ".html": "text/html; charset=utf-8",
+    ".jpg": "image/jpeg",
+    ".js": "text/javascript; charset=utf-8",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+}
 SECURITY_HEADER_VALUES = {
     "Content-Security-Policy": "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'",
     "Cross-Origin-Opener-Policy": "same-origin",
@@ -270,6 +277,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             "pause",
             "resume",
             "stop",
+            "retry",
         }:
             self.handle_scan_action(path)
             return
@@ -290,14 +298,16 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def handle_static(self, path: str) -> None:
-        name = Path(unquote(path.removeprefix("/static/"))).name
-        content_type = {
-            ".css": "text/css; charset=utf-8",
-            ".jpg": "image/jpeg",
-            ".js": "text/javascript; charset=utf-8",
-            ".png": "image/png",
-            ".svg": "image/svg+xml",
-        }.get(Path(name).suffix, "application/octet-stream")
+        name = path.removeprefix("/static/")
+        try:
+            asset_path = static_asset_path(name)
+        except FileNotFoundError:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        content_type = STATIC_CONTENT_TYPES.get(asset_path.suffix.lower())
+        if not content_type:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
         self.send_static(name, content_type)
 
     def handle_scan_get(self, path: str) -> None:
@@ -375,17 +385,47 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         if not run or run_owner_id(run) != owner_scope(record):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
+        if action == "retry":
+            if run.status != "failed":
+                self.send_json(
+                    {"error": "Only a failed run can be retried."},
+                    HTTPStatus.CONFLICT,
+                )
+                return
+            database_config = normalize_database_config(run.config)
+            if database_config["postgresEnabled"]:
+                status = database_status(
+                    database_config["postgresDsn"],
+                    schema=database_config["postgresSchema"],
+                    table=database_config["postgresTable"],
+                    owner_user_id=owner_scope(record),
+                )
+                if not status.get("connected"):
+                    self.send_json(
+                        {
+                            "error": f"PostgreSQL is unavailable: {status.get('message', 'connection failed')}"
+                        },
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                    )
+                    return
         operation = {
             "pause": self.manager.pause_scan,
             "resume": self.manager.resume_scan,
             "stop": self.manager.stop_scan,
+            "retry": self.manager.retry_scan,
         }[action]
         try:
             updated = operation(scan_id)
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
             return
-        self.send_json({"scan": updated.summary()})
+        if not updated:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        self.send_json(
+            {"scan": updated.summary()},
+            HTTPStatus.CREATED if action == "retry" else HTTPStatus.OK,
+        )
 
     def handle_create_schedule(self) -> None:
         try:
@@ -677,7 +717,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                 filters=payload.get("filters")
                 if isinstance(payload.get("filters"), dict)
                 else None,
-                limit=positive_int(payload.get("limit"), 100),
+                limit=positive_int(payload.get("limit"), 25),
                 offset=max(0, integer_value(payload.get("offset"), 0)),
                 table=config["postgresTable"],
                 include_facets=payload.get("includeFacets") is True,
@@ -778,7 +818,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                 filters=payload.get("filters")
                 if isinstance(payload.get("filters"), dict)
                 else None,
-                limit=positive_int(payload.get("limit"), 100),
+                limit=positive_int(payload.get("limit"), 25),
                 offset=max(0, integer_value(payload.get("offset"), 0)),
                 include_facets=payload.get("includeFacets") is not False,
             )
@@ -948,7 +988,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                 query=clean_text(payload.get("query")),
                 risk_bands=risk_bands if isinstance(risk_bands, list) else None,
                 data_types=data_types if isinstance(data_types, list) else None,
-                limit=positive_int(payload.get("limit"), 100),
+                limit=positive_int(payload.get("limit"), 25),
                 offset=max(0, integer_value(payload.get("offset"), 0)),
             )
             self.send_json({"assets": result})
@@ -1005,7 +1045,10 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             }[result["status"]]
             response: dict[str, Any] = {"sync": result}
             if result["status"] == "failed":
-                response["error"] = "No security scanner completed successfully."
+                response["error"] = "; ".join(
+                    f"{item['connector']}: {item['message']}"
+                    for item in result["errors"]
+                )
             self.send_json(response, status)
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
@@ -1372,9 +1415,29 @@ def public_database_status(status: dict[str, Any] | None) -> dict[str, Any] | No
     return {key: status[key] for key in keys if key in status}
 
 
-@lru_cache(maxsize=32)
+def static_asset_path(name: str) -> Path:
+    raw_name = unquote(name)
+    relative_path = Path(raw_name)
+    if (
+        not raw_name
+        or relative_path.is_absolute()
+        or "\\" in raw_name
+        or any(part in {".", ".."} or part.startswith(".") for part in relative_path.parts)
+    ):
+        raise FileNotFoundError(name)
+    root = STATIC_ROOT.resolve()
+    asset_path = (root / relative_path).resolve()
+    try:
+        asset_path.relative_to(root)
+    except ValueError as exc:
+        raise FileNotFoundError(name) from exc
+    if not asset_path.is_file() or asset_path.suffix.lower() not in STATIC_CONTENT_TYPES:
+        raise FileNotFoundError(name)
+    return asset_path
+
+
 def static_content(name: str) -> bytes:
-    return files("appsec_scan_router").joinpath("ui_static").joinpath(name).read_bytes()
+    return static_asset_path(name).read_bytes()
 
 
 def static_cache_control(name: str) -> str:

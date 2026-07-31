@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "application-inventory-service"
-version = "1.8.0"
+version = "1.8.1"
 description = "Application security posture management for Azure DevOps and GitHub Enterprise inventory, scanner findings, risk, coverage, and remediation"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -72,8 +72,12 @@ mobile-app-inventory-tracer = "appsec_scan_router.cli:main"
 ado-mobile-scanner = "appsec_scan_router.cli:main"
 
 [tool.setuptools]
-packages = ["appsec_scan_router", "appsec_scan_router.ui_static", "application_inventory_service", "mobile_scanner"]
+packages = ["appsec_scan_router", "appsec_scan_router.ui_static", "appsec_scan_router.ui_static.aspm", "application_inventory_service", "mobile_scanner"]
 py-modules = ["ado_mobile_scanner", "mobile_app_inventory_tracer"]
+include-package-data = false
 
 [tool.setuptools.package-data]
-appsec_scan_router = ["ui_static/*"]
+appsec_scan_router = ["ui_static/*", "ui_static/**/*"]
+
+[tool.setuptools.exclude-package-data]
+appsec_scan_router = ["ui_static/**/__pycache__/*", "ui_static/**/*.pyc"]

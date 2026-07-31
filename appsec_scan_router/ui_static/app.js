@@ -1,4 +1,4 @@
-import {AspmWorkspace} from "/static/aspm-ui.js?v=2";
+import {AspmWorkspace} from "/static/aspm-ui.js?v=6";
 
 const form = document.querySelector("#scanForm");
 const loginPage = document.querySelector("#loginPage");
@@ -8,6 +8,7 @@ const startScanFormButton = document.querySelector("#startScanForm");
 const stopScanButton = document.querySelector("#stopScan");
 const pauseScanButton = document.querySelector("#pauseScan");
 const resumeScanButton = document.querySelector("#resumeScan");
+const retryScanButton = document.querySelector("#retryScan");
 const refreshButton = document.querySelector("#refreshScans");
 const resetDefaultsButton = document.querySelector("#resetDefaults");
 const loginGitHubEnterpriseSso = document.querySelector("#loginGitHubEnterpriseSso");
@@ -64,6 +65,7 @@ const databaseResultSummary = document.querySelector("#databaseResultSummary");
 const databaseResultRows = document.querySelector("#databaseResultRows");
 const databasePreviousButton = document.querySelector("#databasePrevious");
 const databaseNextButton = document.querySelector("#databaseNext");
+const databasePageSize = document.querySelector("#databasePageSize");
 const databasePagePosition = document.querySelector("#databasePagePosition");
 const databaseRecordCount = document.querySelector("#databaseRecordCount");
 const inventoryFilterButtons = document.querySelectorAll("[data-inventory-filter]");
@@ -116,7 +118,7 @@ const state = {
   timer: null,
   session: null,
   database: null,
-  databaseSearch: {query: "", filters: {}, rows: [], total: 0, limit: 100, offset: 0, loaded: false},
+  databaseSearch: {query: "", filters: {}, rows: [], total: 0, limit: 25, offset: 0, loaded: false},
   databaseFacets: {languages: [], loaded: false},
   databaseSearchBusy: false,
   databaseConfigDirty: true,
@@ -255,6 +257,7 @@ function bindEvents() {
   stopScanButton.addEventListener("click", stopScan);
   pauseScanButton.addEventListener("click", () => controlScan("pause"));
   resumeScanButton.addEventListener("click", () => controlScan("resume"));
+  retryScanButton.addEventListener("click", retryFailedScan);
   refreshButton.addEventListener("click", refreshData);
   createScheduleButton.addEventListener("click", createSchedule);
   resetDefaultsButton.addEventListener("click", resetDefaults);
@@ -302,6 +305,15 @@ function bindEvents() {
   databaseNextButton.addEventListener("click", () => {
     const search = state.databaseSearch;
     searchDatabase(search.offset + search.limit, search.query, {filters: search.filters});
+  });
+  databasePageSize.addEventListener("change", () => {
+    const limit = Number.parseInt(databasePageSize.value, 10);
+    if (![25, 50, 100].includes(limit)) {
+      databasePageSize.value = String(state.databaseSearch.limit);
+      return;
+    }
+    state.databaseSearch.limit = limit;
+    searchDatabase(0, state.databaseSearch.query, {filters: state.databaseSearch.filters});
   });
   exportDatabaseXlsxButton.addEventListener("click", () => exportDatabase("xlsx"));
   exportDatabaseCsvButton.addEventListener("click", () => exportDatabase("csv"));
@@ -426,6 +438,34 @@ async function stopScan() {
   await controlScan("stop");
 }
 
+async function retryFailedScan() {
+  const source = state.activeScan;
+  if (!source || source.status !== "failed") {
+    return;
+  }
+  retryScanButton.disabled = true;
+  try {
+    const response = await fetch(`/api/scans/${encodeURIComponent(source.id)}/retry`, {
+      method: "POST",
+      headers: authHeaders(false),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "The failed run could not be retried.");
+    }
+    state.activeScan = stampScan(data.scan);
+    replaceScanOutput(state.activeScan);
+    await loadScans(state.activeScan.id);
+    listenToScan(state.activeScan.id);
+    setActiveView("runsView");
+    notify(`Retry attempt ${Math.max(2, Number(state.activeScan.attempt) || 2)} started.`);
+  } catch (error) {
+    notify(error.message || "The failed run could not be retried.");
+  } finally {
+    renderActiveScan();
+  }
+}
+
 async function controlScan(action) {
   if (!state.activeScan) {
     return;
@@ -480,7 +520,8 @@ async function logout() {
     state.failureSequence = 0;
     state.database = null;
     aspmWorkspace.reset();
-    state.databaseSearch = {query: "", filters: {}, rows: [], total: 0, limit: 100, offset: 0, loaded: false};
+    state.databaseSearch = {query: "", filters: {}, rows: [], total: 0, limit: 25, offset: 0, loaded: false};
+    databasePageSize.value = "25";
     resetDatabaseFacets();
     databaseSearchQuery.value = "";
     resetDatabaseColumnFilters();
@@ -739,6 +780,8 @@ function renderActiveScan() {
     pauseScanButton.disabled = true;
     resumeScanButton.disabled = true;
     resumeScanButton.classList.add("hidden");
+    retryScanButton.disabled = true;
+    retryScanButton.classList.add("hidden");
     pauseScanButton.classList.remove("hidden");
     stopScanButton.disabled = true;
     downloadLogsButton.disabled = true;
@@ -747,7 +790,9 @@ function renderActiveScan() {
   }
   activeStatus.textContent = capitalize(scan.status);
   activeStatus.className = `status-${scan.status}`;
-  activeTitle.textContent = `${scan.org || "Unknown"} · ${scan.target || "all"} · ${providerLabel(scan.provider)} · ${applicationTypesLabel(scan.applicationTypes)}`;
+  const attempt = Math.max(1, Number(scan.attempt) || 1);
+  const attemptLabel = attempt > 1 ? ` · Attempt ${attempt}` : "";
+  activeTitle.textContent = `${scan.org || "Unknown"} · ${scan.target || "all"} · ${providerLabel(scan.provider)} · ${applicationTypesLabel(scan.applicationTypes)}${attemptLabel}`;
   detectedCount.textContent = String(scan.detectedCount || 0);
   runtimeValue.textContent = scanRuntime(scan);
   commandLine.textContent = scan.command || "application-inventory-service";
@@ -757,6 +802,9 @@ function renderActiveScan() {
   pauseScanButton.disabled = scan.status !== "running";
   resumeScanButton.classList.toggle("hidden", !paused);
   resumeScanButton.disabled = !paused;
+  const retryable = scan.status === "failed" && scan.canRetry !== false;
+  retryScanButton.classList.toggle("hidden", !retryable);
+  retryScanButton.disabled = !retryable;
   stopScanButton.disabled = !["queued", "running", "paused"].includes(scan.status);
   downloadLogsButton.disabled = state.logs.length === 0;
   downloadFailuresButton.disabled = state.failures.length === 0;
@@ -780,6 +828,7 @@ function renderRuns() {
           <span>${escapeHtml(providerLabel(scan.provider))}</span>
           <span>${escapeHtml(applicationTypesLabel(scan.applicationTypes))}</span>
           <span>${scan.postgresEnabled ? `PostgreSQL: ${escapeHtml(scan.postgresTable || "enabled")}` : "Files only"}</span>
+          ${Number(scan.attempt) > 1 ? `<span>Attempt ${escapeHtml(String(scan.attempt))}</span>` : ""}
           <span>${escapeHtml(formatDate(scan.startedAt))}</span>
         </span>
       </button>
@@ -974,6 +1023,7 @@ function renderDatabaseStatus() {
 
 function renderDatabaseResults() {
   const search = state.databaseSearch;
+  databasePageSize.value = String(search.limit);
   renderDatabaseSortHeaders(search.filters || {});
   if (!search.loaded) {
     databaseResultSummary.textContent = "Loading inventory records";
@@ -2318,6 +2368,7 @@ function setDatabaseBusy(isBusy) {
   exportDatabaseXlsxButton.disabled = isBusy;
   exportDatabaseCsvButton.disabled = isBusy;
   exportDatabaseJsonButton.disabled = isBusy;
+  databasePageSize.disabled = isBusy;
   inventoryFilterButtons.forEach((button) => {
     button.disabled = isBusy;
   });

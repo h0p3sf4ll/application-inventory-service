@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
-from pathlib import Path
+import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse, urlunparse
 
@@ -34,6 +36,10 @@ DEFAULT_CONNECTOR_TIMEOUT_SECONDS = 30
 DEFAULT_CONNECTOR_RETRIES = 5
 DEFAULT_CONNECTOR_POOL_SIZE = 4
 DEFAULT_CONNECTOR_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+DEFAULT_CONNECTOR_NETWORK_ATTEMPTS = 5
+DEFAULT_CONNECTOR_NETWORK_BACKOFF_SECONDS = 2
+DEFAULT_CONNECTOR_NETWORK_BACKOFF_MAX_SECONDS = 15
+LOGGER = logging.getLogger("appsec_scan_router")
 
 
 class ConnectorError(RuntimeError):
@@ -106,33 +112,65 @@ class JsonApiClient:
 
     def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         url = api_url(self.base_url, path)
-        try:
-            with self.session.request(
-                method,
-                url,
-                timeout=self.timeout_seconds,
-                verify=self.verify,
-                stream=True,
-                **kwargs,
-            ) as response:
-                maximum = positive_env_int(
-                    "APPLICATION_INVENTORY_CONNECTOR_MAX_RESPONSE_BYTES",
-                    DEFAULT_CONNECTOR_MAX_RESPONSE_BYTES,
-                )
-                body = bounded_response_body(response, maximum)
-                if not 200 <= response.status_code < 300:
-                    detail = body[:500].decode("utf-8", errors="replace")
-                    detail = detail.replace("\n", " ").strip()
-                    raise ConnectorError(
-                        "Connector returned HTTP "
-                        f"{response.status_code} from {public_url(response.url)}: "
-                        f"{detail}",
-                        response.status_code,
+        attempt_limit = positive_env_int(
+            "APPLICATION_INVENTORY_CONNECTOR_NETWORK_ATTEMPTS",
+            DEFAULT_CONNECTOR_NETWORK_ATTEMPTS,
+        )
+        for attempt in range(1, attempt_limit + 1):
+            try:
+                with self.session.request(
+                    method,
+                    url,
+                    timeout=self.timeout_seconds,
+                    verify=self.verify,
+                    stream=True,
+                    **kwargs,
+                ) as response:
+                    maximum = positive_env_int(
+                        "APPLICATION_INVENTORY_CONNECTOR_MAX_RESPONSE_BYTES",
+                        DEFAULT_CONNECTOR_MAX_RESPONSE_BYTES,
                     )
-        except requests.RequestException as exc:
-            raise ConnectorError(
-                f"Connector request to {public_url(url)} failed."
-            ) from exc
+                    body = bounded_response_body(response, maximum)
+                    if not 200 <= response.status_code < 300:
+                        detail = body[:500].decode("utf-8", errors="replace")
+                        detail = detail.replace("\n", " ").strip()
+                        raise ConnectorError(
+                            "Connector returned HTTP "
+                            f"{response.status_code} from {public_url(response.url)}: "
+                            f"{detail}",
+                            response.status_code,
+                        )
+                break
+            except requests.RequestException as exc:
+                reason = network_error_reason(exc)
+                if attempt >= attempt_limit or not retryable_network_error(exc):
+                    attempts = (
+                        f" after {attempt} network attempts" if attempt > 1 else ""
+                    )
+                    raise ConnectorError(
+                        f"Connector request to {public_url(url)} failed{attempts}: "
+                        f"{reason}."
+                    ) from exc
+                delay = network_retry_delay(attempt)
+                LOGGER.warning(
+                    "Connector request retry endpoint=%s reason=%s attempt=%s/%s delay=%ss",
+                    public_url(url),
+                    reason,
+                    attempt,
+                    attempt_limit,
+                    delay,
+                    extra={
+                        "event_type": "aspm.connector.request.retry",
+                        "metadata": {
+                            "endpoint": public_url(url),
+                            "reason": reason,
+                            "attempt": attempt,
+                            "attempt_limit": attempt_limit,
+                            "delay_seconds": delay,
+                        },
+                    },
+                )
+                time.sleep(delay)
         try:
             document = json.loads(body)
         except (UnicodeDecodeError, ValueError) as exc:
@@ -197,6 +235,59 @@ def api_url(base_url: str, path: str) -> str:
 def public_url(value: str) -> str:
     parsed = urlparse(value)
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+
+
+def retryable_network_error(error: Exception) -> bool:
+    if requests is None:
+        return False
+    if isinstance(error, requests.exceptions.SSLError):
+        return False
+    return isinstance(
+        error,
+        (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.RetryError,
+        ),
+    )
+
+
+def network_error_reason(error: Exception) -> str:
+    details = exception_chain_text(error)
+    if "nameresolutionerror" in details or "failed to resolve" in details:
+        return "DNS resolution failed"
+    if requests is not None and isinstance(error, requests.exceptions.SSLError):
+        return "TLS certificate validation failed"
+    if requests is not None and isinstance(error, requests.exceptions.Timeout):
+        return "the request timed out"
+    if "too many 429" in details:
+        return "rate limits exhausted their retries"
+    if "too many 5" in details or "responseerror" in details:
+        return "temporary upstream failures exhausted their retries"
+    return "the network connection failed"
+
+
+def exception_chain_text(error: Exception) -> str:
+    values: list[str] = []
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        values.append(f"{type(current).__name__} {current}")
+        current = current.__cause__ or current.__context__
+    return " ".join(values).casefold()
+
+
+def network_retry_delay(attempt: int) -> int:
+    base = positive_env_int(
+        "APPLICATION_INVENTORY_CONNECTOR_NETWORK_BACKOFF_SECONDS",
+        DEFAULT_CONNECTOR_NETWORK_BACKOFF_SECONDS,
+    )
+    maximum = positive_env_int(
+        "APPLICATION_INVENTORY_CONNECTOR_NETWORK_BACKOFF_MAX_SECONDS",
+        DEFAULT_CONNECTOR_NETWORK_BACKOFF_MAX_SECONDS,
+    )
+    return min(maximum, base * (2 ** max(0, attempt - 1)))
 
 
 def positive_env_int(name: str, default: int) -> int:

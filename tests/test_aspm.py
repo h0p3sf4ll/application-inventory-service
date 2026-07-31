@@ -9,16 +9,10 @@ from appsec_scan_router.aspm_models import (
     SourceLocation,
     validate_transition,
 )
-from appsec_scan_router.aspm_postgres import normalize_finding_filters
 from appsec_scan_router.aspm_risk import AssetRiskContext, RiskEngine
 
 
 class FindingIngestionTests(unittest.TestCase):
-    def test_finding_filters_preserve_coverage_drilldown_scope(self) -> None:
-        filters = normalize_finding_filters({"scanned_in_last_30_days": True})
-
-        self.assertTrue(filters["scanned_in_last_30_days"])
-
     def test_generic_findings_are_normalized_and_fingerprinted(self) -> None:
         document = parse_finding_document(
             {

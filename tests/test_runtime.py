@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from http import HTTPStatus
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -13,6 +14,7 @@ from appsec_scan_router.constants import (
     INVENTORY_FIELDNAMES,
     MOBILE_FIELDNAMES,
 )
+from appsec_scan_router.auth import AuthenticatedUser, SessionRecord
 from appsec_scan_router.postgres import EXPORT_COLUMNS
 from appsec_scan_router.runtime import (
     ScanManager,
@@ -169,6 +171,192 @@ class RuntimeTests(unittest.TestCase):
                 manager.resume_scan(run.id)
                 self.assertEqual(run.status, "running")
                 resume.assert_called_once_with(process, None)
+
+    def test_failed_scan_retry_creates_a_new_persisted_attempt(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            manager = ScanManager(
+                root,
+                lambda config: dict(config),
+                lambda config, path: ["scanner", "--out-dir", str(path)],
+                lambda config: {},
+                list,
+            )
+            source_config = {
+                "ownerUserId": "user-1",
+                "provider": "azure-devops",
+                "adoOrgPats": [{"org": "Example", "pat": "encrypted-state"}],
+            }
+            source = ScanRun(
+                "scan-1",
+                source_config,
+                (),
+                (),
+                root / "scan-1",
+                root_scan_id="scan-1",
+                status="failed",
+                exit_code=1,
+            )
+            manager.scans[source.id] = source
+
+            with patch.object(manager, "_start_thread") as start_thread:
+                retry = manager.retry_scan(source.id)
+
+            self.assertIsNotNone(retry)
+            self.assertNotEqual(retry.id, source.id)
+            self.assertEqual(retry.status, "queued")
+            self.assertEqual(retry.retry_of, source.id)
+            self.assertEqual(retry.root_scan_id, source.id)
+            self.assertEqual(retry.attempt, 2)
+            self.assertEqual(retry.config, source_config)
+            self.assertIsNot(retry.config, source.config)
+            self.assertIsNot(retry.config["adoOrgPats"], source.config["adoOrgPats"])
+            self.assertNotEqual(retry.reports_dir, source.reports_dir)
+            self.assertEqual(retry.summary()["retryOf"], source.id)
+            self.assertFalse(retry.summary()["canRetry"])
+            self.assertTrue(source.summary()["canRetry"])
+            start_thread.assert_called_once_with(retry, manager._run_scan)
+
+            record = next(
+                item
+                for item in manager.state_store.records()
+                if item["id"] == retry.id
+            )
+            restored = manager._restore_run(record)
+            self.assertEqual(restored.retry_of, source.id)
+            self.assertEqual(restored.root_scan_id, source.id)
+            self.assertEqual(restored.attempt, 2)
+            manager.close()
+
+    def test_scan_retry_rejects_nonfailed_and_duplicate_active_attempts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            manager = ScanManager(
+                root, dict, lambda config, path: [], lambda config: {}, list
+            )
+            succeeded = ScanRun(
+                "scan-succeeded",
+                {"ownerUserId": "user-1"},
+                (),
+                (),
+                root / "scan-succeeded",
+                status="succeeded",
+            )
+            failed = ScanRun(
+                "scan-failed",
+                {"ownerUserId": "user-1"},
+                (),
+                (),
+                root / "scan-failed",
+                root_scan_id="scan-failed",
+                status="failed",
+            )
+            active_retry = ScanRun(
+                "scan-retry",
+                {"ownerUserId": "user-1"},
+                (),
+                (),
+                root / "scan-retry",
+                retry_of=failed.id,
+                root_scan_id=failed.id,
+                attempt=2,
+                status="running",
+            )
+            manager.scans = {
+                succeeded.id: succeeded,
+                failed.id: failed,
+                active_retry.id: active_retry,
+            }
+
+            with self.assertRaisesRegex(ValueError, "Only a failed run"):
+                manager.retry_scan(succeeded.id)
+            with self.assertRaisesRegex(ValueError, "already active"):
+                manager.retry_scan(failed.id)
+            manager.close()
+
+    def test_retry_api_queues_new_attempt_for_the_run_owner(self):
+        source = ScanRun(
+            "scan-failed",
+            {"ownerUserId": "user-1", "postgresEnabled": False},
+            (),
+            (),
+            Path("reports/scan-failed"),
+            status="failed",
+        )
+        retry = ScanRun(
+            "scan-retry",
+            {"ownerUserId": "user-1", "postgresEnabled": False},
+            (),
+            (),
+            Path("reports/scan-retry"),
+            retry_of=source.id,
+            root_scan_id=source.id,
+            attempt=2,
+        )
+        record = SessionRecord(
+            "session-1",
+            AuthenticatedUser("user-1", "user@example.test"),
+            "csrf-token",
+            time.time() + 60,
+        )
+        handler = object.__new__(ApplicationInventoryServiceHandler)
+        handler.manager = Mock()
+        handler.manager.get_scan.return_value = source
+        handler.manager.retry_scan.return_value = retry
+        handler.current_session = Mock(return_value=record)
+        handler.valid_csrf = Mock(return_value=True)
+        handler.send_json = Mock()
+        handler.send_error = Mock()
+
+        handler.handle_scan_action("/api/scans/scan-failed/retry")
+
+        handler.manager.retry_scan.assert_called_once_with(source.id)
+        handler.send_json.assert_called_once_with(
+            {"scan": retry.summary()}, HTTPStatus.CREATED
+        )
+        handler.send_error.assert_not_called()
+
+    def test_failed_subprocess_retry_completes_as_a_separate_run(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            marker = root / "attempted"
+
+            def command(config, reports_dir):
+                return [
+                    sys.executable,
+                    "-c",
+                    (
+                        "from pathlib import Path; import sys; "
+                        "marker = Path(sys.argv[1]); "
+                        "already_attempted = marker.exists(); marker.touch(); "
+                        "raise SystemExit(0 if already_attempted else 1)"
+                    ),
+                    str(marker),
+                ]
+
+            manager = ScanManager(
+                root / "reports",
+                dict,
+                command,
+                lambda config: dict(os.environ),
+                list,
+            )
+            source = manager.start_scan({"ownerUserId": "user-1"})
+            deadline = time.monotonic() + 5
+            while source.status != "failed" and time.monotonic() < deadline:
+                time.sleep(0.02)
+
+            retry = manager.retry_scan(source.id)
+            while retry.status != "succeeded" and time.monotonic() < deadline:
+                time.sleep(0.02)
+            manager.close()
+
+        self.assertEqual(source.status, "failed")
+        self.assertEqual(source.exit_code, 1)
+        self.assertEqual(retry.status, "succeeded")
+        self.assertEqual(retry.exit_code, 0)
+        self.assertEqual(retry.retry_of, source.id)
+        self.assertNotEqual(retry.reports_dir, source.reports_dir)
 
     @unittest.skipUnless(
         os.name == "posix", "Durable process recovery requires POSIX process groups."

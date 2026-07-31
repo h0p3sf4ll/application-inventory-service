@@ -144,6 +144,29 @@ class ConnectorService:
                         "metadata": {"sync_id": sync_id, "connector": connector.key},
                     },
                 )
+            except (KeyboardInterrupt, SystemExit):
+                message = "Connector sync was interrupted."
+                self.repository.finish_connector_sync(
+                    self.owner_user_id,
+                    sync_id,
+                    "failed",
+                    {"metadata": {"connector": connector.key}},
+                    message,
+                )
+                LOGGER.warning(
+                    "ASPM connector sync interrupted connector=%s",
+                    connector.key,
+                    extra={
+                        "event_type": "aspm.connector.sync.interrupted",
+                        "owner_user_id": self.owner_user_id,
+                        "owner_user_login": self.owner_user_login,
+                        "metadata": {
+                            "sync_id": sync_id,
+                            "connector": connector.key,
+                        },
+                    },
+                )
+                raise
         return {
             "status": "completed" if results and not errors else "partial" if results else "failed",
             "results": results,

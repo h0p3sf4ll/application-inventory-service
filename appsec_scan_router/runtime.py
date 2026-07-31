@@ -13,6 +13,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Callable, Iterable
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,6 +59,9 @@ class ScanRun:
     command: tuple[str, ...]
     display_command: tuple[str, ...]
     reports_dir: Path
+    retry_of: str = ""
+    root_scan_id: str = ""
+    attempt: int = 1
     status: str = "queued"
     started_at: str = ""
     ended_at: str = ""
@@ -268,6 +272,10 @@ class ScanRun:
                 "command": " ".join(self.display_command),
                 "persistent": True,
                 "recovered": self.recovered,
+                "retryOf": self.retry_of,
+                "rootScanId": self.root_scan_id or self.id,
+                "attempt": self.attempt,
+                "canRetry": self.status == "failed",
                 "reports": reports,
                 "logsTail": list(self.log_tail),
                 "failuresTail": list(self.failure_tail),
@@ -353,12 +361,23 @@ class ScanManager:
             "scansStopped": statuses.count("stopped"),
         }
 
-    def start_scan(self, config: dict[str, Any]) -> ScanRun:
+    def start_scan(
+        self,
+        config: dict[str, Any],
+        *,
+        retry_of: str = "",
+        root_scan_id: str = "",
+        attempt: int = 1,
+    ) -> ScanRun:
         with self.lock:
             if self._closing:
                 raise ValueError("The scan service is shutting down.")
         normalized = self.normalize_config(config)
         scan_id = new_scan_id()
+        resolved_retry_of = valid_scan_id(retry_of) if retry_of else ""
+        resolved_root_scan_id = (
+            valid_scan_id(root_scan_id) if root_scan_id else scan_id
+        )
         reports_dir = self.reports_root / scan_id
         reports_dir.mkdir(parents=True, exist_ok=False)
         command = tuple(self.build_command(normalized, reports_dir))
@@ -368,6 +387,9 @@ class ScanManager:
             command=command,
             display_command=tuple(self.redact_command(command)),
             reports_dir=reports_dir,
+            retry_of=resolved_retry_of,
+            root_scan_id=resolved_root_scan_id,
+            attempt=max(1, int(attempt)),
             log_path=reports_dir / ".scan.log",
             failure_log_path=reports_dir / "failures.log",
         )
@@ -392,6 +414,35 @@ class ScanManager:
             )
         self._start_thread(run, self._run_scan)
         return run
+
+    def retry_scan(self, scan_id: str) -> ScanRun | None:
+        with self.lock:
+            source = self.scans.get(scan_id)
+            if source is None:
+                return None
+            if source.status != "failed":
+                raise ValueError("Only a failed run can be retried.")
+            root_scan_id = scan_root_id(source)
+            lineage = tuple(
+                run for run in self.scans.values() if scan_root_id(run) == root_scan_id
+            )
+            if any(run.status in SCAN_STATUSES_ACTIVE for run in lineage):
+                raise ValueError("A retry for this run is already active.")
+            attempt = max((run.attempt for run in lineage), default=1) + 1
+            retry = self.start_scan(
+                deepcopy(source.config),
+                retry_of=source.id,
+                root_scan_id=root_scan_id,
+                attempt=attempt,
+            )
+        LOGGER.info(
+            "Scan retry queued source_scan_id=%s scan_id=%s attempt=%s",
+            source.id,
+            retry.id,
+            retry.attempt,
+            extra=scan_log_extra(retry, "scan.retry_queued", status="queued"),
+        )
+        return retry
 
     def pause_scan(self, scan_id: str) -> ScanRun | None:
         run = self.get_scan(scan_id)
@@ -597,6 +648,14 @@ class ScanManager:
             if exit_code is None and process is not None:
                 exit_code = process.poll()
             if exit_code is not None:
+                if process is not None and process.poll() is None:
+                    time.sleep(0.05)
+                    continue
+                if process is None and process_is_running(
+                    run.process_pid, run.process_group_id
+                ):
+                    time.sleep(0.05)
+                    continue
                 self._publish_scan_log(run, log_offset, include_partial=True)
                 self._complete_scan(run, exit_code, completion)
                 return
@@ -703,6 +762,9 @@ class ScanManager:
             command=command,
             display_command=display_command,
             reports_dir=reports_dir,
+            retry_of=optional_scan_id(record.get("retryOf")),
+            root_scan_id=optional_scan_id(record.get("rootScanId")) or scan_id,
+            attempt=max(1, optional_int(record.get("attempt")) or 1),
             status=status,
             started_at=str(record.get("startedAt") or ""),
             ended_at=str(record.get("endedAt") or ""),
@@ -902,6 +964,9 @@ def run_state_record(run: ScanRun) -> dict[str, Any]:
             "processPid": run.process_pid,
             "processGroupId": run.process_group_id,
             "pausedSeconds": run.paused_seconds,
+            "retryOf": run.retry_of,
+            "rootScanId": run.root_scan_id or run.id,
+            "attempt": run.attempt,
         }
 
 
@@ -928,6 +993,13 @@ def optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def optional_scan_id(value: Any) -> str:
+    try:
+        return valid_scan_id(value) if value else ""
+    except ValueError:
+        return ""
 
 
 def positive_optional_int(value: Any) -> int | None:
@@ -1045,6 +1117,10 @@ def scan_target_summary(config: dict[str, Any]) -> str:
 
 def run_owner_id(run: ScanRun) -> str:
     return str(run.config.get("ownerUserId") or "anonymous")
+
+
+def scan_root_id(run: ScanRun) -> str:
+    return run.root_scan_id or run.id
 
 
 def scan_log_extra(run: ScanRun, event_type: str, status: str = "") -> dict[str, Any]:

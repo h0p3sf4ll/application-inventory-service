@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
+from collections import deque
 from collections.abc import Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
+from threading import Lock, local
 from typing import Any
 
 from .aspm_connector_http import JsonApiClient, positive_env_int
@@ -25,7 +28,9 @@ DEFAULT_SEMGREP_PAGE_SIZE = 3000
 DEFAULT_SEMGREP_PROJECT_PAGE_SIZE = 3000
 DEFAULT_SEMGREP_ISSUE_TYPES = ("sast", "sca", "ai_sast")
 DEFAULT_SEMGREP_STATUSES = ("open", "reviewing", "fixing", "provisionally_ignored")
-MAX_SEMGREP_FINDINGS = 500_000
+DEFAULT_SEMGREP_MAX_FINDINGS = 5_000_000
+DEFAULT_SEMGREP_WORKERS = 4
+MAX_SEMGREP_WORKERS = 16
 
 
 class SemgrepConnector:
@@ -40,12 +45,19 @@ class SemgrepConnector:
         self.endpoint = os.getenv(
             "APPLICATION_INVENTORY_SEMGREP_API_URL", DEFAULT_SEMGREP_API_URL
         ).strip()
+        self.worker_count = min(
+            MAX_SEMGREP_WORKERS,
+            positive_env_int(
+                "APPLICATION_INVENTORY_SEMGREP_WORKERS",
+                DEFAULT_SEMGREP_WORKERS,
+            ),
+        )
+        self._worker_local = local()
+        self._worker_clients: list[JsonApiClient] = []
+        self._worker_clients_lock = Lock()
+        self.timeout_seconds = timeout_seconds
         self.client = (
-            JsonApiClient(
-                self.endpoint,
-                headers={"Authorization": f"Bearer {self.token}"},
-                timeout_seconds=timeout_seconds,
-            )
+            self._new_client()
             if self.token
             else None
         )
@@ -63,6 +75,7 @@ class SemgrepConnector:
     def close(self) -> None:
         if self.client:
             self.client.close()
+        self._close_worker_clients()
 
     def pull(self) -> ConnectorPullResult:
         findings: list[FindingInput] = []
@@ -97,6 +110,10 @@ class SemgrepConnector:
     def pull_batches(self) -> Iterator[FindingDocument]:
         if not self.client:
             raise ValueError("SEMGREP_APP_TOKEN is not configured.")
+        max_findings = positive_env_int(
+            "APPLICATION_INVENTORY_SEMGREP_MAX_FINDINGS",
+            DEFAULT_SEMGREP_MAX_FINDINGS,
+        )
         deployments = sequence(self.client.get("deployments").get("deployments"))
         deployment_names = [
             bounded_text(mapping(item).get("name") or mapping(item).get("slug"), 300)
@@ -127,10 +144,10 @@ class SemgrepConnector:
                                 seen.add(identity)
                             unique.append(finding)
                         total += len(unique)
-                        if total > MAX_SEMGREP_FINDINGS:
+                        if total > max_findings:
                             raise ValueError(
                                 "Semgrep sync exceeds the "
-                                f"{MAX_SEMGREP_FINDINGS:,}-finding safety limit."
+                                f"{max_findings:,}-finding safety limit."
                             )
                         if unique:
                             yield FindingDocument(
@@ -197,25 +214,135 @@ class SemgrepConnector:
                 "APPLICATION_INVENTORY_SEMGREP_PAGE_SIZE", DEFAULT_SEMGREP_PAGE_SIZE
             ),
         )
-        page = 0
-        while True:
-            response = self.client.get(
-                f"deployments/{slug}/findings",
-                {
-                    "issue_type": issue_type,
-                    "status": status,
-                    "page": page,
-                    "page_size": page_size,
-                    "dedup": "true",
-                },
+        if self.worker_count == 1:
+            page = 0
+            while True:
+                batch = self._fetch_finding_page(
+                    slug,
+                    issue_type,
+                    status,
+                    page,
+                    page_size,
+                    self.client,
+                )
+                if not batch:
+                    return
+                yield batch
+                if len(batch) < page_size:
+                    return
+                page += 1
+        else:
+            yield from self._prefetched_finding_pages(
+                slug,
+                issue_type,
+                status,
+                page_size,
             )
-            batch = sequence(response.get("findings"))
-            if not batch:
-                break
-            yield [semgrep_finding(mapping(item), slug) for item in batch]
-            if len(batch) < page_size:
-                break
-            page += 1
+
+    def _prefetched_finding_pages(
+        self,
+        slug: str,
+        issue_type: str,
+        status: str,
+        page_size: int,
+    ) -> Iterator[list[FindingInput]]:
+        executor = ThreadPoolExecutor(
+            max_workers=self.worker_count,
+            thread_name_prefix="semgrep",
+        )
+        pending: deque[tuple[int, Future[list[FindingInput]]]] = deque()
+        next_page = 0
+        try:
+            while len(pending) < self.worker_count:
+                pending.append(
+                    (
+                        next_page,
+                        executor.submit(
+                            self._fetch_finding_page,
+                            slug,
+                            issue_type,
+                            status,
+                            next_page,
+                            page_size,
+                        ),
+                    )
+                )
+                next_page += 1
+            while pending:
+                _, future = pending.popleft()
+                batch = future.result()
+                if not batch:
+                    return
+                yield batch
+                if len(batch) < page_size:
+                    return
+                pending.append(
+                    (
+                        next_page,
+                        executor.submit(
+                            self._fetch_finding_page,
+                            slug,
+                            issue_type,
+                            status,
+                            next_page,
+                            page_size,
+                        ),
+                    )
+                )
+                next_page += 1
+        finally:
+            for _, future in pending:
+                future.cancel()
+            executor.shutdown(wait=True, cancel_futures=True)
+            self._close_worker_clients()
+
+    def _fetch_finding_page(
+        self,
+        slug: str,
+        issue_type: str,
+        status: str,
+        page: int,
+        page_size: int,
+        client: JsonApiClient | None = None,
+    ) -> list[FindingInput]:
+        api_client = client or self._worker_client()
+        response = api_client.get(
+            f"deployments/{slug}/findings",
+            {
+                "issue_type": issue_type,
+                "status": status,
+                "page": page,
+                "page_size": page_size,
+                "dedup": "true",
+            },
+        )
+        return [
+            semgrep_finding(mapping(item), slug)
+            for item in sequence(response.get("findings"))
+        ]
+
+    def _new_client(self) -> JsonApiClient:
+        return JsonApiClient(
+            self.endpoint,
+            headers={"Authorization": f"Bearer {self.token}"},
+            timeout_seconds=self.timeout_seconds,
+        )
+
+    def _worker_client(self) -> JsonApiClient:
+        client = getattr(self._worker_local, "client", None)
+        if client is None:
+            client = self._new_client()
+            self._worker_local.client = client
+            with self._worker_clients_lock:
+                self._worker_clients.append(client)
+        return client
+
+    def _close_worker_clients(self) -> None:
+        with self._worker_clients_lock:
+            clients = tuple(self._worker_clients)
+            self._worker_clients.clear()
+        for client in clients:
+            client.close()
 
 
 def semgrep_project_target(project: dict[str, Any]) -> SourceLocation:

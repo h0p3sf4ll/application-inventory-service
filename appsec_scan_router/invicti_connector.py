@@ -26,8 +26,11 @@ from .aspm_models import (
 
 MAX_INVICTI_FINDINGS = 250_000
 DEFAULT_INVICTI_API_URL = "https://www.netsparkercloud.com/api/1.0"
-DEFAULT_INVICTI_WORKERS = 1
+DEFAULT_INVICTI_WORKERS = 2
+DEFAULT_INVICTI_BATCH_PAGES = 10
+DEFAULT_INVICTI_TIMEOUT_SECONDS = 120
 MAX_INVICTI_WORKERS = 16
+MAX_INVICTI_BATCH_PAGES = 25
 INVICTI_PAGE_SIZE = 200
 
 
@@ -58,11 +61,18 @@ class InvictiConnector:
         self._worker_local = local()
         self._worker_clients: list[JsonApiClient] = []
         self._worker_clients_lock = Lock()
+        request_timeout = max(
+            int(timeout_seconds),
+            positive_env_int(
+                "APPLICATION_INVENTORY_INVICTI_TIMEOUT_SECONDS",
+                DEFAULT_INVICTI_TIMEOUT_SECONDS,
+            ),
+        )
         self.client = (
             JsonApiClient(
                 self.endpoint,
                 auth=(self.user_id, self.token),
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=request_timeout,
             )
             if self.endpoint and self.user_id and self.token
             else None
@@ -122,6 +132,13 @@ class InvictiConnector:
         self.client.get("account/license")
         total = 0
         targets_seen: set[str] = set()
+        batch_pages = min(
+            MAX_INVICTI_BATCH_PAGES,
+            positive_env_int(
+                "APPLICATION_INVENTORY_INVICTI_BATCH_PAGES",
+                DEFAULT_INVICTI_BATCH_PAGES,
+            ),
+        )
         first_response = self._fetch_page(1, self.client)
         total_count = integer_value(case_value(first_response, "TotalItemCount"))
         if total_count > MAX_INVICTI_FINDINGS:
@@ -133,6 +150,10 @@ class InvictiConnector:
             pages = self._prefetched_pages(first_response, page_count)
         else:
             pages = self._sequential_pages(first_response)
+        pending_findings: list[FindingInput] = []
+        pending_targets: dict[str, SourceLocation] = {}
+        first_pending_page = 1
+        pages_pending = 0
         for page, response in pages:
             raw_batch = [mapping(item) for item in sequence(case_value(response, "List"))]
             findings = tuple(invicti_finding(raw) for raw in raw_batch)
@@ -152,16 +173,41 @@ class InvictiConnector:
                 raise ValueError(
                     f"Invicti sync exceeds the {MAX_INVICTI_FINDINGS:,}-finding safety limit."
                 )
-            if findings or targets:
+            pending_findings.extend(findings)
+            pending_targets.update(targets)
+            pages_pending += 1
+            if pages_pending >= batch_pages:
                 yield FindingDocument(
                     tool_key=self.key,
                     tool_name=self.name,
                     tool_type="dast",
                     source_format="invicti-api",
-                    findings=findings,
-                    scanned_targets=tuple(targets.values()),
-                    metadata={"api": self.endpoint, "page": page},
+                    findings=tuple(pending_findings),
+                    scanned_targets=tuple(pending_targets.values()),
+                    metadata={
+                        "api": self.endpoint,
+                        "pageStart": first_pending_page,
+                        "pageEnd": page,
+                    },
                 )
+                pending_findings.clear()
+                pending_targets.clear()
+                pages_pending = 0
+                first_pending_page = page + 1
+        if pending_findings or pending_targets:
+            yield FindingDocument(
+                tool_key=self.key,
+                tool_name=self.name,
+                tool_type="dast",
+                source_format="invicti-api",
+                findings=tuple(pending_findings),
+                scanned_targets=tuple(pending_targets.values()),
+                metadata={
+                    "api": self.endpoint,
+                    "pageStart": first_pending_page,
+                    "pageEnd": page,
+                },
+            )
         yield FindingDocument(
             tool_key=self.key,
             tool_name=self.name,

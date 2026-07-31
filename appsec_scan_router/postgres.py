@@ -959,7 +959,7 @@ def create_database_schema(connection: Any, schema: str, flat_table: str) -> Non
         )
     )
     component = f"{SCHEMA_VERSION_COMPONENT}:{valid_table}"
-    lock_name = f"application-inventory:{valid_schema}:{valid_table}"
+    lock_name = f"application-inventory:{valid_schema}:schema"
     connection.execute("SELECT pg_advisory_lock(hashtextextended(%s, 0))", (lock_name,))
     try:
         create_schema_version_table(connection, valid_schema)

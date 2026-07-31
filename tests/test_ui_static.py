@@ -2,7 +2,12 @@ import unittest
 from html.parser import HTMLParser
 from pathlib import Path
 
-from appsec_scan_router.ui import report_content_type, static_cache_control
+from appsec_scan_router.ui import (
+    report_content_type,
+    static_asset_path,
+    static_cache_control,
+    static_content,
+)
 
 
 class UiStructureParser(HTMLParser):
@@ -54,6 +59,35 @@ class UiStaticTests(unittest.TestCase):
         self.assertEqual(static_cache_control("styles.css"), "private, max-age=300")
         self.assertEqual(report_content_type(Path("failures.log")), "text/plain")
 
+    def test_posture_risk_chart_uses_csp_safe_svg_attributes(self):
+        static_root = (
+            Path(__file__).resolve().parents[1] / "appsec_scan_router" / "ui_static"
+        )
+        javascript = (static_root / "aspm" / "posture.js").read_text(
+            encoding="utf-8"
+        )
+        stylesheet = (static_root / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('class="risk-pie"', javascript)
+        self.assertIn("stroke-dasharray", javascript)
+        self.assertNotIn('style="width:${width}%"', javascript)
+        self.assertIn(".risk-pie-segment", stylesheet)
+
+    def test_nested_static_assets_are_served_without_path_traversal(self):
+        posture_module = static_asset_path("aspm/posture.js")
+
+        self.assertTrue(posture_module.is_file())
+        self.assertEqual(static_content("aspm/posture.js"), posture_module.read_bytes())
+        for unsafe_name in (
+            "../ui.py",
+            "aspm/../app.js",
+            "%2e%2e/ui.py",
+            "__init__.py",
+            ".hidden.js",
+        ):
+            with self.assertRaises(FileNotFoundError):
+                static_asset_path(unsafe_name)
+
     def test_runs_view_has_a_dedicated_failure_console(self):
         static_root = (
             Path(__file__).resolve().parents[1] / "appsec_scan_router" / "ui_static"
@@ -62,12 +96,14 @@ class UiStaticTests(unittest.TestCase):
         javascript = (static_root / "app.js").read_text(encoding="utf-8")
         stylesheet = (static_root / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn('<h2>Failures</h2>', html)
+        self.assertIn("<h2>Failures</h2>", html)
         self.assertIn('id="failureCount"', html)
         self.assertIn('id="clearFailures"', html)
         self.assertIn('id="downloadFailures"', html)
         self.assertIn('id="failures"', html)
-        self.assertIn("data.failure === true || isFailureLogLine(data.line)", javascript)
+        self.assertIn(
+            "data.failure === true || isFailureLogLine(data.line)", javascript
+        )
         self.assertIn('item.name === "failures.log"', javascript)
         self.assertIn(".failure-panel", stylesheet)
         self.assertIn(".failure-logs", stylesheet)
@@ -118,6 +154,62 @@ class UiStaticTests(unittest.TestCase):
         self.assertIn('search.total === 1 ? "matching record"', javascript)
         self.assertIn("Number(search.total).toLocaleString()", javascript)
         self.assertIn(".database-page-summary", stylesheet)
+
+    def test_inventory_pagination_defaults_to_25_and_supports_larger_pages(self):
+        static_root = (
+            Path(__file__).resolve().parents[1] / "appsec_scan_router" / "ui_static"
+        )
+        html = (static_root / "index.html").read_text(encoding="utf-8")
+        javascript = (static_root / "app.js").read_text(encoding="utf-8")
+        stylesheet = (static_root / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="databasePageSize"', html)
+        self.assertIn('<option value="25" selected>25</option>', html)
+        self.assertIn('<option value="50">50</option>', html)
+        self.assertIn('<option value="100">100</option>', html)
+        self.assertIn("limit: 25, offset: 0, loaded: false", javascript)
+        self.assertIn('databasePageSize.addEventListener("change"', javascript)
+        self.assertIn("[25, 50, 100].includes(limit)", javascript)
+        self.assertIn(".database-page-size", stylesheet)
+
+    def test_asset_risk_pagination_defaults_to_25_and_ignores_stale_responses(self):
+        static_root = (
+            Path(__file__).resolve().parents[1] / "appsec_scan_router" / "ui_static"
+        )
+        html = (static_root / "index.html").read_text(encoding="utf-8")
+        javascript = (static_root / "aspm-ui.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="assetRiskPageSize"', html)
+        self.assertIn('aria-label="Asset risk rows per page"', html)
+        self.assertIn(
+            "assetRisks: {rows: [], total: 0, limit: 25, offset: 0", javascript
+        )
+        self.assertIn(
+            'this.elements.assetRiskPageSize.addEventListener("change"', javascript
+        )
+        self.assertIn("[25, 50, 100].includes(limit)", javascript)
+        self.assertIn("requestId !== this.state.assetRiskRequest", javascript)
+
+    def test_findings_pagination_and_dense_table_layout(self):
+        static_root = (
+            Path(__file__).resolve().parents[1] / "appsec_scan_router" / "ui_static"
+        )
+        html = (static_root / "index.html").read_text(encoding="utf-8")
+        javascript = (static_root / "aspm-ui.js").read_text(encoding="utf-8")
+        stylesheet = (static_root / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="findingPageSize"', html)
+        self.assertIn('aria-label="Findings rows per page"', html)
+        self.assertIn("findings: {rows: [], total: 0, limit: 25, offset: 0", javascript)
+        self.assertIn(
+            'this.elements.findingPageSize.addEventListener("change"', javascript
+        )
+        self.assertIn('this.state.busy.has("findings")', javascript)
+        self.assertIn("requestId !== this.state.findingRequest", javascript)
+        self.assertIn("const includeFacets = !this.state.findings.loaded", javascript)
+        self.assertIn(".finding-table th:nth-child(9)", stylesheet)
+        self.assertIn(".finding-responsibility small", stylesheet)
+        self.assertIn("-webkit-line-clamp: 5", stylesheet)
 
     def test_active_scan_reconnects_and_merges_missed_console_output(self):
         static_root = (

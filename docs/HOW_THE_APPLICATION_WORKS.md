@@ -192,7 +192,7 @@ Coverage requires enough repository context to link the scanner result or declar
 
 ### Posture
 
-The command center summarizes critical and high findings, affected applications, overdue work, current scanner coverage, and average risk. It also shows risk distribution, workflow distribution, priority applications, and the health of connected scanner tools.
+The command center summarizes critical and high findings, affected applications, overdue work, current scanner coverage, and average active risk. It also shows risk distribution, workflow distribution, priority applications, and the health of connected scanner tools.
 
 Use this page for daily risk review and leadership reporting.
 
@@ -231,7 +231,7 @@ Empty project or repository filters mean "scan every accessible target."
 
 ### Runs
 
-Runs shows queued, active, paused, completed, stopped, and failed inventory scans. Logs stream while a scan is active. Failure messages are separated from normal output and written to durable log files. Detached scan workers continue when the browser closes and reconnect when the UI returns.
+Runs shows queued, active, paused, completed, stopped, and failed inventory scans. A failed run can be retried with its original configuration. The retry is a separate, linked attempt, so the prior run's exit code, logs, reports, and failure evidence remain intact. Logs stream while a scan is active. Failure messages are separated from normal output and written to durable log files. Detached scan workers continue when the browser closes and reconnect when the UI returns.
 
 ### Schedules
 

@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import os
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
-from appsec_scan_router.aspm_asset_risk import AssetRiskProfileEngine
+from requests import exceptions as requests_exceptions
+
+from appsec_scan_router.aspm_asset_risk import (
+    AssetFindingSummary,
+    AssetRiskProfileEngine,
+)
 from appsec_scan_router.aspm_connector_http import (
     ConnectorConfigurationError,
     ConnectorError,
+    JsonApiClient,
     bounded_response_body,
+    network_error_reason,
     normalize_api_url,
 )
 from appsec_scan_router.aspm_connector_models import (
@@ -24,7 +31,9 @@ from appsec_scan_router.aspm_models import (
     DataInteraction,
     FindingDocument,
     FindingInput,
+    SourceLocation,
 )
+from appsec_scan_router.aspm_postgres import repository_asset_candidate
 from appsec_scan_router.aspm_risk import AssetRiskContext
 from appsec_scan_router.invicti_connector import InvictiConnector, invicti_finding
 from appsec_scan_router.nowsecure_connector import NowSecureConnector, nowsecure_finding
@@ -68,7 +77,9 @@ class ConnectorNormalizationTests(unittest.TestCase):
                 "WebsiteName": "Payments",
                 "WebsiteRootUrl": "https://payments.example.test",
                 "Url": "https://payments.example.test/account",
-                "ClassificationLinks": ["https://cwe.mitre.org/data/definitions/200.html"],
+                "ClassificationLinks": [
+                    "https://cwe.mitre.org/data/definitions/200.html"
+                ],
                 "VulnerabilityDetail": "CWE-200 exposes personal data",
             }
         )
@@ -77,7 +88,9 @@ class ConnectorNormalizationTests(unittest.TestCase):
         self.assertEqual(finding.severity, "critical")
         self.assertEqual(finding.cwes, ("CWE-200",))
 
-    def test_nowsecure_finding_uses_package_identifier_and_privacy_metadata(self) -> None:
+    def test_nowsecure_finding_uses_package_identifier_and_privacy_metadata(
+        self,
+    ) -> None:
         finding = nowsecure_finding(
             {"ref": "app-1", "title": "Pay", "packageKey": "com.example.pay"},
             {"createdAt": "2026-07-20T12:00:00Z", "packageVersion": "3.2.1"},
@@ -150,8 +163,101 @@ class DataRiskTests(unittest.TestCase):
         self.assertGreater(sensitive.score, baseline.score)
         self.assertEqual(sensitive.data_types, ("payment_card_data",))
 
+    def test_aggregated_finding_summary_matches_full_finding_assessment(self) -> None:
+        engine = AssetRiskProfileEngine()
+        findings = [
+            (91, "critical"),
+            (82, "high"),
+            (68, "high"),
+            (55, "medium"),
+            (44, "medium"),
+            (31, "low"),
+        ]
+        context = AssetRiskContext(
+            criticality="high",
+            internet_exposed=True,
+            data_classification="confidential",
+        )
+
+        full = engine.assess(findings, (), context)
+        aggregated = engine.assess_summary(
+            AssetFindingSummary.from_findings(findings), (), context
+        )
+
+        self.assertEqual(aggregated, full)
+
 
 class ConnectorServiceTests(unittest.TestCase):
+    def test_repository_asset_candidate_uses_strong_scope_and_branch(self) -> None:
+        candidates = (
+            {
+                "branch_inventory_id": 1,
+                "provider": "github-enterprise",
+                "organization": "example",
+                "project": "",
+                "repo_name": "payments",
+                "branch_name": "main",
+            },
+            {
+                "branch_inventory_id": 2,
+                "provider": "github-enterprise",
+                "organization": "another-owner",
+                "project": "",
+                "repo_name": "payments",
+                "branch_name": "main",
+            },
+        )
+
+        result = repository_asset_candidate(
+            SourceLocation(
+                provider="github-enterprise",
+                organization="Example",
+                repository="Payments",
+                branch="refs/heads/main",
+            ),
+            candidates,
+        )
+
+        self.assertEqual(result["branch_inventory_id"], 1)
+        self.assertEqual(result["correlation_method"], "repository")
+
+    def test_repository_asset_candidate_uses_single_branch_fallback(self) -> None:
+        result = repository_asset_candidate(
+            SourceLocation(repository="payments", branch="release"),
+            (
+                {
+                    "branch_inventory_id": 1,
+                    "provider": "azure-devops",
+                    "organization": "example",
+                    "project": "payments",
+                    "repo_name": "payments",
+                    "branch_name": "main",
+                },
+            ),
+        )
+
+        self.assertEqual(result["branch_inventory_id"], 1)
+        self.assertEqual(result["correlation_method"], "repository_default_branch")
+
+    def test_repository_asset_candidate_rejects_ambiguous_matches(self) -> None:
+        candidates = tuple(
+            {
+                "branch_inventory_id": value,
+                "provider": "azure-devops",
+                "organization": "example",
+                "project": f"project-{value}",
+                "repo_name": "shared",
+                "branch_name": "main",
+            }
+            for value in (1, 2)
+        )
+
+        result = repository_asset_candidate(
+            SourceLocation(repository="shared", branch="main"), candidates
+        )
+
+        self.assertIsNone(result)
+
     def test_invicti_uses_public_cloud_api_by_default(self) -> None:
         with (
             patch.dict(
@@ -162,14 +268,53 @@ class ConnectorServiceTests(unittest.TestCase):
                 },
                 clear=True,
             ),
-            patch("appsec_scan_router.invicti_connector.JsonApiClient"),
+            patch("appsec_scan_router.invicti_connector.JsonApiClient") as client_class,
         ):
             connector = InvictiConnector()
 
-        self.assertEqual(
-            connector.endpoint, "https://www.netsparkercloud.com/api/1.0"
-        )
+        self.assertEqual(connector.endpoint, "https://www.netsparkercloud.com/api/1.0")
         self.assertTrue(connector.status().configured)
+        self.assertEqual(client_class.call_args.kwargs["timeout_seconds"], 120)
+
+    def test_invicti_groups_api_pages_into_bounded_database_batches(self) -> None:
+        client = Mock()
+        client.get.side_effect = (
+            {},
+            {
+                "List": [{"Id": "finding-1", "Title": "One"}],
+                "IsLastPage": False,
+            },
+            {
+                "List": [{"Id": "finding-2", "Title": "Two"}],
+                "IsLastPage": False,
+            },
+            {
+                "List": [{"Id": "finding-3", "Title": "Three"}],
+                "IsLastPage": True,
+            },
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "INVICTI_USER_ID": "test-user",
+                    "INVICTI_TOKEN": "test-token",
+                    "APPLICATION_INVENTORY_INVICTI_BATCH_PAGES": "2",
+                },
+                clear=False,
+            ),
+            patch(
+                "appsec_scan_router.invicti_connector.JsonApiClient",
+                return_value=client,
+            ),
+        ):
+            batches = list(InvictiConnector().pull_batches())
+
+        finding_batches = [batch for batch in batches if batch.findings]
+        self.assertEqual([len(batch.findings) for batch in finding_batches], [2, 1])
+        self.assertEqual(finding_batches[0].metadata["pageStart"], 1)
+        self.assertEqual(finding_batches[0].metadata["pageEnd"], 2)
+        self.assertTrue(batches[-1].complete_snapshot)
 
     def test_sync_audits_and_ingests_normalized_document(self) -> None:
         document = FindingDocument(
@@ -266,6 +411,7 @@ class ConnectorServiceTests(unittest.TestCase):
                 {
                     "SEMGREP_APP_TOKEN": "test-token",
                     "APPLICATION_INVENTORY_SEMGREP_PAGE_SIZE": "2",
+                    "APPLICATION_INVENTORY_SEMGREP_WORKERS": "1",
                 },
                 clear=False,
             ),
@@ -284,6 +430,80 @@ class ConnectorServiceTests(unittest.TestCase):
         self.assertEqual(second_parameters["page"], 1)
         self.assertEqual(first_parameters["dedup"], "true")
 
+    def test_semgrep_finding_limit_is_configurable(self) -> None:
+        client = Mock()
+        client.get.side_effect = (
+            {"deployments": [{"slug": "example", "name": "Example"}]},
+            {"projects": []},
+            {
+                "findings": [
+                    {"id": "finding-1", "title": "One"},
+                    {"id": "finding-2", "title": "Two"},
+                ]
+            },
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SEMGREP_APP_TOKEN": "test-token",
+                    "APPLICATION_INVENTORY_SEMGREP_ISSUE_TYPES": "sast",
+                    "APPLICATION_INVENTORY_SEMGREP_STATUSES": "open",
+                    "APPLICATION_INVENTORY_SEMGREP_PAGE_SIZE": "2",
+                    "APPLICATION_INVENTORY_SEMGREP_MAX_FINDINGS": "1",
+                    "APPLICATION_INVENTORY_SEMGREP_WORKERS": "1",
+                },
+                clear=False,
+            ),
+            patch(
+                "appsec_scan_router.semgrep_connector.JsonApiClient",
+                return_value=client,
+            ),
+        ):
+            connector = SemgrepConnector()
+            with self.assertRaisesRegex(ValueError, "1-finding safety limit"):
+                list(connector.pull_batches())
+
+    def test_semgrep_prefetches_bounded_pages_and_preserves_order(self) -> None:
+        client = Mock()
+
+        def get(_path: str, parameters: dict[str, object]) -> dict[str, object]:
+            page = int(parameters["page"])
+            findings = (
+                [{"id": f"finding-{page}", "title": str(page)}] if page < 3 else []
+            )
+            return {"findings": findings}
+
+        client.get.side_effect = get
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SEMGREP_APP_TOKEN": "test-token",
+                    "APPLICATION_INVENTORY_SEMGREP_PAGE_SIZE": "1",
+                    "APPLICATION_INVENTORY_SEMGREP_WORKERS": "2",
+                },
+                clear=False,
+            ),
+            patch(
+                "appsec_scan_router.semgrep_connector.JsonApiClient",
+                return_value=client,
+            ),
+        ):
+            connector = SemgrepConnector()
+            pages = list(connector._finding_pages("example", "sast", "open"))
+            connector.close()
+
+        self.assertEqual(
+            [page[0].external_id for page in pages],
+            ["finding-0", "finding-1", "finding-2"],
+        )
+        requested_pages = sorted(
+            int(call.args[1]["page"]) for call in client.get.call_args_list
+        )
+        self.assertEqual(requested_pages[:4], [0, 1, 2, 3])
+        self.assertLessEqual(len(requested_pages), 5)
+
     def test_api_url_requires_https_outside_loopback(self) -> None:
         with self.assertRaises(ConnectorConfigurationError):
             normalize_api_url("http://scanner.example.test/api")
@@ -299,6 +519,72 @@ class ConnectorServiceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ConnectorError, "6-byte limit"):
             bounded_response_body(response, 6)
+
+    def test_json_client_retries_transient_dns_failures(self) -> None:
+        response = MagicMock()
+        response.status_code = 200
+        response.url = "https://scanner.example.test/api/findings"
+        response.headers = {}
+        response.iter_content.return_value = (b'{"findings": []}',)
+        response.__enter__.return_value = response
+        client = object.__new__(JsonApiClient)
+        client.base_url = "https://scanner.example.test/api"
+        client.timeout_seconds = 30
+        client.verify = True
+        client.session = Mock()
+        client.session.request.side_effect = (
+            requests_exceptions.ConnectionError("Failed to resolve host"),
+            response,
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "APPLICATION_INVENTORY_CONNECTOR_NETWORK_ATTEMPTS": "2",
+                    "APPLICATION_INVENTORY_CONNECTOR_NETWORK_BACKOFF_SECONDS": "1",
+                },
+            ),
+            patch("appsec_scan_router.aspm_connector_http.time.sleep") as sleep,
+        ):
+            document = client.get("findings")
+
+        self.assertEqual(document, {"findings": []})
+        self.assertEqual(client.session.request.call_count, 2)
+        sleep.assert_called_once_with(1)
+
+    def test_json_client_reports_exhausted_dns_retries(self) -> None:
+        client = object.__new__(JsonApiClient)
+        client.base_url = "https://scanner.example.test/api"
+        client.timeout_seconds = 30
+        client.verify = True
+        client.session = Mock()
+        client.session.request.side_effect = requests_exceptions.ConnectionError(
+            "Failed to resolve host"
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {"APPLICATION_INVENTORY_CONNECTOR_NETWORK_ATTEMPTS": "2"},
+            ),
+            patch("appsec_scan_router.aspm_connector_http.time.sleep"),
+            self.assertRaisesRegex(
+                ConnectorError,
+                "failed after 2 network attempts: DNS resolution failed",
+            ),
+        ):
+            client.get("findings")
+
+        self.assertEqual(client.session.request.call_count, 2)
+
+    def test_network_error_reason_distinguishes_rate_limits(self) -> None:
+        error = requests_exceptions.RetryError("too many 429 error responses")
+
+        self.assertEqual(
+            network_error_reason(error),
+            "rate limits exhausted their retries",
+        )
 
     def test_invicti_and_nowsecure_emit_terminal_complete_snapshots(self) -> None:
         invicti = object.__new__(InvictiConnector)

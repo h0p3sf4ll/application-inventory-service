@@ -99,36 +99,36 @@
             </div>
 
             <div class="posture-kpis" aria-label="Security posture summary">
-              <button class="posture-kpi risk-critical" type="button" data-posture-drilldown="critical" aria-label="View critical active findings">
+              <div class="posture-kpi risk-critical">
                 <span>Critical findings</span>
                 <strong id="postureCritical">0</strong>
                 <small>Active and actionable</small>
-              </button>
-              <button class="posture-kpi risk-high" type="button" data-posture-drilldown="high" aria-label="View high active findings">
+              </div>
+              <div class="posture-kpi risk-high">
                 <span>High findings</span>
                 <strong id="postureHigh">0</strong>
                 <small>Active and actionable</small>
-              </button>
-              <button class="posture-kpi" type="button" data-posture-drilldown="affected-assets" aria-label="View active findings linked to affected assets">
+              </div>
+              <div class="posture-kpi">
                 <span>Affected assets</span>
                 <strong id="postureAffectedAssets">0</strong>
                 <small id="postureAssetContext">of 0 inventoried</small>
-              </button>
-              <button class="posture-kpi risk-overdue" type="button" data-posture-drilldown="overdue" aria-label="View overdue active findings">
+              </div>
+              <div class="posture-kpi risk-overdue">
                 <span>Overdue</span>
                 <strong id="postureOverdue">0</strong>
                 <small>Past severity SLA</small>
-              </button>
-              <button class="posture-kpi" type="button" data-posture-drilldown="coverage" aria-label="View findings on assets scanned in the last 30 days">
+              </div>
+              <div class="posture-kpi">
                 <span>Scanner coverage</span>
                 <strong id="postureCoverage">0%</strong>
                 <small>Scanned in 30 days</small>
-              </button>
-              <button class="posture-kpi" type="button" data-posture-drilldown="average-risk" aria-label="View risk-ranked active findings on inventoried assets">
-                <span>Average risk</span>
+              </div>
+              <div class="posture-kpi">
+                <span>Average active risk</span>
                 <strong id="postureAverageRisk">0</strong>
-                <small>Explainable score of 100</small>
-              </button>
+                <small>Assets with active findings, out of 100</small>
+              </div>
             </div>
 
             <div class="posture-workspace">
@@ -295,8 +295,6 @@
               <button type="button" data-finding-quick-filter="all">All findings</button>
             </div>
 
-            <p class="finding-scope" id="findingScope" hidden></p>
-
             <div class="database-results-toolbar finding-results-toolbar">
               <strong id="findingResultSummary" aria-live="polite">Loading findings</strong>
               <div class="database-export-actions">
@@ -327,6 +325,14 @@
               </table>
             </div>
             <div class="database-pagination">
+              <label class="database-page-size" for="findingPageSize">
+                <span>Rows per page</span>
+                <select id="findingPageSize" aria-label="Findings rows per page">
+                  <option value="25" selected>25</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </label>
               <button class="ghost" id="findingPrevious" type="button" disabled>Previous</button>
               <span class="database-page-summary">
                 <strong id="findingPagePosition">Page 1</strong>
@@ -399,6 +405,14 @@
               </table>
             </div>
             <div class="database-pagination">
+              <label class="database-page-size" for="assetRiskPageSize">
+                <span>Rows per page</span>
+                <select id="assetRiskPageSize" aria-label="Asset risk rows per page">
+                  <option value="25" selected>25</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </label>
               <button class="ghost" id="assetRiskPrevious" type="button" disabled>Previous</button>
               <span class="database-page-summary"><strong id="assetRiskPagePosition">Page 1</strong><small id="assetRiskRecordCount">Loading assets</small></span>
               <button class="ghost" id="assetRiskNext" type="button" disabled>Next</button>
@@ -945,6 +959,14 @@
                 </table>
               </div>
               <div class="database-pagination">
+                <label class="database-page-size" for="databasePageSize">
+                  <span>Rows per page</span>
+                  <select id="databasePageSize" aria-label="Rows per page">
+                    <option value="25" selected>25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                  </select>
+                </label>
                 <button class="ghost" id="databasePrevious" type="button" disabled>Previous</button>
                 <span class="database-page-summary" id="databasePageSummary" aria-live="polite">
                   <strong id="databasePagePosition">Page 1</strong>
@@ -1014,6 +1036,7 @@
                   <button class="ghost" id="copyCommand" type="button" disabled>Copy command</button>
                   <button class="ghost" id="pauseScan" type="button" disabled>Pause</button>
                   <button class="primary hidden" id="resumeScan" type="button" disabled>Resume</button>
+                  <button class="primary hidden" id="retryScan" type="button" title="Start a new run with the same configuration" disabled>Retry failed run</button>
                   <button class="danger" id="stopScan" type="button" disabled>Stop</button>
                 </div>
               </div>
@@ -1114,6 +1137,6 @@
       </section>
     </main>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=17" type="module"></script>
+    <script src="/static/app.js?v=19" type="module"></script>
   </body>
 </html>

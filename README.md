@@ -43,7 +43,7 @@ The package remains `application-inventory-service` to preserve existing integra
 - Optionally validates detected mobile identifiers against Apple App Store and Google Play.
 - Writes XLSX inventory reports, Semgrep target lists, and SonarQube project manifests labeled by selected application type.
 - Streams results into a normalized PostgreSQL schema, scoped by signed-in user when run from the UI.
-- Pauses, resumes, and stops active scans without terminating the UI service.
+- Pauses, resumes, and stops active scans, and retries failed runs without overwriting their audit history.
 - Runs encrypted, user-scoped one-time, daily, or weekly schedules.
 
 ## Documentation
@@ -103,7 +103,7 @@ For GitHub Enterprise scans, the UI uses service-managed GitHub App credentials 
 
 ### Run control and scheduling
 
-The Runs page controls the selected subprocess. Pause and resume use POSIX process-group signals, which cover the scanner and any child processes. This is supported on Linux and macOS, including the Docker image. Stop works for queued, running, and paused scans. The Console retains the complete live stream; the separate Failures console isolates error lines and writes them to a downloadable `failures.log` in the scan report directory. Report and failure logs are created with owner-only permissions.
+The Runs page controls the selected subprocess. Pause and resume use POSIX process-group signals, which cover the scanner and any child processes. This is supported on Linux and macOS, including the Docker image. Stop works for queued, running, and paused scans. **Retry failed run** queues the same encrypted, user-scoped configuration as a new attempt with a new run ID and report directory. The original exit code, logs, failures, and reports remain unchanged. Only one retry in a run lineage can be active at a time. The Console retains the complete live stream; the separate Failures console isolates error lines and writes them to a downloadable `failures.log` in the scan report directory. Report and failure logs are created with owner-only permissions.
 
 Closing the browser or signing out does not stop a scan. Each running scan uses a detached worker, a private durable log, and encrypted run state. Authenticated sessions are encrypted in the same service-state vault and remain valid across UI restarts until logout or their 12-hour expiry. When the UI service restarts on the same host, it verifies the original process group, restores the owning user, reconnects log delivery, rebuilds the failure-only log from durable output, and exposes the run to its owner. Keep the reports and service-state directories on durable storage and keep `APPLICATION_INVENTORY_SERVICE_SECRET_KEY` stable. Stopping a container, VM, or host still terminates its operating-system processes.
 
@@ -209,7 +209,7 @@ docker run --rm \
   -p 48731:48731 \
   --env-file .env \
   -v "$PWD/reports:/reports" \
-  h0p3sf4ll/application-inventory-service:1.8.0 \
+  h0p3sf4ll/application-inventory-service:1.8.1 \
   ui \
   --host 0.0.0.0 \
   --port 48731 \
@@ -419,14 +419,22 @@ The UI detects Ollama at `http://127.0.0.1:11434` and defaults to `llama3.1:late
 | `APPLICATION_INVENTORY_SEMGREP_API_URL` | Semgrep API root; defaults to `https://semgrep.dev/api/v1` |
 | `APPLICATION_INVENTORY_SEMGREP_ISSUE_TYPES` | Comma-separated Semgrep products; defaults to `sast,sca,ai_sast` |
 | `APPLICATION_INVENTORY_SEMGREP_STATUSES` | Comma-separated Semgrep states synchronized as the current snapshot |
+| `APPLICATION_INVENTORY_SEMGREP_MAX_FINDINGS` | Per-sync Semgrep safety limit; defaults to `5000000` |
+| `APPLICATION_INVENTORY_SEMGREP_WORKERS` | Ordered Semgrep page-prefetch concurrency; defaults to `4`, maximum `16` |
 | `APPLICATION_INVENTORY_INVICTI_API_URL` | Invicti API root; defaults to `https://www.netsparkercloud.com/api/1.0` |
 | `APPLICATION_INVENTORY_INVICTI_USER_ID` | Invicti API user ID |
 | `APPLICATION_INVENTORY_INVICTI_TOKEN` | Invicti API token |
-| `APPLICATION_INVENTORY_INVICTI_WORKERS` | Bounded Invicti page-fetch concurrency; defaults to `1`, maximum `16` |
+| `APPLICATION_INVENTORY_INVICTI_WORKERS` | Bounded Invicti page-fetch concurrency; defaults to `2`, maximum `16` |
+| `APPLICATION_INVENTORY_INVICTI_BATCH_PAGES` | Invicti API pages committed per database batch; defaults to `10`, maximum `25` |
+| `APPLICATION_INVENTORY_INVICTI_TIMEOUT_SECONDS` | Minimum Invicti page timeout; defaults to `120` seconds |
 | `APPLICATION_INVENTORY_NOWSECURE_API_URL` | NowSecure GraphQL endpoint; defaults to `https://api.nowsecure.com/graphql` |
 | `APPLICATION_INVENTORY_NOWSECURE_TOKEN` | NowSecure Platform token |
 | `APPLICATION_INVENTORY_CONNECTOR_SYSTEM_TRUST` | Uses the operating-system certificate store; defaults to `true` |
 | `APPLICATION_INVENTORY_CONNECTOR_CA_BUNDLE` | Optional CA bundle for private PKI or TLS inspection |
+| `APPLICATION_INVENTORY_CONNECTOR_MAX_RETRIES` | Per-attempt retries for throttling and transient HTTP failures; defaults to `5` |
+| `APPLICATION_INVENTORY_CONNECTOR_NETWORK_ATTEMPTS` | Whole-request attempts for DNS, connection, and timeout failures; defaults to `5` |
+| `APPLICATION_INVENTORY_CONNECTOR_NETWORK_BACKOFF_SECONDS` | Initial network retry delay; defaults to `2` seconds |
+| `APPLICATION_INVENTORY_CONNECTOR_NETWORK_BACKOFF_MAX_SECONDS` | Maximum network retry delay; defaults to `15` seconds |
 | `APPLICATION_INVENTORY_CONNECTOR_MAX_RESPONSE_BYTES` | Maximum decoded JSON response per connector request; defaults to 64 MiB |
 | `APPLICATION_INVENTORY_SERVICE_MAX_CONCURRENT_SCANS` | Concurrent interactive and scheduled scan processes; defaults to `2` |
 | `APPLICATION_INVENTORY_SERVICE_GHE_BASE_URL` | GitHub Enterprise base URL used for OAuth sign-in |

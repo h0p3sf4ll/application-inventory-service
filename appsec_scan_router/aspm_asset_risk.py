@@ -22,6 +22,31 @@ class AssetRiskProfile:
     factors: tuple[dict[str, Any], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class AssetFindingSummary:
+    active_findings: int = 0
+    critical_findings: int = 0
+    high_findings: int = 0
+    top_scores: tuple[int, ...] = ()
+
+    @classmethod
+    def from_findings(
+        cls, finding_scores: list[tuple[int, str]]
+    ) -> AssetFindingSummary:
+        return cls(
+            active_findings=len(finding_scores),
+            critical_findings=sum(
+                1 for _, severity in finding_scores if severity == "critical"
+            ),
+            high_findings=sum(
+                1 for _, severity in finding_scores if severity == "high"
+            ),
+            top_scores=tuple(
+                sorted((score for score, _ in finding_scores), reverse=True)[:5]
+            ),
+        )
+
+
 class AssetRiskProfileEngine:
     def assess(
         self,
@@ -29,23 +54,33 @@ class AssetRiskProfileEngine:
         interactions: tuple[AssetDataInteraction, ...],
         context: AssetRiskContext,
     ) -> AssetRiskProfile:
-        technical = self._technical_score(finding_scores)
+        return self.assess_summary(
+            AssetFindingSummary.from_findings(finding_scores),
+            interactions,
+            context,
+        )
+
+    def assess_summary(
+        self,
+        summary: AssetFindingSummary,
+        interactions: tuple[AssetDataInteraction, ...],
+        context: AssetRiskContext,
+    ) -> AssetRiskProfile:
+        technical = self._technical_score(summary)
         data_sensitivity = self._data_sensitivity_score(interactions)
         context_score = self._context_score(context)
         inherent = round(data_sensitivity * 0.6 + context_score * 0.4)
         score = round(technical * 0.7 + inherent * 0.3)
-        if finding_scores:
-            score = max(score, min(max(item[0] for item in finding_scores), 95))
+        if summary.top_scores:
+            score = max(score, min(summary.top_scores[0], 95))
         score = max(0, min(score, 100))
-        critical = sum(1 for _, severity in finding_scores if severity == "critical")
-        high = sum(1 for _, severity in finding_scores if severity == "high")
         factors = (
             {
                 "factor": "technical_findings",
                 "score": technical,
-                "activeFindings": len(finding_scores),
-                "criticalFindings": critical,
-                "highFindings": high,
+                "activeFindings": summary.active_findings,
+                "criticalFindings": summary.critical_findings,
+                "highFindings": summary.high_findings,
             },
             {
                 "factor": "data_sensitivity",
@@ -74,26 +109,26 @@ class AssetRiskProfileEngine:
             technical_score=technical,
             data_sensitivity_score=data_sensitivity,
             context_score=context_score,
-            active_findings=len(finding_scores),
-            critical_findings=critical,
-            high_findings=high,
+            active_findings=summary.active_findings,
+            critical_findings=summary.critical_findings,
+            high_findings=summary.high_findings,
             data_types=tuple(item.data_type for item in interactions),
             factors=factors,
         )
 
     @staticmethod
-    def _technical_score(finding_scores: list[tuple[int, str]]) -> int:
-        if not finding_scores:
+    def _technical_score(summary: AssetFindingSummary) -> int:
+        if not summary.active_findings or not summary.top_scores:
             return 0
-        scores = sorted((score for score, _ in finding_scores), reverse=True)
-        top = scores[:5]
-        volume = min(12, round(math.log2(len(scores) + 1) * 3))
-        return min(100, round(scores[0] * 0.65 + (sum(top) / len(top)) * 0.25 + volume))
+        volume = min(12, round(math.log2(summary.active_findings + 1) * 3))
+        average = sum(summary.top_scores) / len(summary.top_scores)
+        return min(
+            100,
+            round(summary.top_scores[0] * 0.65 + average * 0.25 + volume),
+        )
 
     @staticmethod
-    def _data_sensitivity_score(
-        interactions: tuple[AssetDataInteraction, ...]
-    ) -> int:
+    def _data_sensitivity_score(interactions: tuple[AssetDataInteraction, ...]) -> int:
         if not interactions:
             return 0
         weighted = sorted(
