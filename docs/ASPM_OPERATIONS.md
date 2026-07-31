@@ -236,7 +236,7 @@ The container exposes the same command through its `aspm` dispatcher:
 docker run --rm \
   --env-file .env \
   -v "$PWD/results.sarif:/input/results.sarif:ro" \
-  h0p3sf4ll/application-inventory-service:1.8.1 \
+  h0p3sf4ll/application-inventory-service:1.8.2 \
   aspm --owner-user-id security-platform ingest /input/results.sarif
 ```
 

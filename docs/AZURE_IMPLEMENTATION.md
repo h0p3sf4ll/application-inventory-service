@@ -108,7 +108,7 @@ AZURE_LOCATION=eastus
 RESOURCE_GROUP=rg-application-inventory-prod
 ACR_NAME=appinventoryprodacr
 IMAGE_NAME=application-inventory-service
-IMAGE_TAG=1.8.1
+IMAGE_TAG=1.8.2
 
 az group create \
   --name "$RESOURCE_GROUP" \

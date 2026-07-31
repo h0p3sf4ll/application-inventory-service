@@ -55,7 +55,7 @@ jobs:
           cache: pip
 
       - name: Install package
-        run: python -m pip install -e . ruff
+        run: python -m pip install -e . "ruff==0.15.20"
 
       - name: Lint Python
         run: ruff check appsec_scan_router application_inventory_service tests
