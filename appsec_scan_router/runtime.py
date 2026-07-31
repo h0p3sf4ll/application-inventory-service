@@ -644,16 +644,19 @@ class ScanManager:
         while True:
             log_offset = self._publish_scan_log(run, log_offset)
             completion = self.state_store.read_completion(run.id)
-            exit_code = completion_exit_code(completion)
-            if exit_code is None and process is not None:
-                exit_code = process.poll()
+            completion_code = completion_exit_code(completion)
+            if completion_code is not None:
+                if process is not None:
+                    try:
+                        process.wait(timeout=0.5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                self._publish_scan_log(run, log_offset, include_partial=True)
+                self._complete_scan(run, completion_code, completion)
+                return
+            exit_code = process.poll() if process is not None else None
             if exit_code is not None:
                 if process is not None and process.poll() is None:
-                    time.sleep(0.05)
-                    continue
-                if process is None and process_is_running(
-                    run.process_pid, run.process_group_id
-                ):
                     time.sleep(0.05)
                     continue
                 self._publish_scan_log(run, log_offset, include_partial=True)

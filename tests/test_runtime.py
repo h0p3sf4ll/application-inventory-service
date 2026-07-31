@@ -421,6 +421,47 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(recovered.status, "succeeded")
         self.assertTrue(any("done" in line for line in recovered.logs))
 
+    def test_recovered_completion_does_not_wait_for_a_zombie_worker(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            manager = ScanManager(
+                root / "reports",
+                dict,
+                lambda config, path: [],
+                lambda config: {},
+                list,
+                state_dir=root / "state",
+            )
+            run = ScanRun(
+                "scan-1",
+                {"ownerUserId": "user-1"},
+                (),
+                (),
+                root / "reports" / "scan-1",
+                status="running",
+                process_pid=12345,
+                process_group_id=12345,
+            )
+            manager.scans[run.id] = run
+
+            with (
+                patch.object(
+                    manager.state_store,
+                    "read_completion",
+                    return_value={"exitCode": 0, "endedAt": "2026-07-31T00:00:00+00:00"},
+                ),
+                patch(
+                    "appsec_scan_router.runtime.process_is_running",
+                    return_value=True,
+                ) as is_running,
+            ):
+                manager._monitor_scan(run, None, 0)
+            manager.close()
+
+        self.assertEqual(run.status, "succeeded")
+        self.assertEqual(run.exit_code, 0)
+        is_running.assert_not_called()
+
     @unittest.skipUnless(
         os.name == "posix", "Process pause and resume require POSIX signals."
     )
