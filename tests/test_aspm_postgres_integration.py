@@ -299,6 +299,79 @@ class AspmPostgresIntegrationTests(unittest.TestCase):
         self.assertIn("simulated persistence failure", imported["error_message"])
         self.assertEqual(finding_count, 0)
 
+    def test_posture_reconciles_abandoned_import_and_connector_sync(self) -> None:
+        self.repository.ensure_schema()
+        with psycopg.connect(POSTGRES_TEST_DSN, autocommit=True) as connection:
+            tool_id = connection.execute(
+                sql.SQL(
+                    "INSERT INTO {tools} (owner_user_id, tool_key, tool_name, tool_type) "
+                    "VALUES ('user-a', 'semgrep', 'Semgrep', 'sast') RETURNING tool_id"
+                ).format(tools=sql.Identifier(self.schema, "aspm_tools"))
+            ).fetchone()[0]
+            connection.execute(
+                sql.SQL(
+                    "INSERT INTO {imports} (import_id, owner_user_id, tool_id, source_format, status, started_at) "
+                    "VALUES ('stale-import', 'user-a', %s, 'semgrep-api', 'processing', now() - interval '2 days')"
+                ).format(imports=sql.Identifier(self.schema, "aspm_imports")),
+                (tool_id,),
+            )
+            connection.execute(
+                sql.SQL(
+                    "INSERT INTO {syncs} (sync_id, owner_user_id, owner_user_login, connector_key, connector_name, status, started_at) "
+                    "VALUES ('stale-sync', 'user-a', 'alice', 'semgrep', 'Semgrep', 'running', now() - interval '2 days')"
+                ).format(syncs=sql.Identifier(self.schema, "aspm_connector_syncs"))
+            )
+
+        posture = self.repository.posture("user-a")
+
+        tool = next(item for item in posture["tools"] if item["tool_key"] == "semgrep")
+        self.assertEqual(tool["last_import_status"], "failed")
+        self.assertIn("abandoned", tool["last_import_error"].lower())
+        with psycopg.connect(POSTGRES_TEST_DSN, row_factory=psycopg.rows.dict_row) as connection:
+            import_status = connection.execute(
+                sql.SQL("SELECT status FROM {imports} WHERE import_id = 'stale-import'").format(
+                    imports=sql.Identifier(self.schema, "aspm_imports")
+                )
+            ).fetchone()["status"]
+            sync_status = connection.execute(
+                sql.SQL("SELECT status FROM {syncs} WHERE sync_id = 'stale-sync'").format(
+                    syncs=sql.Identifier(self.schema, "aspm_connector_syncs")
+                )
+            ).fetchone()["status"]
+        self.assertEqual(import_status, "failed")
+        self.assertEqual(sync_status, "failed")
+
+    def test_remediation_policy_recalculates_policy_dates_but_keeps_manual_due_dates(self) -> None:
+        document = parse_finding_document(
+            {
+                "format": "generic",
+                "tool": {"key": "timeline-test", "name": "Timeline Test"},
+                "findings": [
+                    {"id": "timeline-1", "title": "Timeline finding", "severity": "critical"}
+                ],
+            }
+        )
+        self.repository.ingest("user-a", "alice", document)
+        finding = self.repository.search_findings("user-a")["rows"][0]
+        initial_due = finding["due_at"]
+
+        result = self.repository.update_remediation_policy(
+            "user-a", {"critical": 2, "high": 30, "medium": 90, "low": 180, "info": 365}
+        )
+        policy_due = self.repository.finding_detail("user-a", finding["finding_id"])["finding"]["due_at"]
+        manual_due = "2030-01-01T00:00:00Z"
+        self.repository.update_finding(
+            "user-a", "alice", finding["finding_id"], "triaged", due_at=manual_due
+        )
+        self.repository.update_remediation_policy(
+            "user-a", {"critical": 1, "high": 30, "medium": 90, "low": 180, "info": 365}
+        )
+        preserved_due = self.repository.finding_detail("user-a", finding["finding_id"])["finding"]["due_at"]
+
+        self.assertEqual(result["updatedFindings"], 1)
+        self.assertNotEqual(policy_due, initial_due)
+        self.assertEqual(preserved_due, "2030-01-01T00:00:00+00:00")
+
     def test_mobile_identifier_and_web_domain_correlation_build_asset_risk(self) -> None:
         with psycopg.connect(POSTGRES_TEST_DSN) as connection:
             connection.execute(

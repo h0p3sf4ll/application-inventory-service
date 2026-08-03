@@ -22,7 +22,9 @@ The service reads provider metadata, repository trees, selected manifests, depen
 
 For network-deployable assets, the service attributes source branches to web domains through successful deployment environment URLs, repository metadata, and structured deployment configuration. Every domain retains its source and confidence tier. Attribution describes available evidence; it does not prove DNS ownership, reachability, or production approval.
 
-Scanner results enter through SARIF, Semgrep JSON, SonarQube issue JSON, or a documented generic contract. The service deduplicates findings, correlates them to inventory, scores technical and business risk, preserves workflow history, and measures coverage by application and scanner.
+Scanner results enter through SARIF, Semgrep JSON, SonarQube issue JSON, or a documented generic contract. The service deduplicates findings, correlates them to inventory, scores technical and business risk, preserves workflow history, and measures coverage by application and scanner. The Dashboard turns risk, coverage, workflow, and priority application metrics into operational drill-downs.
+
+Users manage encrypted, user-scoped webhook destinations, scanner connection overrides, and remediation timelines from Configuration. Server-managed scanner credentials remain backend-only.
 
 ## Intended Users
 
@@ -50,6 +52,7 @@ Scanner results enter through SARIF, Semgrep JSON, SonarQube issue JSON, or a do
 - Live, user-scoped inventory search with XLSX, CSV, and JSON exports.
 - Optional local natural-language query planning without sharing inventory records with the model.
 - Encrypted recurring scan definitions for repeatable inventory operations.
+- Encrypted user-scoped webhook destinations, scanner configuration, and remediation timelines.
 - Deduplicated scanner findings with searchable XLSX, CSV, and JSON exports.
 - Explainable application risk, scanner coverage, remediation assignments, due dates, and audit history.
 

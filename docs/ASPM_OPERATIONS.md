@@ -5,7 +5,7 @@ Application Security Posture Management combines branch-level application invent
 ## Operating Model
 
 1. Inventory scans discover repositories, branches, application types, languages, owners, activity, deployment domains, and mobile metadata.
-2. Security tools publish files or the service pulls findings through the Semgrep, Invicti, and NowSecure connectors.
+2. Security tools publish files or the service pulls findings through Semgrep, Invicti, NowSecure, SonarQube, and OWASP ZAP connectors.
 3. The ingestion service normalizes severity, identity, source location, package data, CWE, CVE, CVSS, EPSS, exploit evidence, and remediation metadata.
 4. Findings correlate through exact repository identity, mobile package identifier, or web domain. Exact application name is used only when it identifies one asset. Ambiguous matches remain unlinked.
 5. A deterministic fingerprint deduplicates findings within a tool. Repeated imports update the existing record and preserve remediation state.
@@ -17,19 +17,24 @@ Application Security Posture Management combines branch-level application invent
 
 ## Direct Connectors
 
-| Connector | API | Required configuration | Correlation anchors |
+| Connector | Collection | Required configuration | Correlation anchors |
 | --- | --- | --- | --- |
-| Semgrep | Deployment findings and projects | `SEMGREP_APP_TOKEN` | Repository URL, project, repository, branch |
+| Semgrep | Deployment findings and projects API | App token | Repository URL, project, repository, branch |
 | Invicti | `/api/1.0/issues/allissues` | User ID and API token; API root is overrideable | Website root domain, website name |
 | NowSecure | Platform GraphQL | Platform token | Android package or Apple bundle identifier, application name |
+| SonarQube | Issues API | Server URL and user token | Source metadata supplied by the issue |
+| OWASP ZAP | Alerts API | API URL and optional API key | Target URL or domain |
+| Trivy, Gitleaks, Nuclei, OWASP Dependency-Check | SARIF import profile | Report location | Upload through **Findings** > **Import SARIF**; no remote sync |
 
-Credentials belong in a deployment secret manager. Do not place them in source control, browser configuration, command output, or scanner metadata. The status API reports only whether a connector is configured and its non-secret endpoint.
+Credentials belong in a deployment secret manager. Do not place them in source control, browser configuration, command output, or scanner metadata. Use **Configuration** > **Scanner connections** to add account-specific values through the setup wizard. Those values are encrypted per user, and secret fields are never returned to the browser. The status API reports only whether a connector is configured and its non-secret endpoint.
 
-All three adapters stream bounded API pages into page-sized database commits. Semgrep uses zero-based pages of up to 3,000 findings, server-side ref deduplication, and four ordered page-prefetch workers by default. Set `APPLICATION_INVENTORY_SEMGREP_WORKERS` from `1` through `16` to match the vendor rate limit. By default it synchronizes open, reviewing, fixing, and provisionally ignored findings for SAST, SCA, and AI-powered scans. Override `APPLICATION_INVENTORY_SEMGREP_STATUSES` or `APPLICATION_INVENTORY_SEMGREP_ISSUE_TYPES` only when the resulting snapshot semantics are understood. `APPLICATION_INVENTORY_SEMGREP_MAX_FINDINGS` controls the per-sync safety limit and defaults to 5,000,000 for large deployments.
+Semgrep, Invicti, and NowSecure stream bounded API pages into page-sized database commits. Semgrep uses zero-based pages of up to 3,000 findings, server-side ref deduplication, and four ordered page-prefetch workers by default. Set `APPLICATION_INVENTORY_SEMGREP_WORKERS` from `1` through `16` to match the vendor rate limit. By default it synchronizes open, reviewing, fixing, and provisionally ignored findings for SAST, SCA, and AI-powered scans. Override `APPLICATION_INVENTORY_SEMGREP_STATUSES` or `APPLICATION_INVENTORY_SEMGREP_ISSUE_TYPES` only when the resulting snapshot semantics are understood. `APPLICATION_INVENTORY_SEMGREP_MAX_FINDINGS` controls the per-sync safety limit and defaults to 5,000,000 for large deployments.
 
-Invicti defaults to `https://www.netsparkercloud.com/api/1.0` and permits an API-root override for private deployments. It prefetches two pages by default to limit tenant throttling, commits ten pages per database batch, and applies a 120-second minimum page timeout. The connector requests `rawDetails=false` to avoid retaining unnecessary request and response content. NowSecure imports affected findings from each application's latest complete assessment and records all assessed applications as coverage targets.
+Invicti defaults to `https://www.netsparkercloud.com/api/1.0` and permits an API-root override for private deployments. It prefetches two pages by default to limit tenant throttling, commits ten pages per database batch, and applies a 120-second minimum page timeout. The connector requests `rawDetails=false` to avoid retaining unnecessary request and response content. NowSecure imports affected findings from each application's latest complete assessment and records all assessed applications as coverage targets. SonarQube and OWASP ZAP synchronize remotely; SARIF profiles intentionally do not call scanner APIs and must be uploaded from **Findings**.
 
-Connector requests retry rate limits and transient upstream errors within each HTTP attempt. DNS, connection, and timeout failures retry the complete request up to `APPLICATION_INVENTORY_CONNECTOR_NETWORK_ATTEMPTS` times with bounded exponential backoff. Retry events are written to application observability logs with redacted endpoints and no credentials.
+Use **Test connections** to make a lightweight request to configured remote scanners before synchronization. It does not import findings or update Dashboard tool health. Tool health reflects the latest import or connector sync, so it can retain a historical failure after a successful connection test until a later sync completes.
+
+Remote connector requests retry rate limits and transient upstream errors within each HTTP attempt. DNS, connection, and timeout failures retry the complete request up to `APPLICATION_INVENTORY_CONNECTOR_NETWORK_ATTEMPTS` times with bounded exponential backoff. Retry events are written to application observability logs with redacted endpoints and no credentials.
 
 Vendor references: [Semgrep API](https://semgrep.dev/api/v1/docs/), [Invicti API](https://www.netsparkercloud.com/swagger/docs/v1), and [NowSecure findings GraphQL](https://support.nowsecure.com/hc/en-us/articles/21777208143629-Platform-Findings-GraphQL-API).
 
@@ -128,7 +133,7 @@ Finding risk is an explainable score from 0 to 100. The stored factor list recor
 - Data classification.
 - Finding age.
 
-Risk bands are low, medium, high, and critical. Default remediation due dates are 7 days for critical, 30 days for high, 90 days for medium, 180 days for low, and 365 days for informational findings. Updating an application's security profile recalculates every linked finding in the same transaction.
+Risk bands are low, medium, high, and critical. Default remediation due dates are 7 days for critical, 30 days for high, 90 days for medium, 180 days for low, and 365 days for informational findings. A finding is overdue when it remains active after its due date passes. Users can change these timelines in **Configuration** > **Remediation timelines**; saving the policy recalculates policy-managed due dates while retaining manually set due dates. Updating an application's security profile recalculates every linked finding in the same transaction.
 
 Each asset also receives a contextual risk profile with three independently stored components:
 
@@ -256,6 +261,7 @@ The browser uses session authentication and a CSRF token for every ASPM route. A
 | `POST /api/aspm/assets/profile` | Read or update application security context |
 | `POST /api/aspm/assets/risks` | Search and page contextual asset risk profiles |
 | `POST /api/aspm/connectors/status` | Return redacted connector readiness and recent syncs |
+| `POST /api/aspm/connectors/test` | Make a lightweight, non-import connection check for selected remote connectors |
 | `POST /api/aspm/connectors/sync` | Pull, normalize, correlate, and persist selected connectors |
 | `POST /api/aspm/connectors/history` | Return user-scoped connector sync audit records |
 

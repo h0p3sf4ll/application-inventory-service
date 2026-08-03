@@ -5,6 +5,7 @@ import os
 import secrets
 import threading
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ OAUTH_STATE_TTL_SECONDS = 600
 MAX_PERSISTED_SESSIONS = 1000
 SESSION_STORE_VERSION = 1
 PROVIDER_NAMES = ("azure-devops", "github-enterprise")
+INTEGRATIONS_KEY = "_integrations"
 TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 
@@ -222,6 +224,20 @@ class CredentialStore:
             credentials = data.get("users", {}).get(clean_value(user_id), {})
             if isinstance(credentials, dict):
                 credentials.pop(clean_provider, None)
+            self.write_data(data)
+
+    def integrations(self, user_id: str) -> dict[str, Any]:
+        with self.lock:
+            credentials = self.read_data().get("users", {}).get(clean_value(user_id), {})
+            integrations = credentials.get(INTEGRATIONS_KEY, {}) if isinstance(credentials, dict) else {}
+            return deepcopy(integrations) if isinstance(integrations, dict) else {}
+
+    def save_integrations(self, user_id: str, integrations: dict[str, Any]) -> None:
+        with self.lock:
+            data = self.read_data()
+            users = data.setdefault("users", {})
+            credentials = users.setdefault(clean_value(user_id), {})
+            credentials[INTEGRATIONS_KEY] = deepcopy(integrations)
             self.write_data(data)
 
     def statuses(self, user_id: str) -> dict[str, bool]:
@@ -631,6 +647,12 @@ class AuthManager:
         if not record:
             raise ValueError("Sign in before managing saved tokens.")
         self.credentials.delete_token(record.user.id, provider)
+
+    def integrations(self, user_id: str) -> dict[str, Any]:
+        return self.credentials.integrations(user_id)
+
+    def save_integrations(self, user_id: str, integrations: dict[str, Any]) -> None:
+        self.credentials.save_integrations(user_id, integrations)
 
 
 def auth_state_dir(reports_root: Path) -> Path:

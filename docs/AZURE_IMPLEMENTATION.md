@@ -465,7 +465,7 @@ The application creates the `application_inventory` schema and normalized tables
 Validate from the UI:
 
 1. Sign in.
-2. Open **Settings**.
+2. Open **Configuration**.
 3. Confirm the startup status is **Ready**.
 4. Run a small scan and confirm records appear while it runs.
 5. Export XLSX, CSV, and JSON from the database page.

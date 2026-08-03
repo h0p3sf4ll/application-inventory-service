@@ -163,6 +163,14 @@ from .reports import (
     workbook_cell_value,
     write_outputs,
 )
+from .webhooks import (
+    WebhookConfig,
+    WebhookConfigurationError,
+    WebhookDeliveryError,
+    WebhookDeliveryResult,
+    WebhookPublisher,
+    configured_webhook,
+)
 from .scanner import (
     branch_age_bucket,
     branch_deployment_score,
@@ -380,6 +388,11 @@ __all__ = [
     "WEB_DOMAIN_CONFIDENCE_RANK",
     "WEB_DOMAIN_FIELDNAMES",
     "WORKBOOK_COLUMN_WIDTHS",
+    "WebhookConfig",
+    "WebhookConfigurationError",
+    "WebhookDeliveryError",
+    "WebhookDeliveryResult",
+    "WebhookPublisher",
     "workbook_cell_value",
     "APPLE_DISPLAY_NAME",
     "ApplicationInventoryService",
@@ -414,6 +427,7 @@ __all__ = [
     "collect_targets",
     "configure_logging",
     "confidence_rank",
+    "configured_webhook",
     "create_source_client",
     "detect_inventory_repo",
     "detect_mobile_repo",

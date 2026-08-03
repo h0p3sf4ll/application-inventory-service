@@ -24,7 +24,9 @@ The package remains `application-inventory-service` to preserve existing integra
 ## What It Does
 
 - Normalizes SARIF, Semgrep JSON, SonarQube issue JSON, and generic findings into one deduplicated remediation queue.
-- Pulls current findings from Semgrep, Invicti, and NowSecure through server-managed API connectors.
+- Pulls current findings from Semgrep, Invicti, NowSecure, SonarQube, and OWASP ZAP, and guides SARIF imports from Trivy, Gitleaks, Nuclei, and OWASP Dependency-Check.
+- Provides an executive Dashboard with drill-down metrics, workflow totals, and priority applications that open the matching records.
+- Stores user-specific webhooks, scanner connection settings, and remediation timelines encrypted in Configuration.
 - Correlates findings to the branch-level application inventory and retains unlinked findings for review.
 - Correlates by exact repository identity, mobile package identifier, or web domain, with exact application name as a guarded fallback.
 - Builds asset risk profiles from technical findings, observed data interactions, internet exposure, application criticality, and data classification.
@@ -114,8 +116,8 @@ Available frequencies are once, daily, and weekly. Each schedule can be run imme
 ## Quick Start: ASPM
 
 1. Run an inventory scan so source branches exist in PostgreSQL.
-2. Open **Findings**, select **Import results**, and upload SARIF, Semgrep JSON, SonarQube issue JSON, or the documented generic format.
-3. Add repository context when the scanner file does not identify its source. Correlated findings immediately appear on **Posture**, **Findings**, and **Coverage**.
+2. Open **Dashboard** to review priority applications, coverage, workflow, and scanner health. Click a metric, workflow status, or priority application to open its related view or filtered findings.
+3. Open **Findings**, select **Import SARIF**, and upload SARIF, Semgrep JSON, SonarQube issue JSON, or the documented generic format. Add repository context when the scanner file does not identify its source.
 4. Set criticality, internet exposure, data classification, and owners from an application's inventory record. Risk scores recalculate in the same transaction.
 5. Assign, triage, accept, resolve, or mark findings false positive. Every workflow change is retained in the finding history.
 
@@ -135,7 +137,11 @@ application-inventory-aspm connectors sync --connector semgrep --connector invic
 application-inventory-aspm assets --risk-band critical
 ```
 
-Open **Posture**, then use **Scanner connections** to select and synchronize ready connectors. Open **Asset risk** to filter contextual risk profiles and observed data interactions. Invicti defaults to its public cloud API root and supports an environment override for private deployments.
+Open **Configuration** > **Scanner connections** to configure per-user connections. The setup wizard stores account-specific values encrypted and never returns secret values to the browser. Semgrep, Invicti, and NowSecure can use service-managed settings or account-specific overrides; SonarQube and OWASP ZAP synchronize directly. Trivy, Gitleaks, Nuclei, and OWASP Dependency-Check are SARIF profiles: configure the report location, then upload output from **Findings** > **Import SARIF**. Open **Asset risk** to filter contextual risk profiles and observed data interactions. Invicti defaults to its public cloud API root and supports an environment override for private deployments.
+
+Use **Test connections** to make a lightweight request before synchronizing remote scanners. A test does not import findings or replace historical tool health. Dashboard **Tool health** shows the latest import or connector sync, so it can show a prior failure after a successful test until the next sync completes.
+
+Use **Configuration** > **Remediation timelines** to set the policy due date for each severity. A finding is **overdue** when it remains active after its due date passes. Saving the policy recalculates policy-managed due dates; a manually set finding due date is retained.
 
 Use complete snapshots only when a result file represents every finding produced by that tool for the listed targets. Findings absent from a complete snapshot are resolved automatically. Partial imports never resolve existing findings.
 
@@ -161,6 +167,24 @@ application-inventory-aspm \
   --owner-user-id security-platform \
   findings --severity critical --severity high --status open --export xlsx
 ```
+
+### Webhook exports
+
+Set a webhook destination to send every inventory row produced by a scan to an external system. Delivery happens before report formatting, so each payload retains all collected fields, including classification evidence, domain evidence, source URLs, scores, mobile metadata, and store validation data.
+
+Use the default `batch` mode when the receiving endpoint accepts an envelope with a `records` array. Use `record` mode for ServiceNow Import Set or Table API endpoints that accept one JSON object per request:
+
+```bash
+export APPLICATION_INVENTORY_WEBHOOK_URL="https://instance.service-now.com/api/now/import/u_application_inventory"
+export APPLICATION_INVENTORY_WEBHOOK_BEARER_TOKEN="service-account-token"
+export APPLICATION_INVENTORY_WEBHOOK_DELIVERY_MODE="record"
+
+application-inventory-service --org example-engineering
+```
+
+The webhook accepts any `2xx` response, retries transient network failures and `429`/`5xx` responses, and uses a stable delivery ID for each retry. Configure `APPLICATION_INVENTORY_WEBHOOK_SIGNING_SECRET` to add an `X-Application-Inventory-Signature` HMAC-SHA256 header. Webhook URLs require HTTPS unless they target loopback; credentials, query strings, redirects, and transport header overrides are rejected.
+
+Signed-in users can also manage multiple webhook destinations in **Configuration**. Each destination is encrypted per user, can be enabled independently, and is supplied only to that user's scan subprocesses. The Configuration page supports a connection test without exposing stored tokens or signing secrets back to the browser.
 
 Python services can ingest scanner output without the UI:
 
@@ -215,6 +239,8 @@ docker run --rm \
   --port 48731 \
   --reports-dir /reports
 ```
+
+Local `application-inventory-service`, `application-inventory-aspm`, and UI commands load a `.env` file from the current working directory. Set `APPLICATION_INVENTORY_ENV_FILE` to select a different local file. Explicit process environment variables take precedence, so production secret injection continues to override local values.
 
 Build locally when you need to test unpublished changes:
 
@@ -363,7 +389,7 @@ application-inventory-service \
   --out-dir reports
 ```
 
-The local defaults are host `localhost`, port `5432`, database `postgres`, user `postgres`, and password `postgres`. The password is editable on the **Settings** page and is not stored in browser storage. Change every default credential outside local development.
+The local defaults are host `localhost`, port `5432`, database `postgres`, user `postgres`, and password `postgres`. The password is editable on the **Configuration** page and is not stored in browser storage. Change every default credential outside local development.
 
 At startup, the service tests PostgreSQL and applies versioned, advisory-lock-protected schema migrations before accepting scan work. Unchanged schemas take the fast readiness path. A scan with database sync enabled is rejected if its configured database is unavailable. Findings commit at least once per second while a scan is active, and the **Inventory** table refreshes as those transactions become visible.
 
@@ -371,7 +397,7 @@ The schema separates repositories, branch inventory, application types, categori
 
 A full scan with no application-type filter inventories every repository visible to the source credential. The **Inventory** page reports repository, inventory-record, and classified-application counts separately. Selecting application types intentionally limits reports and database updates to matching applications at or above the configured confidence threshold.
 
-The **Inventory** page provides sortable columns, per-column filters, multi-select Language and Types filters, full-text search, activity/domain/type quick filters, record details, and XLSX, CSV, or JSON exports. The **Settings** page contains connection, synchronization, and schema settings. Results and exports use the same filters, sort order, and signed-in user scope. XLSX, CSV, and JSON exports consume a server-side database cursor to bound application memory. Operational scan and observability records remain event-based because each execution and log entry is a distinct audit record.
+The **Inventory** page provides sortable columns, per-column filters, multi-select Language and Types filters, full-text search, activity/domain/type quick filters, record details, and XLSX, CSV, or JSON exports. The **Configuration** page contains connection, synchronization, schema, webhook, scanner, and remediation settings. Results and exports use the same filters, sort order, and signed-in user scope. XLSX, CSV, and JSON exports consume a server-side database cursor to bound application memory. Operational scan and observability records remain event-based because each execution and log entry is a distinct audit record.
 
 Structured events include service lifecycle, HTTP request timing, scan lifecycle, provider, user scope, status, and sanitized metadata. The UI exposes database-backed health at `/api/health` and operational counters at `/api/metrics`.
 
@@ -405,6 +431,7 @@ The UI detects Ollama at `http://127.0.0.1:11434` and defaults to `llama3.1:late
 | --- | --- |
 | `APPLICATION_INVENTORY_SERVICE_UI_HOST` | UI bind host |
 | `APPLICATION_INVENTORY_SERVICE_UI_PORT` | UI bind port |
+| `APPLICATION_INVENTORY_ENV_FILE` | Local `.env` path; defaults to `.env` in the working directory |
 | `APPLICATION_INVENTORY_SERVICE_REPORTS_DIR` | UI report/state directory |
 | `APPLICATION_INVENTORY_SERVICE_PUBLIC_URL` | Public HTTPS base URL used for OAuth callbacks |
 | `APPLICATION_INVENTORY_SERVICE_COOKIE_SECURE` | Adds Secure cookies and HSTS when set to `true` |
@@ -415,6 +442,14 @@ The UI detects Ollama at `http://127.0.0.1:11434` and defaults to `llama3.1:late
 | `APPLICATION_INVENTORY_ASPM_CLI_MAX_IMPORT_BYTES` | Maximum ASPM CLI input file size; defaults to 256 MiB |
 | `APPLICATION_INVENTORY_OWNER_USER_ID` | Default stable ASPM CLI owner scope; defaults to `cli` |
 | `APPLICATION_INVENTORY_OWNER_USER_LOGIN` | Default ASPM CLI actor recorded in workflow events |
+| `APPLICATION_INVENTORY_WEBHOOK_URL` | HTTPS endpoint for complete inventory scan records |
+| `APPLICATION_INVENTORY_WEBHOOK_HEADERS` | JSON object of additional endpoint headers, such as a ServiceNow integration header |
+| `APPLICATION_INVENTORY_WEBHOOK_BEARER_TOKEN` | Bearer token sent to the webhook endpoint |
+| `APPLICATION_INVENTORY_WEBHOOK_SIGNING_SECRET` | Optional HMAC-SHA256 secret for webhook payload signatures |
+| `APPLICATION_INVENTORY_WEBHOOK_TIMEOUT_SECONDS` | Per-request timeout; defaults to `30` |
+| `APPLICATION_INVENTORY_WEBHOOK_BATCH_SIZE` | Inventory records per batch in `batch` mode; defaults to `100` |
+| `APPLICATION_INVENTORY_WEBHOOK_RETRIES` | Additional retries for temporary failures; defaults to `3` |
+| `APPLICATION_INVENTORY_WEBHOOK_DELIVERY_MODE` | `batch` envelope or `record` one-row-per-request mode; defaults to `batch` |
 | `SEMGREP_APP_TOKEN` | Semgrep App token used by the backend connector |
 | `APPLICATION_INVENTORY_SEMGREP_API_URL` | Semgrep API root; defaults to `https://semgrep.dev/api/v1` |
 | `APPLICATION_INVENTORY_SEMGREP_ISSUE_TYPES` | Comma-separated Semgrep products; defaults to `sast,sca,ai_sast` |

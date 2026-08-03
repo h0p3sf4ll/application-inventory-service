@@ -44,6 +44,7 @@ from .source_access import create_source_client, validate_scan_source_access
 from .store_lookup import StoreLookupClient, store_columns
 from .target_filters import target_filter_matches_source, target_filters_for_source
 from .utils import clean_value, clean_version, confidence_rank, load_json_object, should_fetch_content, xml_text, yaml_scalar
+from .webhooks import WebhookPublisher
 
 
 LOGGER = logging.getLogger("appsec_scan_router")
@@ -90,13 +91,24 @@ def write_scan_reports(
             )
         )
         postgres_writer = stack.enter_context(PostgresInventoryWriter(config)) if config.postgres_dsn else None
+        webhook_configs = config.webhooks or ((config.webhook,) if config.webhook else ())
+        webhook_publishers = tuple(
+            WebhookPublisher(webhook, "application_inventory.inventory.scan")
+            for webhook in webhook_configs
+        )
         LOGGER.info("Streaming Excel report to %s", writer.xlsx_path)
         LOGGER.info("Streaming Semgrep targets to %s", writer.semgrep_targets_path)
         LOGGER.info("Streaming SonarQube targets to %s", writer.sonarqube_projects_path)
         if postgres_writer:
             LOGGER.info("Streaming PostgreSQL updates to schema %s and table %s", config.postgres_schema, config.postgres_table)
+        if webhook_publishers:
+            LOGGER.info(
+                "Streaming complete inventory records to %s configured webhook destinations",
+                len(webhook_publishers),
+            )
 
         result_count = 0
+        completed = False
 
         def write_result(result: dict[str, Any]) -> None:
             nonlocal result_count
@@ -104,9 +116,26 @@ def write_scan_reports(
             writer.write_result(result)
             if postgres_writer:
                 postgres_writer.write_result(result)
+            for webhook_publisher in webhook_publishers:
+                webhook_publisher.publish(result)
 
-        results = scan(config, on_result=write_result, retain_results=retain_results)
-        return results, result_count, writer.xlsx_path, writer.semgrep_targets_path, writer.sonarqube_projects_path
+        try:
+            results = scan(config, on_result=write_result, retain_results=retain_results)
+            if webhook_publishers:
+                for webhook_publisher in webhook_publishers:
+                    webhook_publisher.finish()
+                LOGGER.info(
+                    "Delivered complete inventory records to %s webhook destinations",
+                    len(webhook_publishers),
+                )
+            completed = True
+            return results, result_count, writer.xlsx_path, writer.semgrep_targets_path, writer.sonarqube_projects_path
+        finally:
+            for webhook_publisher in webhook_publishers:
+                if completed:
+                    webhook_publisher.close()
+                else:
+                    webhook_publisher.abort()
 
 
 def scan(

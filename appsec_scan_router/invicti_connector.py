@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Lock, local
 from typing import Any
@@ -39,14 +39,17 @@ class InvictiConnector:
     name = "Invicti"
     supports_streaming = True
 
-    def __init__(self, timeout_seconds: int = 30) -> None:
-        self.user_id = os.getenv(
+    def __init__(
+        self, timeout_seconds: int = 30, configuration: Mapping[str, Any] | None = None
+    ) -> None:
+        settings = dict(configuration or {})
+        self.user_id = str(settings.get("userId") or "").strip() or os.getenv(
             "APPLICATION_INVENTORY_INVICTI_USER_ID", ""
         ).strip() or os.getenv("INVICTI_USER_ID", "").strip()
-        self.token = os.getenv("APPLICATION_INVENTORY_INVICTI_TOKEN", "").strip() or os.getenv(
+        self.token = str(settings.get("token") or "").strip() or os.getenv("APPLICATION_INVENTORY_INVICTI_TOKEN", "").strip() or os.getenv(
             "INVICTI_TOKEN", ""
         ).strip()
-        self.endpoint = os.getenv(
+        self.endpoint = str(settings.get("endpoint") or "").strip() or os.getenv(
             "APPLICATION_INVENTORY_INVICTI_API_URL", ""
         ).strip() or os.getenv(
             "INVICTI_API_URL", ""
@@ -98,6 +101,12 @@ class InvictiConnector:
         if self.client:
             self.client.close()
         self._close_worker_clients()
+
+    def test_connection(self) -> dict[str, str]:
+        if not self.client:
+            raise ValueError(self.status().message)
+        self.client.get("account/license")
+        return {"account": "verified"}
 
     def pull(self) -> ConnectorPullResult:
         findings: list[FindingInput] = []

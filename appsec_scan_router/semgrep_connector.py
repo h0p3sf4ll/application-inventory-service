@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Lock, local
 from typing import Any
@@ -38,11 +38,14 @@ class SemgrepConnector:
     name = "Semgrep"
     supports_streaming = True
 
-    def __init__(self, timeout_seconds: int = 30) -> None:
-        self.token = os.getenv("SEMGREP_APP_TOKEN", "").strip() or os.getenv(
+    def __init__(
+        self, timeout_seconds: int = 30, configuration: Mapping[str, Any] | None = None
+    ) -> None:
+        settings = dict(configuration or {})
+        self.token = str(settings.get("token") or "").strip() or os.getenv("SEMGREP_APP_TOKEN", "").strip() or os.getenv(
             "APPLICATION_INVENTORY_SEMGREP_APP_TOKEN", ""
         ).strip()
-        self.endpoint = os.getenv(
+        self.endpoint = str(settings.get("endpoint") or "").strip() or os.getenv(
             "APPLICATION_INVENTORY_SEMGREP_API_URL", DEFAULT_SEMGREP_API_URL
         ).strip()
         self.worker_count = min(
@@ -76,6 +79,12 @@ class SemgrepConnector:
         if self.client:
             self.client.close()
         self._close_worker_clients()
+
+    def test_connection(self) -> dict[str, int]:
+        if not self.client:
+            raise ValueError(self.status().message)
+        response = self.client.get("deployments")
+        return {"deployments": len(sequence(response.get("deployments")))}
 
     def pull(self) -> ConnectorPullResult:
         findings: list[FindingInput] = []

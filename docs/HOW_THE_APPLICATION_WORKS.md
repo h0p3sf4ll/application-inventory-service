@@ -51,7 +51,7 @@ flowchart LR
     PostgreSQL --> Posture["Posture, Findings, and Coverage views"]
 ```
 
-An inventory scan does not run Semgrep, SonarQube, or another security scanner. It discovers applications and produces scanner target files. Scanner pipelines can return result files, while configured Semgrep, Invicti, and NowSecure connectors can pull current findings directly.
+An inventory scan does not run Semgrep, SonarQube, or another security scanner. It discovers applications and produces scanner target files. Scanner pipelines can return result files, while configured Semgrep, Invicti, NowSecure, SonarQube, and OWASP ZAP connectors can pull current findings directly. Trivy, Gitleaks, Nuclei, and OWASP Dependency-Check output is imported as SARIF.
 
 ## What Happens During an Inventory Scan
 
@@ -87,10 +87,10 @@ For every import, the service:
 5. Correlates the finding by exact repository identity, mobile package identifier, or web domain, with exact application name as a guarded fallback.
 6. Extracts data-interaction evidence from structured scanner metadata, privacy categories, regulations, CWE mappings, and bounded finding text.
 7. Recalculates the linked asset's technical, data-sensitivity, and context risk components.
-6. Loads the linked application's security profile.
-7. Calculates and stores an explainable risk score.
-8. Updates scanner coverage for matched application branches.
-9. Records the import and workflow history for audit purposes.
+8. Loads the linked application's security profile.
+9. Calculates and stores an explainable risk score.
+10. Updates scanner coverage for matched application branches.
+11. Records the import and workflow history for audit purposes.
 
 File imports are transactional. Direct connectors use bounded page transactions so very large snapshots do not accumulate in memory. Failed connector syncs are audited and never reconcile absent findings from an incomplete pull.
 
@@ -135,6 +135,8 @@ Default due dates are based on normalized severity:
 | Medium | 90 days |
 | Low | 180 days |
 | Informational | 365 days |
+
+Users set per-severity remediation periods in **Configuration** > **Remediation timelines**. Saving a policy recalculates policy-managed due dates without replacing a manually set due date.
 
 Updating an application's criticality, exposure, or data classification recalculates every linked finding in the same database transaction.
 
@@ -190,9 +192,13 @@ Coverage requires enough repository context to link the scanner result or declar
 
 ## Application Pages
 
-### Posture
+### Dashboard
 
-The command center summarizes critical and high findings, affected applications, overdue work, current scanner coverage, and average active risk. It also shows risk distribution, workflow distribution, priority applications, and the health of connected scanner tools.
+The Dashboard is the default executive view. It summarizes critical and high findings, affected applications, overdue work, current scanner coverage, and average active risk. Critical, high, and overdue metrics open matching Findings; affected applications opens Inventory; coverage opens Coverage; and average risk opens active Asset risk profiles.
+
+Priority applications open Findings filtered to that exact application branch. Workflow totals, including open, resolved, and triaged, open Findings filtered to the selected status. Tool health shows the latest import or connector sync, not the result of a connection test.
+
+An overdue finding is active and past its configured due date. Configure severity timelines in **Configuration** > **Remediation timelines**; policy updates recalculate policy-managed dates while preserving manual finding due dates.
 
 Use this page for daily risk review and leadership reporting.
 
@@ -217,7 +223,7 @@ Opening a record shows ownership, contributors, activity, application types, dom
 
 Coverage identifies applications with current, stale, expired, or missing scanner evidence. It is designed to answer both "where do we have findings?" and "where have we not tested recently?"
 
-### New Scan
+### Scan
 
 This page configures inventory discovery. The normal flow is:
 
@@ -241,9 +247,11 @@ Schedules stores encrypted, user-scoped one-time, daily, or weekly inventory sca
 
 Reports provides access to completed inventory outputs and scan logs. Inventory runs produce XLSX reports plus Semgrep and SonarQube target files for downstream automation.
 
-### Settings
+### Configuration
 
-Settings displays database connectivity and configuration health. PostgreSQL is tested when the service starts, and the UI reports whether inventory, findings, coverage, and observability storage are ready.
+Configuration displays database connectivity and configuration health. PostgreSQL is tested when the service starts, and the UI reports whether inventory, findings, coverage, and observability storage are ready.
+
+It also manages GitHub App status, remediation timelines, scanner connections, and webhooks. Scanner setup values and webhook credentials are encrypted per user and are never returned after saving. **Test connections** makes a lightweight request to remote scanners without importing findings; use **Sync** to collect and correlate findings. SARIF profiles record where Trivy, Gitleaks, Nuclei, or OWASP Dependency-Check output is produced, then their files are uploaded from **Findings**.
 
 ## Authentication and Data Isolation
 
@@ -251,7 +259,7 @@ The browser requires a signed-in session. GitHub Enterprise and Google OAuth can
 
 User-owned data is scoped by a stable owner identifier in PostgreSQL. Inventory searches, findings, workflow updates, coverage, reports, schedules, saved credentials, and exports use that scope. Browser requests require both the authenticated session and a CSRF token.
 
-Saved credentials and schedules are encrypted at rest with the configured Fernet key. Provider secrets and GitHub App private keys are not included in generated scan commands, reports, or browser responses.
+Saved credentials, schedules, webhooks, scanner overrides, and remediation timelines are encrypted at rest with the configured Fernet key. Provider secrets and GitHub App private keys are not included in generated scan commands, reports, or browser responses.
 
 ## Persistence and Recovery
 
@@ -289,7 +297,7 @@ application-inventory-aspm --owner-user-id security-platform ingest results.sari
 1. Run inventory discovery daily or weekly, depending on repository change volume.
 2. Run security scanners in their existing CI/CD pipelines.
 3. Import each tool's complete result set after a successful scanner run.
-4. Review Posture for critical, high, and overdue risk.
+4. Review Dashboard for critical, high, and overdue risk.
 5. Triage unlinked findings and improve pipeline repository context.
 6. Assign and track remediation through Findings.
 7. Review Coverage for stale and untested applications.

@@ -14,6 +14,7 @@ from .constants import (
     DEFAULT_STORE_COUNTRY,
     DEFAULT_STORE_TIMEOUT_SECONDS,
 )
+from .webhooks import WebhookConfig
 
 
 class AzureDevOpsError(RuntimeError):
@@ -69,6 +70,8 @@ class ScanConfig:
     github_app_private_key: str = ""
     github_app_private_key_file: str = ""
     source_workers: int = DEFAULT_SOURCE_WORKERS
+    webhook: WebhookConfig | None = None
+    webhooks: tuple[WebhookConfig, ...] = ()
 
 
 @dataclass(frozen=True)

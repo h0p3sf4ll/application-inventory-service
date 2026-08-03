@@ -20,23 +20,30 @@ HOST_RE = re.compile(
 ASSIGNMENT_RE = re.compile(
     r"^\s*(?:-\s*)?[\"']?(?P<key>[A-Za-z0-9_.-]+)[\"']?\s*[:=]\s*(?P<value>.*?)\s*[,;]?\s*$"
 )
-SERVER_NAME_RE = re.compile(r"^\s*server_name\s+(?P<value>[^;]+);?\s*$", re.IGNORECASE)
+SERVER_NAME_RE = re.compile(r"^\s*(?:server_name|servername|serveralias)\s+(?P<value>[^;#]+);?\s*$", re.IGNORECASE)
+TRAEFIK_HOST_RULE_RE = re.compile(r"\bHost\s*\(\s*(?P<value>[^)]*)\)", re.IGNORECASE)
 AZURE_APP_NAME_RE = re.compile(
     r"(?im)^\s*(?:-\s*)?(?:appName|webAppName|azureWebAppName|functionAppName)\s*:\s*[\"']?([A-Za-z0-9][A-Za-z0-9-]{1,58}[A-Za-z0-9])[\"']?\s*$"
 )
 FLY_APP_NAME_RE = re.compile(r"(?im)^\s*app\s*=\s*[\"']([a-z0-9][a-z0-9-]{1,61}[a-z0-9])[\"']\s*$")
 SEMANTIC_KEY_SUFFIXES = (
     "baseurl",
+    "alias",
+    "aliases",
+    "cname",
     "domain",
     "domainname",
     "domains",
     "endpoint",
     "environmenturl",
+    "fqdn",
     "homepage",
     "host",
     "hostname",
     "hosts",
     "origin",
+    "route",
+    "routes",
     "siteurl",
     "url",
     "urls",
@@ -109,6 +116,36 @@ NON_APPLICATION_SUFFIXES = (
     ".npmjs.org",
     ".pypi.org",
 )
+HOSTED_PLATFORM_SUFFIXES = (
+    ".azurestaticapps.net",
+    ".azurewebsites.net",
+    ".carrd.co",
+    ".cloudfront.net",
+    ".firebaseapp.com",
+    ".fly.dev",
+    ".github.io",
+    ".gitlab.io",
+    ".herokuapp.com",
+    ".hubspot.net",
+    ".hubspotpagebuilder.com",
+    ".myshopify.com",
+    ".netlify.app",
+    ".onrender.com",
+    ".pages.dev",
+    ".railway.app",
+    ".readthedocs.io",
+    ".run.app",
+    ".square.site",
+    ".squarespace.com",
+    ".surge.sh",
+    ".vercel.app",
+    ".web.app",
+    ".webflow.io",
+    ".weebly.com",
+    ".wixsite.com",
+    ".wordpress.com",
+    ".wpenginepowered.com",
+)
 
 
 def discover_web_domains(
@@ -157,6 +194,7 @@ def source_domain_candidates(path: str, content: str) -> list[tuple[str, str, st
     candidates.extend(text_content_candidates(content, source))
     if filename == "caddyfile":
         candidates.extend(caddy_content_candidates(content, source))
+    candidates.extend(traefik_content_candidates(content, source))
     candidates.extend(inferred_cloud_candidates(filename, content, source))
     return candidates
 
@@ -231,6 +269,17 @@ def caddy_content_candidates(content: str, source: str) -> list[tuple[str, str, 
     return candidates
 
 
+def traefik_content_candidates(content: str, source: str) -> list[tuple[str, str, str, str]]:
+    candidates: list[tuple[str, str, str, str]] = []
+    for line_number, line in enumerate(content.splitlines(), start=1):
+        if "traefik" not in line.lower():
+            continue
+        for match in TRAEFIK_HOST_RULE_RE.finditer(line):
+            for candidate in candidate_values(match.group("value")):
+                candidates.append((candidate, f"{source}:traefik_host_rule:{line_number}", "configured", ""))
+    return candidates
+
+
 def inferred_cloud_candidates(filename: str, content: str, source: str) -> list[tuple[str, str, str, str]]:
     candidates: list[tuple[str, str, str, str]] = []
     if filename.startswith(("azure-pipeline", "azure-pipelines")) or ".github/workflows/" in source.lower():
@@ -291,6 +340,12 @@ def merge_domain_candidates(candidates: Iterable[tuple[str, str, str, str]]) -> 
             current["url"] = url
             current["confidence"] = normalized_level
             current["environment"] = environment
+    if any(not hosted_platform_hostname(domain) for domain in merged):
+        merged = {
+            domain: item
+            for domain, item in merged.items()
+            if not hosted_platform_hostname(domain)
+        }
     ordered = sorted(
         merged.values(),
         key=lambda item: (
@@ -364,6 +419,10 @@ def excluded_hostname(hostname: str) -> bool:
         return True
     labels = set(hostname.split("."))
     return bool(labels & {"changeme", "placeholder", "yourdomain"})
+
+
+def hosted_platform_hostname(hostname: str) -> bool:
+    return hostname.endswith(HOSTED_PLATFORM_SUFFIXES)
 
 
 def normalized_confidence(value: Any) -> str:

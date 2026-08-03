@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import threading
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from itertools import chain
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -24,6 +25,7 @@ from .aspm_models import (
 )
 from .aspm_risk import AssetRiskContext, RiskEngine
 from .inventory_exports import rows_to_csv, rows_to_json, rows_to_xlsx
+from .remediation import default_remediation_policy, normalize_remediation_policy, remediation_days
 
 try:
     import psycopg
@@ -38,9 +40,11 @@ except ImportError:
 
 
 SQL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-ASPM_SCHEMA_VERSION = 3
+ASPM_SCHEMA_VERSION = 4
 ASPM_SCHEMA_LOCK = threading.Lock()
 ASPM_SCHEMA_READY: set[tuple[str, str]] = set()
+DEFAULT_OPERATION_STALE_AFTER_SECONDS = 86_400
+MIN_OPERATION_STALE_AFTER_SECONDS = 300
 FINDING_EXPORT_COLUMNS = (
     "finding_id",
     "title",
@@ -164,6 +168,7 @@ def create_aspm_schema(connection: Any, schema: str) -> None:
                 risk_factors jsonb NOT NULL DEFAULT '[]'::jsonb,
                 assignee text,
                 due_at timestamptz,
+                due_date_source text NOT NULL DEFAULT 'policy',
                 first_seen timestamptz NOT NULL,
                 last_seen timestamptz NOT NULL,
                 resolved_at timestamptz,
@@ -304,6 +309,8 @@ def create_aspm_schema(connection: Any, schema: str) -> None:
 
             ALTER TABLE {imports}
                 ADD COLUMN IF NOT EXISTS error_message text;
+            ALTER TABLE {findings}
+                ADD COLUMN IF NOT EXISTS due_date_source text NOT NULL DEFAULT 'policy';
             """
         ).format(
             tools=identifier(resolved, "aspm_tools"),
@@ -390,7 +397,11 @@ def current_aspm_schema_version(connection: Any, schema: str) -> int:
 
 class AspmRepository:
     def __init__(
-        self, dsn: str, schema: str, risk_engine: RiskEngine | None = None
+        self,
+        dsn: str,
+        schema: str,
+        risk_engine: RiskEngine | None = None,
+        remediation_policy: Mapping[str, Any] | None = None,
     ) -> None:
         if psycopg is None or sql is None or Jsonb is None or dict_row is None:
             raise RuntimeError("psycopg is required for ASPM persistence.")
@@ -401,6 +412,9 @@ class AspmRepository:
         self.risk_engine = risk_engine or RiskEngine()
         self.data_classifier = DataInteractionClassifier()
         self.asset_risk_engine = AssetRiskProfileEngine()
+        self.remediation_policy = normalize_remediation_policy(
+            remediation_policy or default_remediation_policy()
+        )
 
     def ensure_schema(self) -> None:
         key = (hashlib.sha256(self.dsn.encode("utf-8")).hexdigest(), self.schema)
@@ -816,6 +830,7 @@ class AspmRepository:
     def posture(self, owner_user_id: str) -> dict[str, Any]:
         self.ensure_schema()
         owner = bounded_text(owner_user_id, 500) or "anonymous"
+        self._reconcile_abandoned_operations(owner)
         self._ensure_asset_risk_profiles(owner)
         with psycopg.connect(self.dsn, row_factory=dict_row) as connection:
             summary = connection.execute(
@@ -828,7 +843,12 @@ class AspmRepository:
                         count(*) FILTER (WHERE f.status = ANY(%s::text[]) AND f.severity = 'critical') AS critical_findings,
                         count(*) FILTER (WHERE f.status = ANY(%s::text[]) AND f.severity = 'high') AS high_findings,
                         count(*) FILTER (WHERE f.status = ANY(%s::text[]) AND f.due_at < now()) AS overdue_findings,
-                        count(DISTINCT f.branch_inventory_id) FILTER (WHERE f.status = ANY(%s::text[])) AS affected_assets,
+                                                COALESCE((
+                                                        SELECT count(*)
+                                                        FROM {asset_risks} asset_risk
+                                                        WHERE asset_risk.owner_user_id = %s
+                                                            AND asset_risk.active_findings > 0
+                                                ), 0) AS affected_assets,
                         COALESCE((
                             SELECT round(avg(asset_risk.risk_score))
                             FROM {asset_risks} asset_risk
@@ -856,7 +876,7 @@ class AspmRepository:
                     list(ACTIVE_FINDING_STATUSES),
                     list(ACTIVE_FINDING_STATUSES),
                     list(ACTIVE_FINDING_STATUSES),
-                    list(ACTIVE_FINDING_STATUSES),
+                    owner,
                     owner,
                     owner,
                     owner,
@@ -918,7 +938,9 @@ class AspmRepository:
                            COALESCE(f.active_findings, 0) AS active_findings,
                            i.status AS last_import_status,
                            i.started_at AS last_import_at,
-                           i.error_message AS last_import_error
+                           i.completed_at AS last_import_completed_at,
+                           i.error_message AS last_import_error,
+                           i.source AS last_import_source
                     FROM {tools} t
                     LEFT JOIN (
                         SELECT tool_id, owner_user_id,
@@ -934,10 +956,19 @@ class AspmRepository:
                         GROUP BY tool_id, owner_user_id
                     ) f ON f.tool_id = t.tool_id AND f.owner_user_id = t.owner_user_id
                     LEFT JOIN LATERAL (
-                        SELECT status, started_at, error_message
-                        FROM {imports}
-                        WHERE tool_id = t.tool_id AND owner_user_id = t.owner_user_id
-                        ORDER BY started_at DESC
+                        SELECT status, started_at, completed_at, error_message, source
+                        FROM (
+                            SELECT status, started_at, completed_at, error_message,
+                                   'import'::text AS source
+                            FROM {imports}
+                            WHERE tool_id = t.tool_id AND owner_user_id = t.owner_user_id
+                            UNION ALL
+                            SELECT status, started_at, completed_at, error_message,
+                                   'connector_sync'::text AS source
+                            FROM {connector_syncs}
+                            WHERE connector_key = t.tool_key AND owner_user_id = t.owner_user_id
+                        ) operations
+                        ORDER BY started_at DESC, completed_at DESC NULLS LAST
                         LIMIT 1
                     ) i ON true
                     WHERE t.owner_user_id = %s
@@ -948,6 +979,7 @@ class AspmRepository:
                     coverage=self._table("aspm_coverage"),
                     findings=self._table("aspm_findings"),
                     imports=self._table("aspm_imports"),
+                    connector_syncs=self._table("aspm_connector_syncs"),
                 ),
                 (owner, owner, list(ACTIVE_FINDING_STATUSES), owner),
             ).fetchall()
@@ -1073,7 +1105,8 @@ class AspmRepository:
         with psycopg.connect(self.dsn, row_factory=dict_row) as connection:
             current = connection.execute(
                 sql.SQL(
-                    "SELECT finding_id, status, assignee, due_at, branch_inventory_id FROM {table} WHERE finding_id = %s AND owner_user_id = %s FOR UPDATE"
+                    "SELECT finding_id, status, assignee, due_at, due_date_source, branch_inventory_id, first_seen "
+                    "FROM {table} WHERE finding_id = %s AND owner_user_id = %s FOR UPDATE"
                 ).format(table=self._table("aspm_findings")),
                 (resolved_id, owner),
             ).fetchone()
@@ -1083,20 +1116,24 @@ class AspmRepository:
             resolved_at = (
                 datetime.now(timezone.utc) if target_status == "resolved" else None
             )
+            due_date_source = "manual" if due_at is not None else current["due_date_source"]
+            effective_due_at = parsed_due_at if due_at is not None else current["due_at"]
             updated = connection.execute(
                 sql.SQL(
                     """
                     UPDATE {table}
-                    SET status = %s, assignee = %s, due_at = %s, resolved_at = %s,
+                    SET status = %s, assignee = %s, due_at = %s, due_date_source = %s,
+                        resolved_at = %s,
                         updated_at = now()
                     WHERE finding_id = %s AND owner_user_id = %s
-                    RETURNING finding_id, status, assignee, due_at, resolved_at, updated_at
+                    RETURNING finding_id, status, assignee, due_at, due_date_source, resolved_at, updated_at
                     """
                 ).format(table=self._table("aspm_findings")),
                 (
                     target_status,
                     bounded_text(assignee, 500) or None,
-                    parsed_due_at,
+                    effective_due_at,
+                    due_date_source,
                     resolved_at,
                     resolved_id,
                     owner,
@@ -1113,7 +1150,8 @@ class AspmRepository:
                 bounded_text(note, 5000),
                 {
                     "assignee": bounded_text(assignee, 500),
-                    "due_at": parsed_due_at.isoformat() if parsed_due_at else None,
+                    "due_at": effective_due_at.isoformat() if effective_due_at else None,
+                    "due_date_source": due_date_source,
                 },
             )
             if current["branch_inventory_id"] is not None:
@@ -1125,6 +1163,30 @@ class AspmRepository:
                     connection, owner, asset_id, interactions
                 )
         return json_rows([updated])[0]
+
+    def update_remediation_policy(
+        self, owner_user_id: str, policy: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        self.ensure_schema()
+        owner = bounded_text(owner_user_id, 500) or "anonymous"
+        resolved_policy = normalize_remediation_policy(policy)
+        updated = 0
+        with psycopg.connect(self.dsn) as connection:
+            for severity, days in resolved_policy.items():
+                updated += connection.execute(
+                    sql.SQL(
+                        """
+                        UPDATE {findings}
+                        SET due_at = first_seen + (%s * interval '1 day'), updated_at = now()
+                        WHERE owner_user_id = %s
+                          AND severity = %s
+                          AND due_date_source = 'policy'
+                        """
+                    ).format(findings=self._table("aspm_findings")),
+                    (days, owner, severity),
+                ).rowcount
+        self.remediation_policy = resolved_policy
+        return {"policy": resolved_policy, "updatedFindings": updated}
 
     def finding_detail(self, owner_user_id: str, finding_id: str) -> dict[str, Any]:
         result = self.search_findings(
@@ -1189,7 +1251,9 @@ class AspmRepository:
                         END AS coverage_status
                     FROM {branches} b
                     JOIN {repositories} r ON r.repository_id = b.repository_id
-                    LEFT JOIN {coverage} c ON c.branch_inventory_id = b.branch_inventory_id AND c.owner_user_id = b.owner_user_id
+                    LEFT JOIN {coverage} c ON c.branch_inventory_id = b.branch_inventory_id
+                        AND c.owner_user_id = b.owner_user_id
+                        AND c.status = 'scanned'
                     LEFT JOIN {tools} t ON t.tool_id = c.tool_id
                     LEFT JOIN LATERAL (
                         SELECT string_agg(inventory_type, '; ' ORDER BY inventory_type) AS inventory_types
@@ -1370,6 +1434,7 @@ class AspmRepository:
         query: str = "",
         risk_bands: list[str] | None = None,
         data_types: list[str] | None = None,
+        active_only: bool = False,
         limit: int = 100,
         offset: int = 0,
     ) -> dict[str, Any]:
@@ -1411,6 +1476,8 @@ class AspmRepository:
         if normalized_types:
             clauses.append(sql.SQL("risk.data_types && %s::text[]"))
             parameters.append(normalized_types)
+        if active_only:
+            clauses.append(sql.SQL("COALESCE(risk.active_findings, 0) > 0"))
         where = sql.SQL(" AND ").join(clauses)
         view = sql.SQL(
             """
@@ -1477,6 +1544,7 @@ class AspmRepository:
                 "query": search,
                 "riskBands": normalized_bands,
                 "dataTypes": normalized_types,
+                "activeOnly": bool(active_only),
             },
         }
 
@@ -1556,6 +1624,7 @@ class AspmRepository:
     ) -> list[dict[str, Any]]:
         self.ensure_schema()
         owner = bounded_text(owner_user_id, 500) or "anonymous"
+        self._reconcile_abandoned_operations(owner)
         with psycopg.connect(self.dsn, row_factory=dict_row) as connection:
             rows = connection.execute(
                 sql.SQL(
@@ -1573,6 +1642,39 @@ class AspmRepository:
                 (owner, max(1, min(int(limit), 200))),
             ).fetchall()
         return json_rows(rows)
+
+    def _reconcile_abandoned_operations(self, owner: str) -> None:
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=operation_stale_after_seconds()
+        )
+        message = "Marked failed because the operation was abandoned before completion."
+        with psycopg.connect(self.dsn) as connection:
+            connection.execute(
+                sql.SQL(
+                    """
+                    UPDATE {imports}
+                    SET status = 'failed', error_count = GREATEST(error_count, 1),
+                        error_message = COALESCE(error_message, %s), completed_at = now()
+                    WHERE owner_user_id = %s
+                      AND status = 'processing'
+                      AND started_at < %s
+                    """
+                ).format(imports=self._table("aspm_imports")),
+                (message, owner, cutoff),
+            )
+            connection.execute(
+                sql.SQL(
+                    """
+                    UPDATE {syncs}
+                    SET status = 'failed', error_message = COALESCE(error_message, %s),
+                        completed_at = now()
+                    WHERE owner_user_id = %s
+                      AND status IN ('running', 'processing')
+                      AND started_at < %s
+                    """
+                ).format(syncs=self._table("aspm_connector_syncs")),
+                (message, owner, cutoff),
+            )
 
     def _upsert_tool(
         self, connection: Any, owner: str, document: FindingDocument
@@ -1808,7 +1910,9 @@ class AspmRepository:
     ) -> tuple[str, bool, int | None]:
         first_seen = finding.first_seen or now
         last_seen = finding.last_seen or now
-        due_at = first_seen + timedelta(days=severity_sla_days(finding.severity))
+        due_at = first_seen + timedelta(
+            days=remediation_days(self.remediation_policy, finding.severity)
+        )
         fingerprint = finding.fingerprint(str(tool_id))
         row = connection.execute(
             sql.SQL(
@@ -1827,12 +1931,12 @@ class AspmRepository:
                     repository, branch, path, start_line, end_line, scanner_url,
                     remediation, package_name, package_version, fixed_version,
                     cvss_score, epss_score, exploit_available, risk_score, risk_band,
-                    risk_factors, due_at, first_seen, last_seen, resolved_at, raw_data
+                    risk_factors, due_at, due_date_source, first_seen, last_seen, resolved_at, raw_data
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT (owner_user_id, tool_id, fingerprint) DO UPDATE SET
                     branch_inventory_id = COALESCE(EXCLUDED.branch_inventory_id, {findings}.branch_inventory_id),
@@ -1869,6 +1973,10 @@ class AspmRepository:
                     risk_band = EXCLUDED.risk_band,
                     risk_factors = EXCLUDED.risk_factors,
                     due_at = COALESCE({findings}.due_at, EXCLUDED.due_at),
+                    due_date_source = CASE
+                        WHEN {findings}.due_date_source = 'manual' THEN 'manual'
+                        ELSE EXCLUDED.due_date_source
+                    END,
                     first_seen = LEAST({findings}.first_seen, EXCLUDED.first_seen),
                     last_seen = GREATEST({findings}.last_seen, EXCLUDED.last_seen),
                     resolved_at = CASE
@@ -1924,6 +2032,7 @@ class AspmRepository:
                 risk_band,
                 Jsonb(list(risk_factors)),
                 due_at,
+                "policy",
                 first_seen,
                 last_seen,
                 now if finding.status == "resolved" else None,
@@ -2542,6 +2651,7 @@ class AspmRepository:
                     FROM {branches} b
                     LEFT JOIN {coverage} c ON c.branch_inventory_id = b.branch_inventory_id
                         AND c.owner_user_id = b.owner_user_id
+                        AND c.status = 'scanned'
                     WHERE b.owner_user_id = %s
                     GROUP BY b.branch_inventory_id
                 ) assets
@@ -2642,6 +2752,9 @@ class AspmRepository:
         if filters.get("finding_id"):
             clauses.append(sql.SQL("f.finding_id = %s"))
             parameters.append(filters["finding_id"])
+        if filters.get("branch_inventory_id"):
+            clauses.append(sql.SQL("f.branch_inventory_id = %s"))
+            parameters.append(filters["branch_inventory_id"])
         if filters.get("repository"):
             clauses.append(sql.SQL("f.repository ILIKE %s"))
             parameters.append(f"%{escape_like(filters['repository'])}%")
@@ -2795,6 +2908,11 @@ def normalize_finding_filters(filters: dict[str, Any] | None) -> dict[str, Any]:
         )
     for key in ("finding_id", "repository", "assignee"):
         normalized[key] = bounded_text(value.get(key), 500)
+    try:
+        branch_inventory_id = int(value.get("branch_inventory_id", 0))
+    except (TypeError, ValueError):
+        branch_inventory_id = 0
+    normalized["branch_inventory_id"] = branch_inventory_id if branch_inventory_id > 0 else 0
     for key in ("overdue", "unassigned", "has_asset"):
         normalized[key] = value.get(key) if isinstance(value.get(key), bool) else None
     sort_by = bounded_text(value.get("sort_by"), 50)
@@ -2833,13 +2951,20 @@ def finding_order(filters: dict[str, Any]) -> Any:
 
 
 def severity_sla_days(severity: str) -> int:
-    return {
-        "critical": 7,
-        "high": 30,
-        "medium": 90,
-        "low": 180,
-        "info": 365,
-    }.get(severity, 90)
+    return remediation_days(default_remediation_policy(), severity)
+
+
+def operation_stale_after_seconds() -> int:
+    try:
+        configured = int(
+            os.getenv(
+                "APPLICATION_INVENTORY_OPERATION_STALE_AFTER_SECONDS",
+                str(DEFAULT_OPERATION_STALE_AFTER_SECONDS),
+            )
+        )
+    except ValueError:
+        configured = DEFAULT_OPERATION_STALE_AFTER_SECONDS
+    return max(MIN_OPERATION_STALE_AFTER_SECONDS, configured)
 
 
 def schema_name(value: str) -> str:

@@ -1,4 +1,4 @@
-import {riskDistributionMarkup} from "/static/aspm/posture.js?v=1";
+import {riskDistributionMarkup} from "/static/aspm/posture.js?v=4";
 
 export class AspmWorkspace {
   constructor(dependencies) {
@@ -9,13 +9,15 @@ export class AspmWorkspace {
     this.formatDate = dependencies.formatDate;
     this.downloadBlob = dependencies.downloadBlob;
     this.setActiveView = dependencies.setActiveView;
+    this.openAffectedInventory = dependencies.openAffectedInventory;
     this.state = {
       posture: null,
       findings: {rows: [], total: 0, limit: 25, offset: 0, facets: {}, loaded: false, findingRequest: 0},
       coverage: {rows: [], total: 0, limit: 100, offset: 0, summary: {}, loaded: false, requestId: 0},
-      assetRisks: {rows: [], total: 0, limit: 25, offset: 0, loaded: false, assetRiskRequest: 0},
+      assetRisks: {rows: [], total: 0, limit: 25, offset: 0, activeOnly: false, loaded: false, assetRiskRequest: 0},
       connectors: {items: [], syncs: [], loaded: false},
       findingFilters: {},
+      findingDrilldownFilters: {},
       quickFilter: "active",
       activeFinding: null,
       activeAsset: null,
@@ -28,11 +30,14 @@ export class AspmWorkspace {
   bind() {
     this.elements = Object.fromEntries(
       [
-        "postureStatus", "refreshPosture", "postureCritical", "postureHigh",
+        "postureStatus", "postureCritical", "postureHigh",
         "postureAffectedAssets", "postureAssetContext", "postureOverdue",
         "postureCoverage", "postureAverageRisk", "riskDistribution",
         "statusDistribution", "priorityAssetList", "toolHealthGrid",
-        "refreshConnectors", "syncConnectors", "connectorGrid", "connectorSyncSummary",
+        "refreshConnectors", "testConnectors", "syncConnectors", "connectorGrid", "connectorSyncSummary",
+        "connectorSetupDialog", "connectorSetupType", "connectorSetupTitle",
+        "connectorSetupDescription", "connectorSetupKey", "connectorSetupFields",
+        "connectorSetupStatus", "closeConnectorSetup", "saveConnectorSetup",
         "viewAllFindings", "openFindingImport", "toggleFindingImport",
         "findingImportPanel", "closeFindingImport", "findingImportFormat",
         "findingImportTool", "findingImportFile", "findingCompleteSnapshot",
@@ -60,10 +65,34 @@ export class AspmWorkspace {
         "saveAssetProfile", "assetProfileRisk",
       ].map((id) => [id, document.querySelector(`#${id}`)])
     );
-    if (!this.elements.refreshPosture) {
+    if (!this.elements.postureStatus) {
       return;
     }
-    this.elements.refreshPosture.addEventListener("click", () => this.loadPosture(true));
+    document.querySelectorAll("[data-dashboard-action]").forEach((button) => {
+      button.addEventListener("click", () => this.openDashboardAction(button.dataset.dashboardAction));
+    });
+    this.elements.riskDistribution.addEventListener("pointerover", (event) => this.showRiskDistributionTooltip(event));
+    this.elements.riskDistribution.addEventListener("focusin", (event) => this.showRiskDistributionTooltip(event));
+    this.elements.riskDistribution.addEventListener("pointerout", () => this.hideRiskDistributionTooltip());
+    this.elements.riskDistribution.addEventListener("focusout", () => this.hideRiskDistributionTooltip());
+    this.elements.toolHealthGrid.addEventListener("click", (event) => {
+      if (event.target.closest("[data-tool-health-action='configuration']")) {
+        this.setActiveView("databaseView");
+        this.loadConnectors(true);
+      }
+    });
+    this.elements.priorityAssetList.addEventListener("click", (event) => {
+      const item = event.target.closest("[data-priority-asset]");
+      if (item) {
+        this.openPriorityApplicationFindings(item.dataset.priorityAsset);
+      }
+    });
+    this.elements.statusDistribution.addEventListener("click", (event) => {
+      const item = event.target.closest("[data-finding-status]");
+      if (item) {
+        this.openStatusFindings(item.dataset.findingStatus);
+      }
+    });
     this.elements.viewAllFindings.addEventListener("click", () => this.openFindings());
     this.elements.openFindingImport.addEventListener("click", () => this.openFindings(true));
     this.elements.toggleFindingImport.addEventListener("click", () => this.toggleImport(true));
@@ -112,7 +141,16 @@ export class AspmWorkspace {
     this.elements.saveFindingWorkflow.addEventListener("click", () => this.saveFindingWorkflow());
     this.elements.refreshCoverage.addEventListener("click", () => this.loadCoverage(0, true));
     this.elements.refreshConnectors.addEventListener("click", () => this.loadConnectors(true));
+    this.elements.testConnectors.addEventListener("click", () => this.testConnections());
     this.elements.syncConnectors.addEventListener("click", () => this.syncConnectors());
+    this.elements.connectorGrid.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-connector-setup]");
+      if (button) {
+        this.openConnectorSetup(button.dataset.connectorSetup);
+      }
+    });
+    this.elements.closeConnectorSetup.addEventListener("click", () => this.elements.connectorSetupDialog.close());
+    this.elements.saveConnectorSetup.addEventListener("click", () => this.saveConnectorSetup());
     this.elements.refreshAssetRisks.addEventListener("click", () => this.loadAssetRisks(this.state.assetRisks.offset, true));
     this.elements.searchAssetRisks.addEventListener("click", () => this.loadAssetRisks(0, true));
     this.elements.clearAssetRisks.addEventListener("click", () => this.clearAssetRiskFilters());
@@ -156,8 +194,9 @@ export class AspmWorkspace {
     this.state.posture = null;
     this.state.findings = {rows: [], total: 0, limit: 25, offset: 0, facets: {}, loaded: false, findingRequest: 0};
     this.state.coverage = {rows: [], total: 0, limit: 100, offset: 0, summary: {}, loaded: false, requestId: 0};
-    this.state.assetRisks = {rows: [], total: 0, limit: 25, offset: 0, loaded: false, assetRiskRequest: 0};
+    this.state.assetRisks = {rows: [], total: 0, limit: 25, offset: 0, activeOnly: false, loaded: false, assetRiskRequest: 0};
     this.state.connectors = {items: [], syncs: [], loaded: false};
+    this.state.findingDrilldownFilters = {};
     this.state.activeFinding = null;
     this.state.activeAsset = null;
     this.renderPosture();
@@ -169,7 +208,7 @@ export class AspmWorkspace {
 
   onViewActivated(viewId) {
     const stale = (key) => Date.now() - Number(this.state.refreshedAt[key] || 0) > 30000;
-    if (viewId === "postureView" && stale("posture")) {
+    if (viewId === "dashboardView" && stale("posture")) {
       this.loadPosture();
     } else if (viewId === "findingsView" && stale("findings")) {
       this.searchFindings(this.state.findings.offset);
@@ -177,12 +216,14 @@ export class AspmWorkspace {
       this.loadCoverage(this.state.coverage.offset);
     } else if (viewId === "riskProfilesView" && stale("assetRisks")) {
       this.loadAssetRisks(this.state.assetRisks.offset);
+    } else if (viewId === "databaseView" && stale("connectors")) {
+      this.loadConnectors();
     }
   }
 
   async refreshVisible() {
     const active = document.querySelector(".tab-view.active");
-    this.onViewActivated(active ? active.id : "postureView");
+    this.onViewActivated(active ? active.id : "dashboardView");
   }
 
   async loadPosture(force = false) {
@@ -236,9 +277,61 @@ export class AspmWorkspace {
     );
   }
 
+  showRiskDistributionTooltip(event) {
+    const segment = event.target.closest("[data-risk-severity]");
+    if (!segment) {
+      return;
+    }
+    this.elements.riskDistribution.querySelectorAll(".risk-pie-segment.active")
+      .forEach((item) => item.classList.remove("active"));
+    segment.classList.add("active");
+    const tooltip = this.elements.riskDistribution.querySelector("#riskDistributionTooltip");
+    if (!tooltip) {
+      return;
+    }
+    tooltip.hidden = false;
+    tooltip.textContent = `${segment.dataset.riskSeverity}: ${this.number(segment.dataset.riskCount)} findings (${segment.dataset.riskPercent}%)`;
+  }
+
+  hideRiskDistributionTooltip() {
+    const tooltip = this.elements.riskDistribution.querySelector("#riskDistributionTooltip");
+    if (tooltip) {
+      tooltip.hidden = true;
+    }
+    this.elements.riskDistribution.querySelectorAll(".risk-pie-segment.active")
+      .forEach((item) => item.classList.remove("active"));
+  }
+
+  openDashboardAction(action) {
+    if (action === "affected-assets") {
+      this.openAffectedInventory();
+      return;
+    }
+    if (action === "coverage") {
+      this.setActiveView("coverageView");
+      return;
+    }
+    if (action === "average-risk") {
+      this.state.assetRisks.activeOnly = true;
+      this.loadAssetRisks(0, true);
+      this.setActiveView("riskProfilesView");
+      return;
+    }
+    this.setActiveView("findingsView");
+    if (action === "overdue") {
+      this.elements.findingSeverityFilter.value = "";
+      this.activateQuickFilter("overdue");
+      return;
+    }
+    if (action === "critical" || action === "high") {
+      this.elements.findingSeverityFilter.value = action;
+      this.activateQuickFilter("active");
+    }
+  }
+
   renderStatusDistribution(items) {
     this.elements.statusDistribution.innerHTML = items.length
-      ? items.slice(0, 6).map((item) => `<div><span>${this.readable(item.name)}</span><strong>${this.number(item.count)}</strong></div>`).join("")
+      ? items.slice(0, 6).map((item) => `<button type="button" data-finding-status="${this.escapeHtml(item.name)}"><span>${this.readable(item.name)}</span><strong>${this.number(item.count)}</strong></button>`).join("")
       : "";
   }
 
@@ -247,14 +340,40 @@ export class AspmWorkspace {
       this.elements.priorityAssetList.innerHTML = '<p class="empty-state">No application risk is available.</p>';
       return;
     }
-    this.elements.priorityAssetList.innerHTML = items.map((item) => `<div class="priority-item">
+    this.elements.priorityAssetList.innerHTML = items.map((item) => `<button class="priority-item" type="button" data-priority-asset="${this.escapeHtml(item.branch_inventory_id)}">
       <span class="priority-score">${this.number(item.max_risk_score)}</span>
       <span class="priority-copy">
         <strong>${this.escapeHtml(item.application || item.repository)}</strong>
         <small>${this.escapeHtml(`${item.organization || ""} / ${item.repository || ""} · ${item.branch || ""}`)}${item.data_types && item.data_types.length ? ` · ${this.escapeHtml(item.data_types.map((value) => this.readable(value)).join(", "))}` : ""}</small>
       </span>
       <span class="priority-meta">${this.number(item.active_findings)} active<br>${this.number(item.overdue_findings)} overdue</span>
-    </div>`).join("");
+    </button>`).join("");
+  }
+
+  openPriorityApplicationFindings(branchInventoryId) {
+    this.setActiveView("findingsView");
+    this.elements.findingSeverityFilter.value = "";
+    this.elements.findingStatusFilter.value = "";
+    this.elements.findingSearchQuery.value = "";
+    this.state.findingDrilldownFilters = {branch_inventory_id: Number(branchInventoryId)};
+    this.state.quickFilter = "active";
+    document.querySelectorAll("[data-finding-quick-filter]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.findingQuickFilter === "active");
+    });
+    this.searchFindings(0, true);
+  }
+
+  openStatusFindings(status) {
+    this.setActiveView("findingsView");
+    this.state.quickFilter = "all";
+    document.querySelectorAll("[data-finding-quick-filter]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.findingQuickFilter === "all");
+    });
+    this.elements.findingSeverityFilter.value = "";
+    this.elements.findingStatusFilter.value = status;
+    this.elements.findingSearchQuery.value = "";
+    this.state.findingDrilldownFilters = {};
+    this.searchFindings(0, true);
   }
 
   renderToolHealth(items) {
@@ -262,11 +381,22 @@ export class AspmWorkspace {
       this.elements.toolHealthGrid.innerHTML = '<p class="empty-state">Import scanner results to establish tool coverage.</p>';
       return;
     }
-    this.elements.toolHealthGrid.innerHTML = items.map((item) => `<div class="tool-health-item">
-      <span class="tool-health-heading"><strong>${this.escapeHtml(item.tool_name)}</strong><span class="status-chip ${item.last_import_status === "failed" ? "status-failed" : "status-succeeded"}">${this.escapeHtml(this.readable(item.last_import_status || "ready"))}</span></span>
+    this.elements.toolHealthGrid.innerHTML = items.map((item) => {
+      const status = item.last_import_status || "not_run";
+      const statusClass = status === "failed"
+        ? "status-failed"
+        : ["processing", "running"].includes(status)
+          ? "status-running"
+          : status === "completed" ? "status-succeeded" : "idle";
+      const source = item.last_import_source ? ` · ${this.readable(item.last_import_source)}` : "";
+      const timestamp = item.last_import_completed_at || item.last_import_at || item.last_seen_at;
+      return `<div class="tool-health-item">
+      <span class="tool-health-heading"><strong>${this.escapeHtml(item.tool_name)}</strong><span class="status-chip ${statusClass}">${this.escapeHtml(this.readable(status))}</span></span>
       <span>${this.number(item.covered_assets)} assets covered · ${this.number(item.active_findings)} active findings</span>
-      <small>Last import ${this.escapeHtml(this.formatDate(item.last_import_at || item.last_seen_at))}${item.last_import_error ? ` · ${this.escapeHtml(item.last_import_error)}` : ""}</small>
-    </div>`).join("");
+      <small>Latest ${this.escapeHtml(source ? `operation${source}` : "import")} ${this.escapeHtml(this.formatDate(timestamp))}${item.last_import_error ? ` · ${this.escapeHtml(item.last_import_error)}` : ""}</small>
+      ${status === "failed" ? '<button class="ghost small" type="button" data-tool-health-action="configuration">Review connection</button>' : ""}
+    </div>`;
+    }).join("");
   }
 
   async loadConnectors(force = false) {
@@ -275,7 +405,7 @@ export class AspmWorkspace {
     }
     this.setBusy("connectors", true);
     try {
-      const data = await this.postJson("/api/aspm/connectors/status", this.databasePayload());
+      const data = await this.postJson("/api/configuration/connectors", {});
       this.state.connectors = {items: data.connectors || [], syncs: data.syncs || [], loaded: true};
       this.state.refreshedAt.connectors = Date.now();
       this.renderConnectors();
@@ -297,15 +427,76 @@ export class AspmWorkspace {
       this.elements.connectorSyncSummary.textContent = "";
       return;
     }
-    this.elements.connectorGrid.innerHTML = connectors.map((connector) => `<label class="connector-item ${connector.configured ? "configured" : "not-configured"}">
-      <input type="checkbox" name="connectorSelection" value="${this.escapeHtml(connector.key)}" ${connector.configured ? "checked" : "disabled"}>
-      <span class="connector-copy"><strong>${this.escapeHtml(connector.name)}</strong><small>${this.escapeHtml(connector.message)}</small></span>
-      <span class="status-chip ${connector.configured ? "status-succeeded" : "idle"}">${connector.configured ? "Ready" : "Setup needed"}</span>
-    </label>`).join("");
+    this.elements.connectorGrid.innerHTML = connectors.map((connector) => {
+      const syncReady = connector.syncReady === true;
+      const managed = connector.configurationSource === "service";
+      const sarifProfile = connector.setup && connector.setup.type === "sarif_profile";
+      const action = syncReady
+        ? '<span class="status-chip status-succeeded">Ready</span>'
+        : `${managed ? '<span class="status-chip idle">Managed</span>' : ""}<button class="ghost small" type="button" data-connector-setup="${this.escapeHtml(connector.key)}">Configure</button>`;
+      const selection = `<label class="connector-select"><input type="checkbox" name="connectorSelection" value="${this.escapeHtml(connector.key)}" ${connector.configured ? "checked" : "disabled"} ${syncReady ? "" : "disabled"}><span class="connector-copy"><strong>${this.escapeHtml(connector.name)}</strong><small>${this.escapeHtml(connector.message)}</small></span></label>`;
+      return `<article class="connector-item ${connector.configured ? "configured" : "not-configured"}${sarifProfile ? " sarif-profile" : ""}">
+        ${selection}
+        <span class="connector-item-action">${action}</span>
+      </article>`;
+    }).join("");
     const latest = (this.state.connectors.syncs || [])[0];
     this.elements.connectorSyncSummary.textContent = latest
       ? `Latest sync: ${latest.connector_name} · ${this.readable(latest.status)} · ${this.formatDate(latest.completed_at || latest.started_at)}`
       : "No direct scanner sync has run for this account.";
+  }
+
+  openConnectorSetup(connectorKey) {
+    const connector = (this.state.connectors.items || []).find((item) => item.key === connectorKey);
+    if (!connector) {
+      return;
+    }
+    const setup = connector.setup || {type: "other", description: "", fields: []};
+    const configuration = connector.configuration || {};
+    const secrets = configuration.secrets || {};
+    this.elements.connectorSetupKey.value = connector.key;
+    this.elements.connectorSetupType.textContent = this.readable(setup.type || "scanner setup");
+    this.elements.connectorSetupTitle.textContent = `Configure ${connector.name}`;
+    this.elements.connectorSetupDescription.textContent = setup.description || "";
+    this.elements.connectorSetupStatus.textContent = "";
+    this.elements.connectorSetupFields.innerHTML = (setup.fields || []).map((field) => {
+      const stored = field.secret && secrets[field.key];
+      const value = field.secret ? "" : (configuration[field.key] || "");
+      const type = field.secret ? "password" : field.key === "endpoint" ? "url" : "text";
+      const required = field.required ? "required" : "";
+      const placeholder = stored ? "Stored value" : "";
+      return `<label><span>${this.escapeHtml(field.label)}${field.required ? ' <span class="field-badge required">Required</span>' : ' <span class="field-badge optional">Optional</span>'}</span><input data-connector-field="${this.escapeHtml(field.key)}" data-connector-secret="${field.secret ? "true" : "false"}" type="${type}" value="${this.escapeHtml(value)}" placeholder="${this.escapeHtml(placeholder)}" autocomplete="off" ${required}></label>`;
+    }).join("");
+    if (!this.elements.connectorSetupDialog.open) {
+      this.elements.connectorSetupDialog.showModal();
+    }
+  }
+
+  async saveConnectorSetup() {
+    const connector = this.elements.connectorSetupKey.value;
+    if (!connector) {
+      return;
+    }
+    const configuration = {};
+    this.elements.connectorSetupFields.querySelectorAll("[data-connector-field]").forEach((input) => {
+      const value = input.value.trim();
+      if (value || input.dataset.connectorSecret !== "true") {
+        configuration[input.dataset.connectorField] = value;
+      }
+    });
+    try {
+      this.elements.saveConnectorSetup.disabled = true;
+      this.elements.connectorSetupStatus.textContent = "Saving configuration";
+      await this.postJson("/api/configuration/connectors/save", {connector, configuration});
+      this.elements.connectorSetupStatus.textContent = "Saved.";
+      await this.loadConnectors(true);
+      this.notify("Scanner configuration saved.");
+      this.elements.connectorSetupDialog.close();
+    } catch (error) {
+      this.elements.connectorSetupStatus.textContent = error.message || "Scanner configuration could not be saved.";
+    } finally {
+      this.elements.saveConnectorSetup.disabled = false;
+    }
   }
 
   async syncConnectors() {
@@ -346,6 +537,31 @@ export class AspmWorkspace {
     }
   }
 
+  async testConnections() {
+    const connectors = Array.from(document.querySelectorAll('input[name="connectorSelection"]:checked'))
+      .map((input) => input.value);
+    this.elements.testConnectors.disabled = true;
+    this.elements.connectorSyncSummary.textContent = "Testing authenticated scanner connections.";
+    try {
+      const data = await this.postJson("/api/aspm/connectors/test", {
+        ...this.databasePayload(),
+        connectors,
+      });
+      const result = data.connectionTest || {};
+      const tested = result.results || [];
+      const errors = result.errors || [];
+      this.elements.connectorSyncSummary.textContent = errors.length
+        ? `${this.number(tested.length)} connection${tested.length === 1 ? "" : "s"} verified; ${this.number(errors.length)} failed.`
+        : `${this.number(tested.length)} scanner connection${tested.length === 1 ? "" : "s"} verified.`;
+      this.notify(this.elements.connectorSyncSummary.textContent);
+    } catch (error) {
+      this.elements.connectorSyncSummary.textContent = error.message || "Connection test failed.";
+      this.notify(error.message || "Connection test failed.");
+    } finally {
+      this.elements.testConnectors.disabled = false;
+    }
+  }
+
   async loadAssetRisks(offset = 0, force = false) {
     if (!force && this.state.busy.has("assetRisks")) {
       return;
@@ -360,26 +576,19 @@ export class AspmWorkspace {
         query: this.elements.assetRiskQuery.value.trim(),
         riskBands: this.elements.assetRiskBand.value ? [this.elements.assetRiskBand.value] : [],
         dataTypes: this.elements.assetRiskDataType.value ? [this.elements.assetRiskDataType.value] : [],
+        activeOnly: this.state.assetRisks.activeOnly === true,
         limit: this.state.assetRisks.limit,
         offset,
       });
-      if (requestId !== this.state.assetRiskRequest) {
-        return;
-      }
-      this.state.assetRisks = {...data.assets, loaded: true, assetRiskRequest: requestId};
+      this.state.assetRisks = {...data.assets, activeOnly: Boolean(data.assets.filters && data.assets.filters.activeOnly), loaded: true, assetRiskRequest: requestId};
       this.state.refreshedAt.assetRisks = Date.now();
       this.renderAssetRisks();
     } catch (error) {
-      if (requestId !== this.state.assetRiskRequest) {
-        return;
-      }
       this.elements.assetRiskSummary.textContent = "Asset risk unavailable";
       this.elements.assetRiskRows.innerHTML = `<tr><td class="database-empty-row" colspan="7">${this.escapeHtml(error.message || "Asset risk profiles could not be loaded.")}</td></tr>`;
       this.notify(error.message || "Asset risk profiles could not be loaded.");
     } finally {
-      if (requestId === this.state.assetRiskRequest) {
-        this.setBusy("assetRisks", false);
-      }
+      this.setBusy("assetRisks", false);
     }
   }
 
@@ -387,6 +596,7 @@ export class AspmWorkspace {
     this.elements.assetRiskQuery.value = "";
     this.elements.assetRiskBand.value = "";
     this.elements.assetRiskDataType.value = "";
+    this.state.assetRisks.activeOnly = false;
     this.loadAssetRisks(0, true);
   }
 
@@ -398,7 +608,7 @@ export class AspmWorkspace {
     this.elements.assetRiskPageSize.value = String(assets.limit);
     const start = assets.total ? assets.offset + 1 : 0;
     const end = Math.min(assets.offset + assets.rows.length, assets.total);
-    this.elements.assetRiskSummary.textContent = `${this.number(start)}-${this.number(end)} of ${this.number(assets.total)} assets`;
+    this.elements.assetRiskSummary.textContent = `${this.number(start)}-${this.number(end)} of ${this.number(assets.total)} ${assets.activeOnly ? "assets with active findings" : "assets"}`;
     this.elements.assetRiskPagePosition.textContent = `Page ${Math.floor(assets.offset / assets.limit) + 1} of ${Math.max(1, Math.ceil(assets.total / assets.limit))}`;
     this.elements.assetRiskRecordCount.textContent = `${this.number(assets.total)} matching assets`;
     this.elements.assetRiskPrevious.disabled = assets.offset <= 0;
@@ -485,8 +695,8 @@ export class AspmWorkspace {
     }
   }
 
-  async searchFindings(offset = 0) {
-    if (this.state.busy.has("findings")) {
+  async searchFindings(offset = 0, force = false) {
+    if (!force && this.state.busy.has("findings")) {
       return;
     }
     const requestId = this.state.findingRequest + 1;
@@ -526,7 +736,10 @@ export class AspmWorkspace {
   }
 
   findingFilters() {
-    const filters = {...this.quickFilterCriteria(this.state.quickFilter)};
+    const filters = {
+      ...this.quickFilterCriteria(this.state.quickFilter),
+      ...this.state.findingDrilldownFilters,
+    };
     if (this.elements.findingSeverityFilter.value) {
       filters.severities = [this.elements.findingSeverityFilter.value];
     }
@@ -553,6 +766,7 @@ export class AspmWorkspace {
 
   activateQuickFilter(name) {
     this.state.quickFilter = name;
+    this.state.findingDrilldownFilters = {};
     document.querySelectorAll("[data-finding-quick-filter]").forEach((button) => {
       button.classList.toggle("active", button.dataset.findingQuickFilter === name);
     });
@@ -564,6 +778,7 @@ export class AspmWorkspace {
     this.elements.findingSeverityFilter.value = "";
     this.elements.findingStatusFilter.value = "";
     this.elements.findingToolFilter.value = "";
+    this.state.findingDrilldownFilters = {};
     this.activateQuickFilter("active");
   }
 

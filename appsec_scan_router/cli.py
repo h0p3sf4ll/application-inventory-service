@@ -24,6 +24,7 @@ from .constants import (
     DEFAULT_TIMEOUT_SECONDS,
     KNOWN_INVENTORY_TYPES,
 )
+from .environment import project_environment
 from .github import (
     GitHubAppCredentials,
     configured_github_api_url,
@@ -38,6 +39,16 @@ from .observability import configure_logging as configure_observability_logging,
 from .org_tokens import parse_ado_org_pat_values
 from .scanner import normalize_application_types, normalize_store_countries, scan_reports, store_lookup_allowed
 from .target_filters import parse_source_target_filter_values
+from .webhooks import (
+    DEFAULT_WEBHOOK_BATCH_SIZE,
+    DEFAULT_WEBHOOK_RETRIES,
+    DEFAULT_WEBHOOK_TIMEOUT_SECONDS,
+    WebhookConfig,
+    WebhookConfigurationError,
+    configured_webhooks,
+    environment_headers,
+    parse_webhook_header_values,
+)
 
 
 LOGGER = logging.getLogger("appsec_scan_router")
@@ -250,6 +261,52 @@ def parse_args(argv: list[str]) -> ScanConfig:
         default=env_value("APPLICATION_INVENTORY_POSTGRES_TABLE", "APPSEC_INVENTORY_POSTGRES_TABLE") or DEFAULT_POSTGRES_TABLE,
         help=f"PostgreSQL compatibility table for flat inventory upserts. Defaults to {DEFAULT_POSTGRES_TABLE}.",
     )
+    parser.add_argument(
+        "--webhook-url",
+        default="",
+        help="HTTPS endpoint that receives complete inventory records as JSON batches.",
+    )
+    parser.add_argument(
+        "--webhook-bearer-token",
+        default=env_value("APPLICATION_INVENTORY_WEBHOOK_BEARER_TOKEN"),
+        help="Bearer token for the webhook endpoint. Prefer APPLICATION_INVENTORY_WEBHOOK_BEARER_TOKEN.",
+    )
+    parser.add_argument(
+        "--webhook-signing-secret",
+        default=env_value("APPLICATION_INVENTORY_WEBHOOK_SIGNING_SECRET"),
+        help="HMAC signing secret for webhook payloads. Prefer APPLICATION_INVENTORY_WEBHOOK_SIGNING_SECRET.",
+    )
+    parser.add_argument(
+        "--webhook-header",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="Additional webhook header. May be repeated.",
+    )
+    parser.add_argument(
+        "--webhook-timeout",
+        type=int,
+        default=env_value("APPLICATION_INVENTORY_WEBHOOK_TIMEOUT_SECONDS") or DEFAULT_WEBHOOK_TIMEOUT_SECONDS,
+        help=f"Webhook request timeout in seconds. Defaults to {DEFAULT_WEBHOOK_TIMEOUT_SECONDS}.",
+    )
+    parser.add_argument(
+        "--webhook-batch-size",
+        type=int,
+        default=env_value("APPLICATION_INVENTORY_WEBHOOK_BATCH_SIZE") or DEFAULT_WEBHOOK_BATCH_SIZE,
+        help=f"Number of inventory records per webhook batch. Defaults to {DEFAULT_WEBHOOK_BATCH_SIZE}.",
+    )
+    parser.add_argument(
+        "--webhook-retries",
+        type=int,
+        default=env_value("APPLICATION_INVENTORY_WEBHOOK_RETRIES") or DEFAULT_WEBHOOK_RETRIES,
+        help=f"Additional retries for temporary webhook failures. Defaults to {DEFAULT_WEBHOOK_RETRIES}.",
+    )
+    parser.add_argument(
+        "--webhook-delivery-mode",
+        choices=("batch", "record"),
+        default=env_value("APPLICATION_INVENTORY_WEBHOOK_DELIVERY_MODE") or "batch",
+        help="Use batch for envelope payloads or record for one complete row per request.",
+    )
     parser.add_argument("--owner-user-id", default=env_value("APPLICATION_INVENTORY_OWNER_USER_ID", "APPSEC_INVENTORY_OWNER_USER_ID") or "anonymous", help=argparse.SUPPRESS)
     parser.add_argument("--owner-user-login", default=env_value("APPLICATION_INVENTORY_OWNER_USER_LOGIN", "APPSEC_INVENTORY_OWNER_USER_LOGIN") or "anonymous", help=argparse.SUPPRESS)
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging.")
@@ -263,6 +320,10 @@ def parse_args(argv: list[str]) -> ScanConfig:
     target_filters = collect_target_filters(args)
     github_urls = collect_github_urls(args)
     validate_args(args, application_types, ado_org_pats, github_urls)
+    webhooks = configured_webhooks()
+    webhook = webhook_config_from_args(args)
+    if webhook:
+        webhooks = (*webhooks, webhook)
     token = provider_token(args)
     if args.provider == "azure-devops" and ado_org_pats:
         token = ""
@@ -313,6 +374,8 @@ def parse_args(argv: list[str]) -> ScanConfig:
             "GHE_APP_PRIVATE_KEY",
         ),
         github_app_private_key_file=args.github_app_private_key_file,
+        webhook=webhook,
+        webhooks=webhooks,
     )
 
 
@@ -485,15 +548,36 @@ def env_value(*names: str) -> str:
     return ""
 
 
-def main(argv: list[str] | None = None) -> int:
-    config = parse_args(sys.argv[1:] if argv is None else argv)
+def webhook_config_from_args(args: argparse.Namespace) -> WebhookConfig | None:
+    if not args.webhook_url:
+        return None
     try:
-        result_count, xlsx_path, semgrep_path, sonarqube_path = scan_reports(config)
-    except AzureDevOpsError as exc:
-        LOGGER.error("Scan aborted: %s", exc)
-        return 1
-    print(f"Done. Inventoried {result_count} repositories or branches.")
-    print(f"XLSX:              {xlsx_path}")
-    print(f"Semgrep targets:   {semgrep_path}")
-    print(f"SonarQube targets: {sonarqube_path}")
-    return 0
+        headers = dict(environment_headers())
+        headers.update(parse_webhook_header_values(args.webhook_header))
+        return WebhookConfig.from_values(
+            args.webhook_url,
+            headers=headers,
+            bearer_token=args.webhook_bearer_token,
+            signing_secret=args.webhook_signing_secret,
+            timeout_seconds=args.webhook_timeout,
+            batch_size=args.webhook_batch_size,
+            retries=args.webhook_retries,
+            delivery_mode=args.webhook_delivery_mode,
+        )
+    except WebhookConfigurationError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def main(argv: list[str] | None = None) -> int:
+    with project_environment():
+        config = parse_args(sys.argv[1:] if argv is None else argv)
+        try:
+            result_count, xlsx_path, semgrep_path, sonarqube_path = scan_reports(config)
+        except AzureDevOpsError as exc:
+            LOGGER.error("Scan aborted: %s", exc)
+            return 1
+        print(f"Done. Inventoried {result_count} repositories or branches.")
+        print(f"XLSX:              {xlsx_path}")
+        print(f"Semgrep targets:   {semgrep_path}")
+        print(f"SonarQube targets: {sonarqube_path}")
+        return 0

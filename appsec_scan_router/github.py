@@ -857,6 +857,48 @@ def configured_github_installation_id() -> str:
     )
 
 
+def github_app_public_config() -> dict[str, str | bool]:
+    app_id = configured_github_app_id()
+    installation_id = configured_github_installation_id()
+    private_key_file = github_env_value(
+        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
+        "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE",
+        "GITHUB_APP_PRIVATE_KEY_FILE",
+        "GHE_APP_PRIVATE_KEY_FILE",
+    )
+    private_key = github_env_value(
+        "APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY",
+        "APPSEC_INVENTORY_GITHUB_APP_PRIVATE_KEY",
+        "GITHUB_APP_PRIVATE_KEY",
+        "GHE_APP_PRIVATE_KEY",
+    )
+    try:
+        credentials = GitHubAppCredentials.from_env()
+    except ValueError as exc:
+        return {
+            "configured": False,
+            "appId": app_id,
+            "installationId": installation_id,
+            "keySource": "",
+            "message": str(exc),
+        }
+    if not credentials:
+        return {
+            "configured": False,
+            "appId": app_id,
+            "installationId": installation_id,
+            "keySource": "",
+            "message": "GitHub App credentials are not configured.",
+        }
+    return {
+        "configured": True,
+        "appId": credentials.app_id,
+        "installationId": credentials.installation_id,
+        "keySource": "pem_file" if private_key_file else "managed_secret" if private_key else "",
+        "message": "GitHub App is configured.",
+    }
+
+
 def parse_github_expiry(value: Any) -> float:
     if not isinstance(value, str) or not value:
         return 0.0

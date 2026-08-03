@@ -56,6 +56,7 @@ QUERY_FIELDS = frozenset(
         "updated_within_days",
         "older_than_days",
         "has_domain",
+        "has_active_findings",
         "has_mobile_identifier",
         "store_validation_passed",
         "sort_by",
@@ -110,6 +111,7 @@ class InventorySearchCriteria:
     updated_within_days: int | None = None
     older_than_days: int | None = None
     has_domain: bool | None = None
+    has_active_findings: bool | None = None
     has_mobile_identifier: bool | None = None
     store_validation_passed: bool | None = None
     sort_by: str = "updated"
@@ -146,6 +148,7 @@ class InventorySearchCriteria:
             updated_within_days=bounded_days(source.get("updated_within_days")),
             older_than_days=bounded_days(source.get("older_than_days")),
             has_domain=optional_bool(source.get("has_domain")),
+            has_active_findings=optional_bool(source.get("has_active_findings")),
             has_mobile_identifier=optional_bool(source.get("has_mobile_identifier")),
             store_validation_passed=optional_bool(
                 source.get("store_validation_passed")
@@ -178,6 +181,7 @@ class InventorySearchCriteria:
             "updated_within_days": self.updated_within_days,
             "older_than_days": self.older_than_days,
             "has_domain": self.has_domain,
+            "has_active_findings": self.has_active_findings,
             "has_mobile_identifier": self.has_mobile_identifier,
             "store_validation_passed": self.store_validation_passed,
             "sort_by": self.sort_by,
@@ -247,6 +251,12 @@ def criteria_summary(criteria: InventorySearchCriteria) -> str:
     if criteria.has_domain is not None:
         parts.append(
             "with a web domain" if criteria.has_domain else "without a web domain"
+        )
+    if criteria.has_active_findings is not None:
+        parts.append(
+            "with active findings"
+            if criteria.has_active_findings
+            else "without active findings"
         )
     if criteria.has_mobile_identifier is not None:
         parts.append(

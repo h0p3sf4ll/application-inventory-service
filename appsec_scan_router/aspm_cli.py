@@ -12,6 +12,7 @@ from .aspm_connectors import CONNECTOR_KEYS
 from .aspm_ingest import SUPPORTED_FINDING_FORMATS
 from .aspm_models import FindingSeverity, FindingStatus, bounded_text
 from .constants import DEFAULT_POSTGRES_SCHEMA
+from .environment import project_environment
 from .sdk import AspmService
 
 
@@ -155,30 +156,31 @@ def add_profile_parser(commands: Any) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    try:
-        service = AspmService(
-            args.postgres_dsn,
-            args.postgres_schema,
-            args.owner_user_id,
-            args.owner_user_login,
-        )
-        result = execute(service, args, parser)
-        if result is not None:
-            write_json(result)
-        if (
-            args.command == "connectors"
-            and args.action == "sync"
-            and isinstance(result, dict)
-            and result.get("status") == "failed"
-        ):
-            return 1
-        return 0
-    except (OSError, ValueError, KeyError, RuntimeError) as exc:
-        message = str(exc).strip("'")
-        parser.exit(2, f"error: {message}\n")
-    return 2
+    with project_environment():
+        parser = build_parser()
+        args = parser.parse_args(argv)
+        try:
+            service = AspmService(
+                args.postgres_dsn,
+                args.postgres_schema,
+                args.owner_user_id,
+                args.owner_user_login,
+            )
+            result = execute(service, args, parser)
+            if result is not None:
+                write_json(result)
+            if (
+                args.command == "connectors"
+                and args.action == "sync"
+                and isinstance(result, dict)
+                and result.get("status") == "failed"
+            ):
+                return 1
+            return 0
+        except (OSError, ValueError, KeyError, RuntimeError) as exc:
+            message = str(exc).strip("'")
+            parser.exit(2, f"error: {message}\n")
+        return 2
 
 
 def execute(

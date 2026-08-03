@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 from .aspm_connector_http import ConnectorError, JsonApiClient, positive_env_int
@@ -90,17 +90,28 @@ query InventoryFindings($limit: Int!, $offset: Int!) {
 }
 """.strip()
 
+NOWSECURE_CONNECTION_QUERY = """
+query ConnectionCheck {
+    auto {
+        applications(limit: 1, offset: 0) { ref }
+    }
+}
+""".strip()
+
 
 class NowSecureConnector:
     key = "nowsecure"
     name = "NowSecure"
     supports_streaming = True
 
-    def __init__(self, timeout_seconds: int = 30) -> None:
-        self.token = os.getenv(
+    def __init__(
+        self, timeout_seconds: int = 30, configuration: Mapping[str, Any] | None = None
+    ) -> None:
+        settings = dict(configuration or {})
+        self.token = str(settings.get("token") or "").strip() or os.getenv(
             "APPLICATION_INVENTORY_NOWSECURE_TOKEN", ""
         ).strip() or os.getenv("NOWSECURE_TOKEN", "").strip()
-        self.endpoint = os.getenv(
+        self.endpoint = str(settings.get("endpoint") or "").strip() or os.getenv(
             "APPLICATION_INVENTORY_NOWSECURE_API_URL", DEFAULT_NOWSECURE_API_URL
         ).strip()
         self.client = (
@@ -128,6 +139,16 @@ class NowSecureConnector:
     def close(self) -> None:
         if self.client:
             self.client.close()
+
+    def test_connection(self) -> dict[str, str]:
+        if not self.client:
+            raise ValueError(self.status().message)
+        response = self.client.post("", {"query": NOWSECURE_CONNECTION_QUERY, "variables": {}})
+        errors = sequence(response.get("errors"))
+        if errors:
+            message = bounded_text(mapping(errors[0]).get("message"), 1000)
+            raise ConnectorError(f"NowSecure connection check failed: {message}")
+        return {"account": "verified"}
 
     def pull(self) -> ConnectorPullResult:
         findings: list[FindingInput] = []

@@ -44,10 +44,24 @@ from .constants import (
     DEFAULT_SOURCE_WORKERS,
     KNOWN_INVENTORY_TYPES,
 )
+from .environment import project_environment
 from .github import (
     configured_github_app_id,
     configured_github_installation_id,
     configured_github_owners,
+    github_app_public_config,
+)
+from .integrations import (
+    connector_configurations,
+    delete_webhook,
+    public_connector_configuration,
+    public_webhooks,
+    remediation_policy,
+    upsert_connector_configuration,
+    upsert_remediation_policy,
+    upsert_webhook,
+    webhook_environment_value,
+    webhook_configurations,
 )
 from .observability import configure_logging, log_github_app_context, observability_dsn
 from .local_llm import LocalInventoryAssistant
@@ -75,6 +89,7 @@ from .scan_request import (
 from .scheduling import ScanScheduler
 from .source_discovery import discover_source_targets
 from .target_filters import parse_source_target_filter_values, target_filter_value
+from .webhooks import WebhookDeliveryError, WebhookPublisher
 
 
 DEFAULT_UI_HOST = "127.0.0.1"
@@ -222,6 +237,30 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         if path == "/api/credentials/delete":
             self.handle_delete_credential()
             return
+        if path == "/api/configuration/webhooks":
+            self.handle_configuration_webhooks()
+            return
+        if path == "/api/configuration/webhooks/save":
+            self.handle_configuration_webhook_save()
+            return
+        if path == "/api/configuration/webhooks/delete":
+            self.handle_configuration_webhook_delete()
+            return
+        if path == "/api/configuration/webhooks/test":
+            self.handle_configuration_webhook_test()
+            return
+        if path == "/api/configuration/connectors":
+            self.handle_configuration_connectors()
+            return
+        if path == "/api/configuration/connectors/save":
+            self.handle_configuration_connector_save()
+            return
+        if path == "/api/configuration/remediation-policy":
+            self.handle_configuration_remediation_policy()
+            return
+        if path == "/api/configuration/remediation-policy/save":
+            self.handle_configuration_remediation_policy_save()
+            return
         if path == "/api/database/status":
             self.handle_database_status()
             return
@@ -269,6 +308,9 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/aspm/connectors/sync":
             self.handle_aspm_connector_sync()
+            return
+        if path == "/api/aspm/connectors/test":
+            self.handle_aspm_connector_test()
             return
         if path == "/api/aspm/connectors/history":
             self.handle_aspm_connector_history()
@@ -576,6 +618,177 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
         self.send_json({"session": self.auth.status(record)})
+
+    def handle_configuration_webhooks(self) -> None:
+        record = self.current_session()
+        if not self.valid_csrf(record):
+            return
+        self.send_json(
+            {"webhooks": public_webhooks(self.auth.integrations(owner_scope(record)))}
+        )
+
+    def handle_configuration_webhook_save(self) -> None:
+        try:
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
+            payload = self.read_json()
+            webhook = payload.get("webhook")
+            if not isinstance(webhook, dict):
+                raise ValueError("Webhook configuration is required.")
+            owner = owner_scope(record)
+            integrations = upsert_webhook(self.auth.integrations(owner), webhook)
+            self.auth.save_integrations(owner, integrations)
+            saved_id = clean_text(webhook.get("id")) or integrations["webhooks"][-1]["id"]
+            saved = next(item for item in public_webhooks(integrations) if item["id"] == saved_id)
+            self.send_json({"webhook": saved}, HTTPStatus.CREATED)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def handle_configuration_webhook_delete(self) -> None:
+        try:
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
+            payload = self.read_json()
+            owner = owner_scope(record)
+            integrations = delete_webhook(self.auth.integrations(owner), payload.get("id"))
+            self.auth.save_integrations(owner, integrations)
+            self.send_json({"webhooks": public_webhooks(integrations)})
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def handle_configuration_webhook_test(self) -> None:
+        publisher = None
+        try:
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
+            payload = self.read_json()
+            integrations = self.auth.integrations(owner_scope(record))
+            target = clean_text(payload.get("id"))
+            matching = [
+                item for item in integrations.get("webhooks", []) if item.get("id") == target
+            ]
+            if not matching:
+                raise ValueError("Webhook was not found.")
+            configurations = webhook_configurations({"webhooks": matching})
+            if not configurations:
+                raise ValueError("Enable the webhook before testing it.")
+            publisher = WebhookPublisher(
+                configurations[0], "application_inventory.configuration.test"
+            )
+            publisher.publish(
+                {"type": "configuration_test", "ownerUserId": owner_scope(record)}
+            )
+            delivery = publisher.close()
+            self.send_json(
+                {"delivery": {"records": delivery.records, "batches": delivery.batches}}
+            )
+        except (ValueError, WebhookDeliveryError) as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        finally:
+            if publisher:
+                publisher.close()
+
+    def handle_configuration_connectors(self) -> None:
+        service = None
+        try:
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
+            owner = owner_scope(record)
+            integrations = self.auth.integrations(owner)
+            service = ConnectorService(
+                None,
+                owner,
+                owner_login(record),
+                connector_configurations=connector_configurations(integrations),
+            )
+            self.send_json(
+                {
+                    "connectors": [
+                        {
+                            **item,
+                            "configuration": public_connector_configuration(
+                                integrations, item["key"]
+                            ),
+                        }
+                        for item in service.status()
+                    ]
+                }
+            )
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        finally:
+            if service:
+                service.close()
+
+    def handle_configuration_connector_save(self) -> None:
+        try:
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
+            payload = self.read_json()
+            connector = clean_text(payload.get("connector"))
+            configuration = payload.get("configuration")
+            if not isinstance(configuration, dict):
+                raise ValueError("Connector configuration is required.")
+            owner = owner_scope(record)
+            integrations = upsert_connector_configuration(
+                self.auth.integrations(owner), connector, configuration
+            )
+            self.auth.save_integrations(owner, integrations)
+            self.send_json(
+                {
+                    "connector": connector,
+                    "configuration": public_connector_configuration(
+                        integrations, connector
+                    ),
+                },
+                HTTPStatus.CREATED,
+            )
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+
+    def handle_configuration_remediation_policy(self) -> None:
+        record = self.current_session()
+        if not self.valid_csrf(record):
+            return
+        policy = remediation_policy(self.auth.integrations(owner_scope(record)))
+        self.send_json(
+            {
+                "policy": policy,
+                "overdueDefinition": "An active finding is overdue after its due date passes.",
+            }
+        )
+
+    def handle_configuration_remediation_policy_save(self) -> None:
+        try:
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
+            payload = self.read_json()
+            policy = payload.get("policy")
+            if not isinstance(policy, dict):
+                raise ValueError("Remediation policy is required.")
+            owner = owner_scope(record)
+            integrations = upsert_remediation_policy(
+                self.auth.integrations(owner), policy
+            )
+            config = normalize_database_config(payload)
+            repository = AspmRepository(
+                config["postgresDsn"],
+                config["postgresSchema"],
+                remediation_policy=remediation_policy(integrations),
+            )
+            result = repository.update_remediation_policy(
+                owner, remediation_policy(integrations)
+            )
+            self.auth.save_integrations(owner, integrations)
+            self.send_json({"remediation": result}, HTTPStatus.CREATED)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
     def handle_database_status(self) -> None:
         try:
@@ -988,6 +1201,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                 query=clean_text(payload.get("query")),
                 risk_bands=risk_bands if isinstance(risk_bands, list) else None,
                 data_types=data_types if isinstance(data_types, list) else None,
+                active_only=payload.get("activeOnly") is True,
                 limit=positive_int(payload.get("limit"), 25),
                 offset=max(0, integer_value(payload.get("offset"), 0)),
             )
@@ -1008,6 +1222,9 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                 owner_scope(record),
                 owner_login(record),
                 positive_int(payload.get("timeout"), 30),
+                connector_configurations=connector_configurations(
+                    self.auth.integrations(owner_scope(record))
+                ),
             )
             self.send_json(
                 {
@@ -1036,6 +1253,9 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                 owner_scope(record),
                 owner_login(record),
                 positive_int(payload.get("timeout"), 30),
+                connector_configurations=connector_configurations(
+                    self.auth.integrations(owner_scope(record))
+                ),
             )
             result = service.sync(connectors)
             status = {
@@ -1054,6 +1274,38 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except Exception:
             self.handle_aspm_error("connectors.sync")
+        finally:
+            if service:
+                service.close()
+
+    def handle_aspm_connector_test(self) -> None:
+        service = None
+        try:
+            record, repository, payload = self.aspm_request()
+            if not record:
+                return
+            values = payload.get("connectors")
+            connectors = values if isinstance(values, list) else None
+            service = ConnectorService(
+                repository,
+                owner_scope(record),
+                owner_login(record),
+                positive_int(payload.get("timeout"), 30),
+                connector_configurations=connector_configurations(
+                    self.auth.integrations(owner_scope(record))
+                ),
+            )
+            result = service.test_connections(connectors)
+            status = {
+                "completed": HTTPStatus.OK,
+                "partial": HTTPStatus.MULTI_STATUS,
+                "failed": HTTPStatus.BAD_GATEWAY,
+            }[result["status"]]
+            self.send_json({"connectionTest": result}, status)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception:
+            self.handle_aspm_error("connectors.test")
         finally:
             if service:
                 service.close()
@@ -1083,9 +1335,14 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             return None, None, {}
         payload = self.read_json(max_bytes=max_bytes)
         config = normalize_database_config(payload)
+        owner = owner_scope(record)
         return (
             record,
-            AspmRepository(config["postgresDsn"], config["postgresSchema"]),
+            AspmRepository(
+                config["postgresDsn"],
+                config["postgresSchema"],
+                remediation_policy=remediation_policy(self.auth.integrations(owner)),
+            ),
             payload,
         )
 
@@ -1396,6 +1653,7 @@ def default_ui_config(
             ],
             "secureStorage": True,
         },
+        "githubApp": github_app_public_config(),
         "database": public_database_status(database),
         "localLlm": local_llm
         or {
@@ -1413,6 +1671,15 @@ def public_database_status(status: dict[str, Any] | None) -> dict[str, Any] | No
         return None
     keys = ("connected", "status", "message", "schema", "checkedAt", "latencyMs")
     return {key: status[key] for key in keys if key in status}
+
+
+def scan_environment_for_user(config: dict[str, Any], auth: AuthManager) -> dict[str, str]:
+    environment = scan_environment(config)
+    owner = clean_text(config.get("ownerUserId"))
+    serialized = webhook_environment_value(auth.integrations(owner)) if owner else "[]"
+    if serialized != "[]":
+        environment["APPLICATION_INVENTORY_WEBHOOK_CONFIGURATIONS"] = serialized
+    return environment
 
 
 def static_asset_path(name: str) -> Path:
@@ -1608,11 +1875,12 @@ def secure_cookie() -> bool:
 def serve(host: str, port: int, reports_dir: Path) -> None:
     resolved_reports_root = reports_dir.resolve()
     service_state_dir = auth_state_dir(resolved_reports_root)
+    auth = AuthManager(resolved_reports_root)
     manager = ScanManager(
         reports_root=resolved_reports_root,
         normalize_config=normalize_scan_config,
         build_command=build_scan_command,
-        build_environment=scan_environment,
+        build_environment=lambda config: scan_environment_for_user(config, auth),
         redact_command=redact_command,
         max_concurrent_scans=positive_int(
             env_value(
@@ -1623,7 +1891,6 @@ def serve(host: str, port: int, reports_dir: Path) -> None:
         ),
         state_dir=service_state_dir,
     )
-    auth = AuthManager(manager.reports_root)
     scheduler = ScanScheduler(manager, service_state_dir)
     startup_database_config = normalize_database_config({})
     startup_database = database_status(
@@ -1750,11 +2017,12 @@ AppSecScanRouterHandler = ApplicationInventoryServiceHandler
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(sys.argv[1:] if argv is None else argv)
-    if args.port < 1 or args.port > 65535:
-        raise SystemExit("--port must be between 1 and 65535.")
-    serve(args.host, args.port, args.reports_dir)
-    return 0
+    with project_environment():
+        args = parse_args(sys.argv[1:] if argv is None else argv)
+        if args.port < 1 or args.port > 65535:
+            raise SystemExit("--port must be between 1 and 65535.")
+        serve(args.host, args.port, args.reports_dir)
+        return 0
 
 
 if __name__ == "__main__":

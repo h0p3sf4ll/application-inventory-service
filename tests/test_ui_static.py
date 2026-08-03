@@ -69,7 +69,8 @@ class UiStaticTests(unittest.TestCase):
         stylesheet = (static_root / "styles.css").read_text(encoding="utf-8")
 
         self.assertIn('class="risk-pie"', javascript)
-        self.assertIn("stroke-dasharray", javascript)
+        self.assertIn("donutSegmentPath", javascript)
+        self.assertIn("data-risk-severity", javascript)
         self.assertNotIn('style="width:${width}%"', javascript)
         self.assertIn(".risk-pie-segment", stylesheet)
 
@@ -188,7 +189,7 @@ class UiStaticTests(unittest.TestCase):
             'this.elements.assetRiskPageSize.addEventListener("change"', javascript
         )
         self.assertIn("[25, 50, 100].includes(limit)", javascript)
-        self.assertIn("requestId !== this.state.assetRiskRequest", javascript)
+        self.assertIn("activeOnly: this.state.assetRisks.activeOnly === true", javascript)
 
     def test_findings_pagination_and_dense_table_layout(self):
         static_root = (
@@ -255,7 +256,7 @@ class UiStaticTests(unittest.TestCase):
 
         parser = UiStructureParser()
         parser.feed(html)
-        self.assertIn("postureView", parser.views)
+        self.assertIn("dashboardView", parser.views)
         self.assertIn("findingsView", parser.views)
         self.assertIn("coverageView", parser.views)
         self.assertIn('id="findingImportFile"', html)
@@ -265,6 +266,107 @@ class UiStaticTests(unittest.TestCase):
         self.assertIn('"/api/aspm/findings/import"', aspm_javascript)
         self.assertIn('"/api/aspm/findings/update"', aspm_javascript)
         self.assertIn('"/api/aspm/coverage"', aspm_javascript)
+
+    def test_configuration_view_owns_connectors_webhooks_and_setup_wizard(self):
+        static_root = (
+            Path(__file__).resolve().parents[1] / "appsec_scan_router" / "ui_static"
+        )
+        index_path = static_root / "index.html"
+        html = index_path.read_text(encoding="utf-8")
+        parser = UiStructureParser()
+        parser.feed(html)
+
+        self.assertIn('data-view="databaseView"', html)
+        self.assertIn(">Configuration</button>", html)
+        self.assertIn("connectorGrid", parser.ancestors_by_id)
+        self.assertIn("databaseView", parser.ancestors_by_id["connectorGrid"])
+        self.assertNotIn("postureView", parser.ancestors_by_id["connectorGrid"])
+        self.assertIn('id="webhookForm"', html)
+        self.assertIn('id="webhookList"', html)
+        self.assertIn('id="connectorSetupDialog"', html)
+        self.assertIn('id="connectorSetupFields"', html)
+
+    def test_configuration_frontend_manages_webhooks_and_connector_setup(self):
+        static_root = (
+            Path(__file__).resolve().parents[1] / "appsec_scan_router" / "ui_static"
+        )
+        html = (static_root / "index.html").read_text(encoding="utf-8")
+        app_javascript = (static_root / "app.js").read_text(encoding="utf-8")
+        aspm_javascript = (static_root / "aspm-ui.js").read_text(encoding="utf-8")
+
+        self.assertIn('"/api/configuration/webhooks"', app_javascript)
+        self.assertIn('"/api/configuration/webhooks/save"', app_javascript)
+        self.assertIn('"/api/configuration/webhooks/delete"', app_javascript)
+        self.assertIn('"/api/configuration/webhooks/test"', app_javascript)
+        self.assertIn("saveWebhook", app_javascript)
+        self.assertIn("renderWebhooks", app_javascript)
+        self.assertIn('"/api/configuration/connectors/save"', aspm_javascript)
+        self.assertIn("openConnectorSetup", aspm_javascript)
+        self.assertIn("saveConnectorSetup", aspm_javascript)
+        self.assertIn("connector.syncReady", aspm_javascript)
+        self.assertIn("Managed", aspm_javascript)
+        self.assertNotIn("data-connector-import", aspm_javascript)
+        self.assertIn("sarif_profile", aspm_javascript)
+        self.assertIn("connector.configured ? \"checked\"", aspm_javascript)
+        self.assertIn('id="toggleFindingImport" type="button">Import SARIF</button>', html)
+        self.assertIn('id="githubAppStatus"', html)
+        self.assertIn('id="githubAppConfigurationStatus"', html)
+        self.assertIn("state.githubApp", app_javascript)
+        self.assertIn("renderGithubAppStatus", app_javascript)
+        self.assertIn('id="remediationPolicyForm"', html)
+        self.assertIn('id="remediationCriticalDays"', html)
+        self.assertIn('id="saveRemediationPolicy"', html)
+        self.assertIn("An active finding is overdue after its due date passes.", html)
+        self.assertIn('"/api/configuration/remediation-policy/save"', app_javascript)
+        self.assertIn('id="testConnectors"', html)
+        self.assertIn("testConnections", aspm_javascript)
+        self.assertIn('"/api/aspm/connectors/test"', aspm_javascript)
+
+    def test_appsec_atlas_uses_left_navigation_and_visible_database_connection(self):
+        static_root = (
+            Path(__file__).resolve().parents[1] / "appsec_scan_router" / "ui_static"
+        )
+        html = (static_root / "index.html").read_text(encoding="utf-8")
+        stylesheet = (static_root / "styles.css").read_text(encoding="utf-8")
+        aspm_javascript = (static_root / "aspm-ui.js").read_text(encoding="utf-8")
+
+        self.assertIn("AppSec Atlas", html)
+        self.assertIn("Application Security Posture Management", html)
+        self.assertIn('class="app-nav app-sidebar-nav"', html)
+        self.assertIn("grid-template-columns: 224px minmax(0, 1fr)", stylesheet)
+        self.assertIn('id="databaseConnectionTitle"', html)
+        self.assertIn(">Database connection</h3>", html)
+        self.assertNotIn("<summary>\n                <span>Connection settings</span>", html)
+        self.assertIn(">Configure</button>", aspm_javascript)
+
+    def test_dashboard_kpis_drill_down_and_risk_chart_has_hover_details(self):
+        static_root = (
+            Path(__file__).resolve().parents[1] / "appsec_scan_router" / "ui_static"
+        )
+        html = (static_root / "index.html").read_text(encoding="utf-8")
+        app_javascript = (static_root / "app.js").read_text(encoding="utf-8")
+        aspm_javascript = (static_root / "aspm-ui.js").read_text(encoding="utf-8")
+        posture_javascript = (static_root / "aspm" / "posture.js").read_text(encoding="utf-8")
+
+        self.assertIn('data-view="dashboardView"', html)
+        self.assertIn(">Dashboard</button>", html)
+        self.assertIn('data-dashboard-action="affected-assets"', html)
+        self.assertIn('data-dashboard-action="overdue"', html)
+        self.assertIn('data-dashboard-action="average-risk"', html)
+        self.assertNotIn('id="startScan"', html)
+        self.assertNotIn('id="refreshScans"', html)
+        self.assertIn(">Scan</button>", html)
+        self.assertIn("openDashboardAction", aspm_javascript)
+        self.assertIn("activateQuickFilter(\"overdue\")", aspm_javascript)
+        self.assertIn("openPriorityApplicationFindings", aspm_javascript)
+        self.assertIn("openStatusFindings", aspm_javascript)
+        self.assertIn("data-priority-asset", aspm_javascript)
+        self.assertIn("data-finding-status", aspm_javascript)
+        self.assertIn("riskDistributionTooltip", aspm_javascript)
+        self.assertIn("risk-pie-tooltip", posture_javascript)
+        self.assertIn("data-risk-severity", posture_javascript)
+        self.assertNotIn("startScanButton", app_javascript)
+        self.assertNotIn("refreshButton", app_javascript)
 
 
 if __name__ == "__main__":

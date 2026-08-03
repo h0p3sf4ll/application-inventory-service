@@ -3,16 +3,16 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Application Security Posture Management</title>
-    <link rel="stylesheet" href="/static/styles.css?v=17">
+    <title>AppSec Atlas | Application Security Posture Management</title>
+    <link rel="stylesheet" href="/static/styles.css?v=27">
   </head>
   <body class="login-mode">
     <main class="login-shell" id="loginPage">
       <section class="login-brand">
         <div class="login-brand-copy">
-          <p class="eyebrow">Application security</p>
-          <h1>Application Security Posture Management</h1>
-          <p>Unify application inventory, security findings, risk, scanner coverage, and remediation.</p>
+          <p class="eyebrow">Application security posture management</p>
+          <h1>AppSec Atlas</h1>
+          <p>Application Security Posture Management for inventory, findings, risk, scanner coverage, and remediation.</p>
         </div>
       </section>
       <section class="login-panel" aria-labelledby="loginTitle">
@@ -56,8 +56,8 @@
     <main class="shell" id="appShell" hidden>
       <header class="topbar">
         <div class="topbar-brand">
-          <p class="eyebrow">Application security</p>
-          <h1>Application Security Posture Management</h1>
+          <p class="eyebrow">Application security posture management</p>
+          <h1>AppSec Atlas</h1>
           <p class="topbar-subtitle">Prioritize risk, close coverage gaps, and coordinate remediation.</p>
         </div>
         <div class="topbar-actions">
@@ -65,70 +65,67 @@
             <span id="authStatus">Checking sign-in</span>
             <button class="ghost small hidden" id="logoutGitHub" type="button">Sign out</button>
           </div>
-          <button class="ghost" id="refreshScans" type="button">Refresh</button>
-          <button class="primary" id="startScan" type="button">Run scan</button>
         </div>
       </header>
 
-      <nav class="app-nav" aria-label="Application pages" role="tablist">
-        <button class="tab-button active" type="button" data-view="postureView" role="tab" aria-controls="postureView" aria-selected="true">Posture</button>
+      <nav class="app-nav app-sidebar-nav" aria-label="Application pages" role="tablist">
+        <button class="tab-button active" type="button" data-view="dashboardView" role="tab" aria-controls="dashboardView" aria-selected="true">Dashboard</button>
         <button class="tab-button" type="button" data-view="findingsView" role="tab" aria-controls="findingsView" aria-selected="false">Findings</button>
         <button class="tab-button" type="button" data-view="riskProfilesView" role="tab" aria-controls="riskProfilesView" aria-selected="false">Asset risk</button>
         <button class="tab-button" type="button" data-view="inventoryView" role="tab" aria-controls="inventoryView" aria-selected="false">Inventory</button>
         <button class="tab-button" type="button" data-view="coverageView" role="tab" aria-controls="coverageView" aria-selected="false">Coverage</button>
-        <button class="tab-button" type="button" data-view="setupView" role="tab" aria-controls="setupView" aria-selected="false">New scan</button>
+        <button class="tab-button" type="button" data-view="setupView" role="tab" aria-controls="setupView" aria-selected="false">Scan</button>
         <button class="tab-button" type="button" data-view="runsView" role="tab" aria-controls="runsView" aria-selected="false">Runs</button>
         <button class="tab-button" type="button" data-view="schedulesView" role="tab" aria-controls="schedulesView" aria-selected="false">Schedules</button>
         <button class="tab-button" type="button" data-view="reportsView" role="tab" aria-controls="reportsView" aria-selected="false">Reports</button>
-        <button class="tab-button" type="button" data-view="databaseView" role="tab" aria-controls="databaseView" aria-selected="false">Settings</button>
+        <button class="tab-button" type="button" data-view="databaseView" role="tab" aria-controls="databaseView" aria-selected="false">Configuration</button>
       </nav>
 
       <section class="layout">
         <form class="page-form" id="scanForm">
-          <section class="panel aspm-panel tab-view active" id="postureView" role="tabpanel">
+          <section class="panel aspm-panel tab-view active" id="dashboardView" role="tabpanel">
             <div class="section-heading aspm-heading">
               <div>
-                <p class="eyebrow">Risk command center</p>
-                <h2>Security posture</h2>
-                <p>Current application risk, remediation pressure, and scanner reach.</p>
+                <p class="eyebrow">Executive overview</p>
+                <h2>Dashboard</h2>
+                <p>Risk, coverage, remediation pressure, and scanner operations across your application estate.</p>
               </div>
               <div class="aspm-heading-actions">
                 <span class="status-chip idle" id="postureStatus">Loading</span>
-                <button class="ghost compact-button" id="refreshPosture" type="button">Refresh posture</button>
               </div>
             </div>
 
             <div class="posture-kpis" aria-label="Security posture summary">
-              <div class="posture-kpi risk-critical">
+              <button class="posture-kpi risk-critical" type="button" data-dashboard-action="critical">
                 <span>Critical findings</span>
                 <strong id="postureCritical">0</strong>
                 <small>Active and actionable</small>
-              </div>
-              <div class="posture-kpi risk-high">
+              </button>
+              <button class="posture-kpi risk-high" type="button" data-dashboard-action="high">
                 <span>High findings</span>
                 <strong id="postureHigh">0</strong>
                 <small>Active and actionable</small>
-              </div>
-              <div class="posture-kpi">
+              </button>
+              <button class="posture-kpi" type="button" data-dashboard-action="affected-assets">
                 <span>Affected assets</span>
                 <strong id="postureAffectedAssets">0</strong>
                 <small id="postureAssetContext">of 0 inventoried</small>
-              </div>
-              <div class="posture-kpi risk-overdue">
+              </button>
+              <button class="posture-kpi risk-overdue" type="button" data-dashboard-action="overdue">
                 <span>Overdue</span>
                 <strong id="postureOverdue">0</strong>
-                <small>Past severity SLA</small>
-              </div>
-              <div class="posture-kpi">
+                <small>Past configured due date</small>
+              </button>
+              <button class="posture-kpi" type="button" data-dashboard-action="coverage">
                 <span>Scanner coverage</span>
                 <strong id="postureCoverage">0%</strong>
                 <small>Scanned in 30 days</small>
-              </div>
-              <div class="posture-kpi">
+              </button>
+              <button class="posture-kpi" type="button" data-dashboard-action="average-risk">
                 <span>Average active risk</span>
                 <strong id="postureAverageRisk">0</strong>
                 <small>Assets with active findings, out of 100</small>
-              </div>
+              </button>
             </div>
 
             <div class="posture-workspace">
@@ -161,32 +158,16 @@
             <section class="posture-region tool-posture-region" aria-labelledby="toolPostureTitle">
               <div class="subsection-heading">
                 <div>
-                  <h3 id="toolPostureTitle">Security tool health</h3>
-                  <p>Latest ingestion and asset coverage by connected scanner.</p>
+                  <h3 id="toolPostureTitle">Scanner operations</h3>
+                  <p>Latest completed or failed scanner operation and asset coverage.</p>
                 </div>
-                <button class="ghost compact-button" id="openFindingImport" type="button">Import scanner results</button>
+                <button class="ghost compact-button" id="openFindingImport" type="button">Import SARIF</button>
               </div>
               <div class="tool-health-grid" id="toolHealthGrid">
                 <p class="empty-state">Import scanner results to establish tool coverage.</p>
               </div>
             </section>
 
-            <section class="posture-region connector-region" aria-labelledby="connectorTitle">
-              <div class="subsection-heading">
-                <div>
-                  <h3 id="connectorTitle">Scanner connections</h3>
-                  <p>Pull current findings directly from configured security platforms.</p>
-                </div>
-                <div class="connector-actions">
-                  <button class="ghost compact-button" id="refreshConnectors" type="button">Refresh</button>
-                  <button class="primary compact-button" id="syncConnectors" type="button">Sync ready scanners</button>
-                </div>
-              </div>
-              <div class="connector-grid" id="connectorGrid">
-                <p class="empty-state">Checking scanner configuration.</p>
-              </div>
-              <div class="connector-sync-summary" id="connectorSyncSummary" aria-live="polite"></div>
-            </section>
           </section>
 
           <section class="panel aspm-panel tab-view hidden" id="findingsView" role="tabpanel" hidden>
@@ -196,14 +177,14 @@
                 <h2>Security findings</h2>
                 <p>One deduplicated workflow across SAST, SCA, secrets, IaC, DAST, and custom tools.</p>
               </div>
-              <button class="primary compact-button" id="toggleFindingImport" type="button">Import results</button>
+              <button class="primary compact-button" id="toggleFindingImport" type="button">Import SARIF</button>
             </div>
 
             <section class="finding-import hidden" id="findingImportPanel" aria-labelledby="findingImportTitle" hidden>
               <div class="subsection-heading">
                 <div>
-                  <h3 id="findingImportTitle">Import scanner results</h3>
-                  <p>SARIF 2.1, Semgrep JSON, SonarQube issues, or normalized generic JSON.</p>
+                  <h3 id="findingImportTitle">Import SARIF results</h3>
+                  <p>Upload SARIF 2.1 results from configured scanners, or import Semgrep, SonarQube, and generic JSON.</p>
                 </div>
                 <button class="icon-button compact-close" id="closeFindingImport" type="button" aria-label="Close import" title="Close">&times;</button>
               </div>
@@ -521,10 +502,10 @@
             </div>
             <section class="provider-github github-app-status hidden full" aria-labelledby="githubAppHeading">
               <div class="label-line">
-                <span id="githubAppHeading">GitHub App access</span>
+                <span id="githubAppHeading">GitHub App connection</span>
                 <span class="field-badge fixed">Managed by service</span>
               </div>
-              <p class="field-help">The service-managed GitHub App credentials are used for every scan. They are never entered or uploaded in the browser.</p>
+              <p class="field-help" id="githubAppStatus">Checking GitHub App configuration.</p>
             </section>
             <div class="provider-azure full ado-org-builder">
               <input name="adoOrgPats" type="hidden">
@@ -763,31 +744,33 @@
           <section class="panel form-panel tab-view hidden" id="databaseView" role="tabpanel" hidden>
             <div class="section-heading">
               <div>
-                <p class="eyebrow">Current state</p>
-                <h2>Inventory database</h2>
+                <p class="eyebrow">Service configuration</p>
+                <h2>Configuration</h2>
               </div>
               <span class="status-chip idle" id="databaseReadyBadge">Checking</span>
             </div>
 
-            <div class="database-connection-row">
-              <label class="toggle-row">
-                <input name="postgresEnabled" type="checkbox" checked>
-                <span class="toggle-copy">
-                  <span>Sync scan results</span>
-                  <small>PostgreSQL, private to your signed-in account</small>
-                </span>
-              </label>
-              <div class="database-status" id="databaseStatus">
-                <strong>Checking connection</strong>
-                <span>application_inventory</span>
+            <section class="database-connection-region" aria-labelledby="databaseConnectionTitle">
+              <div class="subsection-heading">
+                <div>
+                  <h3 id="databaseConnectionTitle">Database connection</h3>
+                  <p>PostgreSQL storage for scans, inventory, findings, and schedules.</p>
+                </div>
+                <span class="status-chip idle" id="databaseConnectionStatus">Checking</span>
               </div>
-            </div>
-
-            <details class="advanced-settings database-settings">
-              <summary>
-                <span>Connection settings</span>
-                <small>localhost:5432 / postgres</small>
-              </summary>
+              <div class="database-connection-row">
+                <label class="toggle-row">
+                  <input name="postgresEnabled" type="checkbox" checked>
+                  <span class="toggle-copy">
+                    <span>Sync scan results</span>
+                    <small>Private to your signed-in account</small>
+                  </span>
+                </label>
+                <div class="database-status" id="databaseStatus">
+                  <strong>Checking connection</strong>
+                  <span>application_inventory</span>
+                </div>
+              </div>
               <div class="field-grid database-fields">
                 <label>
                   <span class="label-line"><span>Host</span><span class="default-badge">Default: localhost</span></span>
@@ -821,7 +804,122 @@
               <div class="database-actions">
                 <button class="ghost" id="checkDatabase" type="button">Test connection</button>
               </div>
-            </details>
+            </section>
+
+            <section class="configuration-region github-connection-region" aria-labelledby="githubConnectionTitle">
+              <div class="subsection-heading">
+                <div>
+                  <h3 id="githubConnectionTitle">GitHub App connection</h3>
+                  <p id="githubAppConfigurationStatus">Checking GitHub App configuration.</p>
+                </div>
+                <span class="status-chip idle" id="githubAppConfigurationBadge">Checking</span>
+              </div>
+            </section>
+
+            <section class="configuration-region remediation-policy-region" id="remediationPolicyForm" aria-labelledby="remediationPolicyTitle">
+              <div class="subsection-heading">
+                <div>
+                  <h3 id="remediationPolicyTitle">Remediation timelines</h3>
+                  <p>An active finding is overdue after its due date passes. Policy changes recalculate policy-managed due dates; manually set dates are retained.</p>
+                </div>
+              </div>
+              <div class="remediation-policy-grid">
+                <label><span>Critical</span><input id="remediationCriticalDays" type="number" min="1" max="3650" value="7"><small>Days to remediate</small></label>
+                <label><span>High</span><input id="remediationHighDays" type="number" min="1" max="3650" value="30"><small>Days to remediate</small></label>
+                <label><span>Medium</span><input id="remediationMediumDays" type="number" min="1" max="3650" value="90"><small>Days to remediate</small></label>
+                <label><span>Low</span><input id="remediationLowDays" type="number" min="1" max="3650" value="180"><small>Days to remediate</small></label>
+                <label><span>Informational</span><input id="remediationInfoDays" type="number" min="1" max="3650" value="365"><small>Days to remediate</small></label>
+              </div>
+              <div class="form-actions compact-actions">
+                <span id="remediationPolicyStatus" aria-live="polite">Loading remediation timelines.</span>
+                <button class="primary" id="saveRemediationPolicy" type="button">Save timelines</button>
+              </div>
+            </section>
+
+            <section class="configuration-region connector-region" aria-labelledby="connectorTitle">
+              <div class="subsection-heading">
+                <div>
+                  <h3 id="connectorTitle">Scanner connections</h3>
+                  <p>Security scanner integrations for this account.</p>
+                </div>
+                <div class="connector-actions">
+                  <button class="ghost compact-button" id="refreshConnectors" type="button">Refresh</button>
+                  <button class="ghost compact-button" id="testConnectors" type="button">Test connections</button>
+                  <button class="primary compact-button" id="syncConnectors" type="button">Sync ready scanners</button>
+                </div>
+              </div>
+              <div class="connector-grid" id="connectorGrid">
+                <p class="empty-state">Checking scanner configuration.</p>
+              </div>
+              <div class="connector-sync-summary" id="connectorSyncSummary" aria-live="polite"></div>
+            </section>
+
+            <section class="configuration-region webhook-region" aria-labelledby="webhookTitle">
+              <div class="subsection-heading">
+                <div>
+                  <h3 id="webhookTitle">Webhooks</h3>
+                  <p>Delivery destinations for complete inventory scan records.</p>
+                </div>
+              </div>
+              <section class="webhook-form" id="webhookForm" aria-label="Webhook configuration">
+                <input id="webhookId" type="hidden">
+                <div class="field-grid webhook-fields">
+                  <label>
+                    <span>Name</span>
+                    <input id="webhookName" maxlength="100" placeholder="ServiceNow CMDB">
+                  </label>
+                  <label>
+                    <span>Endpoint URL</span>
+                    <input id="webhookUrl" type="url" maxlength="2000" placeholder="https://instance.service-now.com/api/now/import/cmdb_ci">
+                  </label>
+                  <label>
+                    <span>Delivery mode</span>
+                    <select id="webhookDeliveryMode"><option value="batch">Batch</option><option value="record">One record per request</option></select>
+                  </label>
+                  <label>
+                    <span>Bearer token <span class="field-badge optional">Optional</span></span>
+                    <input id="webhookBearerToken" type="password" autocomplete="new-password" maxlength="4000">
+                  </label>
+                  <label>
+                    <span>Signing secret <span class="field-badge optional">Optional</span></span>
+                    <input id="webhookSigningSecret" type="password" autocomplete="new-password" maxlength="4000">
+                  </label>
+                  <label>
+                    <span>Batch size</span>
+                    <input id="webhookBatchSize" type="number" min="1" max="10000" value="100">
+                  </label>
+                  <label class="toggle-row">
+                    <input id="webhookEnabled" type="checkbox" checked>
+                    <span class="toggle-copy"><span>Enabled</span><small>Deliver this account's scan records</small></span>
+                  </label>
+                </div>
+                <details class="advanced-settings webhook-advanced">
+                  <summary><span>Advanced delivery</span><small>Headers, retries, timeout</small></summary>
+                  <div class="field-grid">
+                    <label class="full"><span>Headers <span class="field-badge optional">Optional</span></span><textarea id="webhookHeaders" rows="3" maxlength="8000" placeholder='{"X-Integration-Source":"inventory"}'></textarea></label>
+                    <label><span>Retries</span><input id="webhookRetries" type="number" min="0" max="10" value="3"></label>
+                    <label><span>Timeout seconds</span><input id="webhookTimeout" type="number" min="1" max="300" value="30"></label>
+                  </div>
+                </details>
+                <div class="form-actions compact-actions">
+                  <span id="webhookStatus" aria-live="polite">No webhook selected.</span>
+                  <div><button class="ghost" id="cancelWebhookEdit" type="button">Clear</button><button class="primary" id="saveWebhook" type="button">Save webhook</button></div>
+                </div>
+              </section>
+              <div class="webhook-list" id="webhookList" aria-live="polite"></div>
+            </section>
+
+            <dialog class="connector-setup-dialog" id="connectorSetupDialog" aria-labelledby="connectorSetupTitle">
+              <div class="inventory-dialog-heading">
+                <div><p class="eyebrow" id="connectorSetupType">Scanner setup</p><h3 id="connectorSetupTitle">Configure scanner</h3></div>
+                <button class="icon-button" id="closeConnectorSetup" type="button" aria-label="Close" title="Close">&times;</button>
+              </div>
+              <div class="connector-wizard-steps" aria-label="Setup progress"><span class="active">1. Connection</span><span>2. Credentials</span><span>3. Ready</span></div>
+              <p class="connector-setup-description" id="connectorSetupDescription"></p>
+              <input id="connectorSetupKey" type="hidden">
+              <div class="field-grid" id="connectorSetupFields"></div>
+              <div class="form-actions compact-actions"><span id="connectorSetupStatus" aria-live="polite"></span><button class="primary" id="saveConnectorSetup" type="button">Save configuration</button></div>
+            </dialog>
           </section>
 
           <section class="panel inventory-panel tab-view hidden" id="inventoryView" role="tabpanel" hidden>
@@ -856,6 +954,7 @@
                 <div class="inventory-quick-filters" role="group" aria-label="Inventory quick filters">
                   <button class="filter-button active" type="button" data-inventory-filter="all">All records</button>
                   <button class="filter-button" type="button" data-inventory-filter="needs-classification">Needs classification</button>
+                  <button class="filter-button" type="button" data-inventory-filter="affected-assets">Affected assets</button>
                   <button class="filter-button" type="button" data-inventory-filter="active">Updated 90d</button>
                   <button class="filter-button" type="button" data-inventory-filter="older">Older 90d</button>
                   <button class="filter-button" type="button" data-inventory-filter="has-domain">Has domain</button>
@@ -1137,6 +1236,6 @@
       </section>
     </main>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=19" type="module"></script>
+    <script src="/static/app.js?v=31" type="module"></script>
   </body>
 </html>

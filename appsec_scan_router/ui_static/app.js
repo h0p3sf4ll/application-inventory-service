@@ -1,15 +1,13 @@
-import {AspmWorkspace} from "/static/aspm-ui.js?v=6";
+import {AspmWorkspace} from "/static/aspm-ui.js?v=19";
 
 const form = document.querySelector("#scanForm");
 const loginPage = document.querySelector("#loginPage");
 const appShell = document.querySelector("#appShell");
-const startScanButton = document.querySelector("#startScan");
 const startScanFormButton = document.querySelector("#startScanForm");
 const stopScanButton = document.querySelector("#stopScan");
 const pauseScanButton = document.querySelector("#pauseScan");
 const resumeScanButton = document.querySelector("#resumeScan");
 const retryScanButton = document.querySelector("#retryScan");
-const refreshButton = document.querySelector("#refreshScans");
 const resetDefaultsButton = document.querySelector("#resetDefaults");
 const loginGitHubEnterpriseSso = document.querySelector("#loginGitHubEnterpriseSso");
 const loginGoogleSso = document.querySelector("#loginGoogleSso");
@@ -57,6 +55,16 @@ const exportDatabaseXlsxButton = document.querySelector("#exportDatabaseXlsx");
 const exportDatabaseCsvButton = document.querySelector("#exportDatabaseCsv");
 const exportDatabaseJsonButton = document.querySelector("#exportDatabaseJson");
 const databaseStatus = document.querySelector("#databaseStatus");
+const githubAppStatus = document.querySelector("#githubAppStatus");
+const githubAppConfigurationStatus = document.querySelector("#githubAppConfigurationStatus");
+const githubAppConfigurationBadge = document.querySelector("#githubAppConfigurationBadge");
+const remediationCriticalDays = document.querySelector("#remediationCriticalDays");
+const remediationHighDays = document.querySelector("#remediationHighDays");
+const remediationMediumDays = document.querySelector("#remediationMediumDays");
+const remediationLowDays = document.querySelector("#remediationLowDays");
+const remediationInfoDays = document.querySelector("#remediationInfoDays");
+const remediationPolicyStatus = document.querySelector("#remediationPolicyStatus");
+const saveRemediationPolicyButton = document.querySelector("#saveRemediationPolicy");
 const databaseLiveStatus = document.querySelector("#databaseLiveStatus");
 const databaseSearchQuery = document.querySelector("#databaseSearchQuery");
 const searchDatabaseButton = document.querySelector("#searchDatabase");
@@ -103,6 +111,22 @@ const scheduleFrequency = document.querySelector("#scheduleFrequency");
 const scheduleRunAt = document.querySelector("#scheduleRunAt");
 const scheduleCount = document.querySelector("#scheduleCount");
 const scheduleList = document.querySelector("#scheduleList");
+const webhookForm = document.querySelector("#webhookForm");
+const webhookId = document.querySelector("#webhookId");
+const webhookName = document.querySelector("#webhookName");
+const webhookUrl = document.querySelector("#webhookUrl");
+const webhookDeliveryMode = document.querySelector("#webhookDeliveryMode");
+const webhookBearerToken = document.querySelector("#webhookBearerToken");
+const webhookSigningSecret = document.querySelector("#webhookSigningSecret");
+const webhookBatchSize = document.querySelector("#webhookBatchSize");
+const webhookEnabled = document.querySelector("#webhookEnabled");
+const webhookHeaders = document.querySelector("#webhookHeaders");
+const webhookRetries = document.querySelector("#webhookRetries");
+const webhookTimeout = document.querySelector("#webhookTimeout");
+const webhookStatus = document.querySelector("#webhookStatus");
+const saveWebhookButton = document.querySelector("#saveWebhook");
+const cancelWebhookEditButton = document.querySelector("#cancelWebhookEdit");
+const webhookList = document.querySelector("#webhookList");
 
 const state = {
   scans: [],
@@ -124,12 +148,15 @@ const state = {
   databaseConfigDirty: true,
   databaseRefreshTimer: null,
   localLlm: null,
+  githubApp: null,
+  remediationPolicy: null,
   githubUrls: [],
   adoOrgPats: [],
   sourceTargets: [],
   selectedTargets: [],
   sourceTargetErrors: [],
   schedules: [],
+  webhooks: [],
   pollTicks: 0,
 };
 
@@ -195,6 +222,7 @@ const aspmWorkspace = new AspmWorkspace({
   formatDate,
   downloadBlob,
   setActiveView,
+  openAffectedInventory,
 });
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -212,7 +240,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadSession();
   showAuthResult();
   if (isLoggedIn()) {
-    await Promise.all([loadScans(), loadSchedules(), initializeDatabase()]);
+    await Promise.all([loadScans(), loadSchedules(), initializeDatabase(), loadWebhooks(), loadRemediationPolicy()]);
     await aspmWorkspace.initialize();
   } else {
     renderAll();
@@ -229,6 +257,7 @@ async function loadBackendConfig() {
     }
     state.database = data.database || null;
     state.localLlm = data.localLlm || null;
+    state.githubApp = data.githubApp || null;
   } catch (error) {
     return;
   }
@@ -252,13 +281,11 @@ function bindEvents() {
       scheduleDatabaseConnectionCheck();
     }
   });
-  startScanButton.addEventListener("click", startScan);
   startScanFormButton.addEventListener("click", startScan);
   stopScanButton.addEventListener("click", stopScan);
   pauseScanButton.addEventListener("click", () => controlScan("pause"));
   resumeScanButton.addEventListener("click", () => controlScan("resume"));
   retryScanButton.addEventListener("click", retryFailedScan);
-  refreshButton.addEventListener("click", refreshData);
   createScheduleButton.addEventListener("click", createSchedule);
   resetDefaultsButton.addEventListener("click", resetDefaults);
   addAdoOrgPatButton.addEventListener("click", addAdoOrgPat);
@@ -387,6 +414,10 @@ function bindEvents() {
   tabButtons.forEach((button) => {
     button.addEventListener("click", () => setActiveView(button.dataset.view));
   });
+  saveWebhookButton.addEventListener("click", saveWebhook);
+  cancelWebhookEditButton.addEventListener("click", resetWebhookForm);
+  webhookList.addEventListener("click", handleWebhookAction);
+  saveRemediationPolicyButton.addEventListener("click", saveRemediationPolicy);
 }
 
 async function startScan() {
@@ -1478,9 +1509,15 @@ function activateInventoryFilter(name) {
   searchDatabase(0, databaseSearchQuery.value, {filters});
 }
 
+function openAffectedInventory() {
+  setActiveView("inventoryView");
+  activateInventoryFilter("affected-assets");
+}
+
 function inventoryFilterCriteria(name) {
   const filters = {
     "needs-classification": {inventory_statuses: ["candidate", "unclassified", "empty", "no_branch", "unavailable", "disabled", "scan_failed"]},
+    "affected-assets": {has_active_findings: true},
     active: {updated_within_days: 90},
     older: {older_than_days: 90},
     "has-domain": {has_domain: true},
@@ -1548,6 +1585,7 @@ function databaseFiltersFromControls() {
     "repository_search",
     "branch_search",
     "has_domain",
+    "has_active_findings",
     "updated_within_days",
     "older_than_days",
     "confidences",
@@ -1822,6 +1860,103 @@ function syncGithubAppFields() {
   document.querySelectorAll(".github-app-status").forEach((node) => {
     node.classList.toggle("hidden", !enabled);
   });
+  renderGithubAppStatus();
+}
+
+function renderGithubAppStatus() {
+  const githubApp = state.githubApp || {};
+  const configured = githubApp.configured === true;
+  const keySource = githubApp.keySource === "pem_file"
+    ? "PEM file available"
+    : githubApp.keySource === "managed_secret" ? "managed key available" : "";
+  const details = configured
+    ? `Connected: App ${githubApp.appId} · installation ${githubApp.installationId}${keySource ? ` · ${keySource}` : ""}.`
+    : (githubApp.message || "GitHub App credentials are not configured.");
+  if (githubAppStatus) {
+    githubAppStatus.textContent = details;
+  }
+  if (githubAppConfigurationStatus) {
+    githubAppConfigurationStatus.textContent = details;
+  }
+  if (githubAppConfigurationBadge) {
+    githubAppConfigurationBadge.textContent = configured ? "Connected" : "Not configured";
+    githubAppConfigurationBadge.className = `status-chip ${configured ? "status-succeeded" : "status-failed"}`;
+  }
+}
+
+function remediationPolicyPayload() {
+  return {
+    critical: Number(remediationCriticalDays.value),
+    high: Number(remediationHighDays.value),
+    medium: Number(remediationMediumDays.value),
+    low: Number(remediationLowDays.value),
+    info: Number(remediationInfoDays.value),
+  };
+}
+
+function renderRemediationPolicy(policy) {
+  const resolved = policy || {};
+  remediationCriticalDays.value = String(resolved.critical || 7);
+  remediationHighDays.value = String(resolved.high || 30);
+  remediationMediumDays.value = String(resolved.medium || 90);
+  remediationLowDays.value = String(resolved.low || 180);
+  remediationInfoDays.value = String(resolved.info || 365);
+}
+
+async function loadRemediationPolicy() {
+  if (!isLoggedIn()) {
+    return;
+  }
+  try {
+    const response = await fetch("/api/configuration/remediation-policy", {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify({}),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Remediation timelines could not be loaded.");
+    }
+    state.remediationPolicy = data.policy || null;
+    renderRemediationPolicy(state.remediationPolicy);
+    remediationPolicyStatus.textContent = data.overdueDefinition || "An active finding is overdue after its due date passes.";
+  } catch (error) {
+    remediationPolicyStatus.textContent = error.message || "Remediation timelines could not be loaded.";
+  }
+}
+
+async function saveRemediationPolicy() {
+  const policy = remediationPolicyPayload();
+  if (Object.values(policy).some((value) => !Number.isInteger(value) || value < 1 || value > 3650)) {
+    remediationPolicyStatus.textContent = "Enter whole-number remediation timelines between 1 and 3650 days.";
+    return;
+  }
+  try {
+    saveRemediationPolicyButton.disabled = true;
+    remediationPolicyStatus.textContent = "Saving remediation timelines";
+    const response = await fetch("/api/configuration/remediation-policy/save", {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify({...databasePayload(), policy}),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Remediation timelines could not be saved.");
+    }
+    state.remediationPolicy = data.remediation.policy;
+    renderRemediationPolicy(state.remediationPolicy);
+    remediationPolicyStatus.textContent = `Saved. Recalculated ${Number(data.remediation.updatedFindings || 0).toLocaleString()} policy-managed due dates.`;
+    await Promise.all([
+      aspmWorkspace.loadPosture(true),
+      aspmWorkspace.searchFindings(0),
+      aspmWorkspace.loadAssetRisks(0, true),
+    ]);
+    notify("Remediation timelines saved.");
+  } catch (error) {
+    remediationPolicyStatus.textContent = error.message || "Remediation timelines could not be saved.";
+  } finally {
+    saveRemediationPolicyButton.disabled = false;
+  }
 }
 
 function syncDatabaseFields() {
@@ -2355,7 +2490,6 @@ function downloadBlob(blob, filename) {
 }
 
 function setBusy(isBusy) {
-  startScanButton.disabled = isBusy;
   startScanFormButton.disabled = isBusy;
   formStatus.textContent = isBusy ? "Starting" : "Ready";
   formStatus.className = `status-chip ${isBusy ? "status-running" : "idle"}`;
@@ -2688,6 +2822,180 @@ function setActiveView(viewId) {
     button.setAttribute("aria-selected", String(active));
   });
   aspmWorkspace.onViewActivated(viewId);
+  if (viewId === "databaseView" && isLoggedIn()) {
+    loadWebhooks();
+    loadRemediationPolicy();
+    aspmWorkspace.loadConnectors();
+  }
+}
+
+async function loadWebhooks() {
+  if (!isLoggedIn()) {
+    state.webhooks = [];
+    renderWebhooks();
+    return;
+  }
+  try {
+    const response = await fetch("/api/configuration/webhooks", {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify({}),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Webhooks could not be loaded.");
+    }
+    state.webhooks = data.webhooks || [];
+    renderWebhooks();
+  } catch (error) {
+    webhookStatus.textContent = error.message || "Webhooks could not be loaded.";
+  }
+}
+
+function renderWebhooks() {
+  if (!state.webhooks.length) {
+    webhookList.innerHTML = '<p class="empty-state">No webhook destinations configured.</p>';
+    return;
+  }
+  webhookList.innerHTML = state.webhooks.map((webhook) => {
+    const safeguards = [
+      webhook.hasBearerToken ? "Bearer token" : "",
+      webhook.hasSigningSecret ? "Signed" : "",
+      ...(webhook.headerNames || []),
+    ].filter(Boolean).join(" · ");
+    return `<article class="webhook-item ${webhook.enabled ? "enabled" : "disabled"}">
+      <span class="webhook-item-copy"><strong>${escapeHtml(webhook.name)}</strong><small>${escapeHtml(webhook.url)}</small><small>${escapeHtml(`${webhook.deliveryMode} · ${webhook.batchSize} records${safeguards ? ` · ${safeguards}` : ""}`)}</small></span>
+      <span class="status-chip ${webhook.enabled ? "status-succeeded" : "idle"}">${webhook.enabled ? "Enabled" : "Disabled"}</span>
+      <span class="webhook-item-actions"><button class="ghost small" type="button" data-webhook-action="test" data-webhook-id="${escapeHtml(webhook.id)}">Test</button><button class="ghost small" type="button" data-webhook-action="edit" data-webhook-id="${escapeHtml(webhook.id)}">Edit</button><button class="ghost small danger-action" type="button" data-webhook-action="delete" data-webhook-id="${escapeHtml(webhook.id)}">Delete</button></span>
+    </article>`;
+  }).join("");
+}
+
+function resetWebhookForm() {
+  webhookId.value = "";
+  webhookName.value = "";
+  webhookUrl.value = "";
+  webhookDeliveryMode.value = "batch";
+  webhookBearerToken.value = "";
+  webhookSigningSecret.value = "";
+  webhookBatchSize.value = "100";
+  webhookEnabled.checked = true;
+  webhookHeaders.value = "";
+  webhookRetries.value = "3";
+  webhookTimeout.value = "30";
+  webhookStatus.textContent = "No webhook selected.";
+}
+
+function editWebhook(webhookIdValue) {
+  const webhook = state.webhooks.find((item) => item.id === webhookIdValue);
+  if (!webhook) {
+    return;
+  }
+  webhookId.value = webhook.id;
+  webhookName.value = webhook.name || "";
+  webhookUrl.value = webhook.url || "";
+  webhookDeliveryMode.value = webhook.deliveryMode || "batch";
+  webhookBatchSize.value = String(webhook.batchSize || 100);
+  webhookEnabled.checked = webhook.enabled !== false;
+  webhookRetries.value = String(webhook.retries || 3);
+  webhookTimeout.value = String(webhook.timeoutSeconds || 30);
+  webhookBearerToken.value = "";
+  webhookSigningSecret.value = "";
+  webhookHeaders.value = "";
+  webhookStatus.textContent = "Secret values remain stored until replaced.";
+  webhookName.focus();
+}
+
+function webhookPayload() {
+  const payload = {
+    id: webhookId.value,
+    name: webhookName.value.trim(),
+    url: webhookUrl.value.trim(),
+    deliveryMode: webhookDeliveryMode.value,
+    batchSize: Number(webhookBatchSize.value),
+    enabled: webhookEnabled.checked,
+    retries: Number(webhookRetries.value),
+    timeoutSeconds: Number(webhookTimeout.value),
+  };
+  if (webhookBearerToken.value) {
+    payload.bearerToken = webhookBearerToken.value;
+  }
+  if (webhookSigningSecret.value) {
+    payload.signingSecret = webhookSigningSecret.value;
+  }
+  if (webhookHeaders.value.trim()) {
+    const headers = JSON.parse(webhookHeaders.value);
+    if (!headers || Array.isArray(headers) || typeof headers !== "object") {
+      throw new Error("Webhook headers must be a JSON object.");
+    }
+    payload.headers = headers;
+  }
+  return payload;
+}
+
+async function saveWebhook() {
+  try {
+    const webhook = webhookPayload();
+    if (!webhook.name || !webhook.url) {
+      throw new Error("Name and endpoint URL are required.");
+    }
+    saveWebhookButton.disabled = true;
+    webhookStatus.textContent = "Saving webhook";
+    const response = await fetch("/api/configuration/webhooks/save", {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify({webhook}),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Webhook could not be saved.");
+    }
+    resetWebhookForm();
+    await loadWebhooks();
+    notify(`Saved ${data.webhook.name}.`);
+  } catch (error) {
+    webhookStatus.textContent = error.message || "Webhook could not be saved.";
+  } finally {
+    saveWebhookButton.disabled = false;
+  }
+}
+
+async function handleWebhookAction(event) {
+  const button = event.target.closest("[data-webhook-action]");
+  if (!button) {
+    return;
+  }
+  const webhookIdValue = button.dataset.webhookId;
+  if (button.dataset.webhookAction === "edit") {
+    editWebhook(webhookIdValue);
+    return;
+  }
+  const endpoint = button.dataset.webhookAction === "test"
+    ? "/api/configuration/webhooks/test"
+    : "/api/configuration/webhooks/delete";
+  try {
+    button.disabled = true;
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify({id: webhookIdValue}),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Webhook action failed.");
+    }
+    if (button.dataset.webhookAction === "test") {
+      notify("Webhook test delivered.");
+    } else {
+      resetWebhookForm();
+      await loadWebhooks();
+      notify("Webhook deleted.");
+    }
+  } catch (error) {
+    webhookStatus.textContent = error.message || "Webhook action failed.";
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function notify(message) {

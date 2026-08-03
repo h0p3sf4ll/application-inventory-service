@@ -83,6 +83,56 @@ caddy.acme.engineering {
             ],
         )
 
+    def test_custom_domain_replaces_hosted_platform_fallback(self):
+        for hosted_domain in (
+            "acme.wordpress.com",
+            "acme.myshopify.com",
+            "acme.netlify.app",
+            "acme.vercel.app",
+            "acme.wixsite.com",
+        ):
+            with self.subTest(hosted_domain=hosted_domain):
+                evidence = scanner.discover_web_domains(
+                    {
+                        "/deploy/ingress.yaml": "host: portal.acme.engineering\n",
+                    },
+                    {"homepageUrl": f"https://{hosted_domain}"},
+                )
+
+                self.assertEqual([item.domain for item in evidence], ["portal.acme.engineering"])
+                self.assertEqual(scanner.web_domain_columns(evidence)["primary_web_domain"], "portal.acme.engineering")
+
+    def test_hosted_platform_domain_is_retained_without_custom_domain(self):
+        evidence = scanner.discover_web_domains({}, {"homepageUrl": "https://acme.wordpress.com"})
+
+        self.assertEqual([item.domain for item in evidence], ["acme.wordpress.com"])
+
+    def test_common_host_routing_configurations_are_detected(self):
+        evidence = scanner.discover_web_domains(
+            {
+                "/compose.yaml": '''
+labels:
+  - "traefik.http.routers.portal.rule=Host(`portal.acme.engineering`)"
+''',
+                "/infra/custom_domain.tf": 'aliases = ["www.acme.engineering"]\n',
+                "/wrangler.toml": 'routes = [{ pattern = "edge.acme.engineering/*" }]\n',
+                "/hugo.toml": 'baseURL = "https://docs.acme.engineering/"\n',
+                "/apache2.conf": "ServerName app.acme.engineering\nServerAlias www.app.acme.engineering\n",
+            }
+        )
+
+        self.assertEqual(
+            {item.domain for item in evidence},
+            {
+                "app.acme.engineering",
+                "docs.acme.engineering",
+                "edge.acme.engineering",
+                "portal.acme.engineering",
+                "www.acme.engineering",
+                "www.app.acme.engineering",
+            },
+        )
+
     def test_reserved_placeholder_and_non_application_domains_are_rejected(self):
         rejected = (
             "http://localhost:8080",

@@ -22,7 +22,7 @@ from appsec_scan_router.aspm_connector_models import (
     ConnectorPullResult,
     ConnectorStatus,
 )
-from appsec_scan_router.aspm_connectors import ConnectorService
+from appsec_scan_router.aspm_connectors import ConnectorService, connector_status
 from appsec_scan_router.aspm_data import (
     AssetDataInteraction,
     DataInteractionClassifier,
@@ -38,9 +38,107 @@ from appsec_scan_router.aspm_risk import AssetRiskContext
 from appsec_scan_router.invicti_connector import InvictiConnector, invicti_finding
 from appsec_scan_router.nowsecure_connector import NowSecureConnector, nowsecure_finding
 from appsec_scan_router.semgrep_connector import SemgrepConnector, semgrep_finding
+from appsec_scan_router.sonarqube_connector import SonarQubeConnector
+from appsec_scan_router.zap_connector import ZapConnector
+from appsec_scan_router.report_import_connector import ReportImportConnector
 
 
 class ConnectorNormalizationTests(unittest.TestCase):
+    def test_configured_service_scanner_stays_checked_and_sync_ready(self) -> None:
+        connector = Mock()
+        connector.key = "semgrep"
+        connector.status.return_value = ConnectorStatus(
+            "semgrep", "Semgrep", True, "https://semgrep.dev/api/v1", "Ready"
+        )
+
+        status = connector_status(connector)
+
+        self.assertTrue(status["configured"])
+        self.assertTrue(status["syncReady"])
+        self.assertEqual(status["configurationSource"], "service")
+
+    def test_configured_sarif_profile_is_not_remotely_synced(self) -> None:
+        connector = ReportImportConnector(
+            "trivy", "Trivy", {"reportPath": "reports/trivy.sarif"}
+        )
+
+        status = connector_status(connector, "account")
+
+        self.assertTrue(status["configured"])
+        self.assertFalse(status["syncReady"])
+        self.assertEqual(status["configurationSource"], "account")
+        self.assertIn("SARIF", status["message"])
+
+    def test_sonarqube_connector_uses_user_configuration_and_normalizes_issues(self) -> None:
+        client = Mock()
+        client.get.return_value = {
+            "total": 1,
+            "issues": [
+                {
+                    "key": "issue-1",
+                    "message": "Use parameterized SQL queries",
+                    "severity": "CRITICAL",
+                    "type": "VULNERABILITY",
+                    "rule": "python:S3649",
+                    "component": "payments-api:src/db.py",
+                    "line": 42,
+                }
+            ],
+        }
+        with patch(
+            "appsec_scan_router.sonarqube_connector.JsonApiClient", return_value=client
+        ) as client_class:
+            connector = SonarQubeConnector(
+                configuration={
+                    "endpoint": "https://sonar.example.test",
+                    "token": "user-token",
+                }
+            )
+            result = connector.pull()
+
+        finding = result.document.findings[0]
+        self.assertTrue(connector.status().configured)
+        self.assertEqual(client_class.call_args.kwargs["auth"], ("user-token", ""))
+        self.assertEqual(finding.severity, "critical")
+        self.assertEqual(finding.location.repository, "payments-api")
+        self.assertEqual(finding.location.path, "src/db.py")
+        self.assertEqual(finding.location.start_line, 42)
+
+    def test_zap_connector_uses_api_key_and_normalizes_alerts(self) -> None:
+        client = Mock()
+        client.get.return_value = {
+            "alerts": [
+                {
+                    "alertRef": "alert-1",
+                    "alert": "SQL Injection",
+                    "risk": "High",
+                    "pluginId": "40018",
+                    "cweid": "89",
+                    "url": "https://payments.example.test/search",
+                    "description": "A database error was returned.",
+                    "solution": "Use parameterized queries.",
+                }
+            ]
+        }
+        with patch(
+            "appsec_scan_router.zap_connector.JsonApiClient", return_value=client
+        ):
+            connector = ZapConnector(
+                configuration={
+                    "endpoint": "http://127.0.0.1:8080",
+                    "apiKey": "zap-key",
+                }
+            )
+            result = connector.pull()
+
+        finding = result.document.findings[0]
+        parameters = client.get.call_args.args[1]
+        self.assertTrue(connector.status().configured)
+        self.assertEqual(parameters["apikey"], "zap-key")
+        self.assertEqual(finding.severity, "high")
+        self.assertEqual(finding.location.web_url, "https://payments.example.test/search")
+        self.assertEqual(finding.cwes, ("CWE-89",))
+
     def test_semgrep_api_finding_preserves_repository_context(self) -> None:
         finding = semgrep_finding(
             {
@@ -393,6 +491,25 @@ class ConnectorServiceTests(unittest.TestCase):
         self.assertEqual(result["results"][0]["metadata"]["deploymentCount"], 2)
         repository.ingest_batches.assert_called_once()
         connector.pull.assert_not_called()
+
+    def test_test_connections_reports_current_connector_reachability(self) -> None:
+        connector = Mock()
+        connector.key = "semgrep"
+        connector.name = "Semgrep"
+        connector.status.return_value = ConnectorStatus(
+            "semgrep", "Semgrep", True, "https://semgrep.dev/api/v1", "Ready"
+        )
+        connector.test_connection.return_value = {"deployments": 1}
+        service = ConnectorService(
+            Mock(), "user-a", "alice", connectors=(connector,)
+        )
+
+        result = service.test_connections(["semgrep"])
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["results"][0]["connector"], "semgrep")
+        self.assertEqual(result["results"][0]["metadata"], {"deployments": 1})
+        connector.test_connection.assert_called_once_with()
 
     def test_semgrep_pages_start_at_zero_and_are_requested_in_order(self) -> None:
         client = Mock()

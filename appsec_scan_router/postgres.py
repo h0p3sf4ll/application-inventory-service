@@ -2308,6 +2308,20 @@ def inventory_search_filter(
         if value is not None:
             clauses.append(sql.SQL("({expression}) = %s").format(expression=expression))
             parameters.append(value)
+    if resolved.has_active_findings is not None:
+        clauses.append(
+            sql.SQL(
+                "EXISTS (SELECT 1 FROM {asset_risks} risk "
+                "WHERE risk.branch_inventory_id = inventory.branch_inventory_id "
+                "AND risk.owner_user_id = inventory.owner_user_id "
+                "AND risk.active_findings > 0) = %s"
+            ).format(
+                asset_risks=object_identifier(
+                    sql_name(schema, "PostgreSQL schema"), "asset_risk_profiles"
+                )
+            )
+        )
+        parameters.append(resolved.has_active_findings)
     if resolved.store_validation_passed is not None:
         clauses.append(sql.SQL("inventory.store_validation_passed = %s"))
         parameters.append(resolved.store_validation_passed)

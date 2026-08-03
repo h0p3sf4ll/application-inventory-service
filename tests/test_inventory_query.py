@@ -119,6 +119,12 @@ class InventorySearchCriteriaTests(unittest.TestCase):
         self.assertEqual(plan.export_format, "xlsx")
         self.assertIn("Mobile app", criteria_summary(plan.criteria))
 
+    def test_affected_assets_filter_preserves_active_finding_criteria(self) -> None:
+        criteria = InventorySearchCriteria.from_mapping({"has_active_findings": True})
+
+        self.assertTrue(criteria.has_active_findings)
+        self.assertTrue(criteria.as_dict()["has_active_findings"])
+
 
 if __name__ == "__main__":
     unittest.main()

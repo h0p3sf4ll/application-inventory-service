@@ -205,6 +205,14 @@ class RiskEngineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cannot transition"):
             validate_transition("resolved", "accepted")
 
+    def test_finding_filters_accept_exact_correlated_asset_id(self) -> None:
+        from appsec_scan_router.aspm_postgres import normalize_finding_filters
+
+        self.assertEqual(
+            normalize_finding_filters({"branch_inventory_id": "42"})["branch_inventory_id"],
+            42,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

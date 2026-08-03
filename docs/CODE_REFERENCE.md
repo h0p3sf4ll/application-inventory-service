@@ -58,6 +58,10 @@ Provider clients expose a common operational shape: validate access, list projec
 | `scan_persistence.py` | Stores encrypted run records and reads private worker completion markers |
 | `scan_worker.py` | Executes one detached scanner command and atomically records its exit status |
 | `secure_store.py` | Atomically reads and writes Fernet-encrypted JSON state |
+| `environment.py` | Loads a working-directory or configured `.env` file without overriding injected environment variables |
+| `integrations.py` | Validates encrypted user webhooks, scanner settings, and remediation policies; strips secrets from browser responses |
+| `remediation.py` | Defines and validates severity-based remediation timelines |
+| `webhooks.py` | Validates safe webhook destinations and delivers signed, retried inventory export payloads |
 | `observability.py` | Configures structured console and PostgreSQL logging |
 
 ### Application security posture management
@@ -75,12 +79,15 @@ Provider clients expose a common operational shape: validate access, list projec
 | `semgrep_connector.py` | Streams Semgrep projects and SAST, SCA, and AI-powered findings in bounded pages |
 | `invicti_connector.py` | Pages Invicti issues and maps website targets into DAST findings |
 | `nowsecure_connector.py` | Pages NowSecure applications and normalizes affected findings from latest complete assessments |
-| `aspm_connectors.py` | Coordinates configured adapters, repository ingestion, redacted results, and sync audit state |
+| `sonarqube_connector.py` | Queries SonarQube health and issues APIs and normalizes source findings |
+| `zap_connector.py` | Queries OWASP ZAP health and alerts APIs and normalizes DAST findings |
+| `report_import_connector.py` | Models Trivy, Gitleaks, Nuclei, and OWASP Dependency-Check SARIF import profiles |
+| `aspm_connectors.py` | Coordinates configured adapters, connection tests, repository ingestion, redacted results, and sync audit state |
 | `aspm_postgres.py` | Owns ASPM schema, atomic and streamed imports, correlation, deduplication, data interactions, asset risk, workflow events, search, exports, profiles, posture, and coverage |
 | `aspm_cli.py` | Provides the dedicated automation CLI without changing the inventory scanner argument contract |
-| `ui_static/aspm-ui.js` | Drives posture, connector sync, finding workflow, asset risk, inventory, and coverage views |
+| `ui_static/aspm-ui.js` | Drives Dashboard drill-downs, connector setup, tests and sync, finding workflow, asset risk, inventory, and coverage views |
 
-`FindingDocument` is the canonical ingestion boundary. `AspmRepository.ingest()` first commits an import audit record, then applies every finding, identifier, coverage, and snapshot change in one transaction. `ingest_batches()` commits bounded connector pages under one import identity and performs snapshot reconciliation only after every page succeeds. Asset resolution is cached per source scope within each transaction.
+`FindingDocument` is the canonical ingestion boundary. `AspmRepository.ingest()` first commits an import audit record, then applies every finding, identifier, coverage, and snapshot change in one transaction. `ingest_batches()` commits bounded connector pages under one import identity and performs snapshot reconciliation only after every page succeeds. Asset resolution is cached per source scope within each transaction. `ConnectorService.test_connections()` performs lightweight remote checks without importing findings or changing sync history.
 
 `RiskEngine` and `AssetRiskProfileEngine` are deterministic and side-effect free. `AspmRepository` stores finding factors, data-interaction evidence, the three asset score components, and the resulting risk band. Application profile or workflow changes recalculate affected risk records in the same transaction.
 
