@@ -1,9 +1,14 @@
+import io
 import unittest
+import tempfile
 from html.parser import HTMLParser
 from pathlib import Path
+from unittest.mock import Mock
 
 from appsec_scan_router.ui import (
+    ApplicationInventoryServiceHandler,
     report_content_type,
+    static_asset_bundle,
     static_asset_path,
     static_cache_control,
     static_content,
@@ -88,6 +93,42 @@ class UiStaticTests(unittest.TestCase):
         ):
             with self.assertRaises(FileNotFoundError):
                 static_asset_path(unsafe_name)
+
+    def test_static_asset_bundle_remains_stable_after_source_files_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            asset = root / "app.js"
+            asset.write_bytes(b"before")
+
+            bundle = static_asset_bundle(root)
+            asset.write_bytes(b"after")
+
+        self.assertEqual(bundle["app.js"], b"before")
+
+    def test_static_asset_bundle_excludes_external_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as external_directory:
+            root = Path(directory)
+            external_asset = Path(external_directory) / "external.js"
+            external_asset.write_bytes(b"external")
+            (root / "external.js").symlink_to(external_asset)
+
+            bundle = static_asset_bundle(root)
+
+        self.assertNotIn("external.js", bundle)
+
+    def test_static_handler_serves_captured_bundle(self):
+        handler = object.__new__(ApplicationInventoryServiceHandler)
+        handler.static_assets = {"app.js": b"captured"}
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock()
+        handler.send_error = Mock()
+        handler.wfile = io.BytesIO()
+
+        handler.send_static("app.js", "text/javascript")
+
+        self.assertEqual(handler.wfile.getvalue(), b"captured")
+        handler.send_error.assert_not_called()
 
     def test_runs_view_has_a_dedicated_failure_console(self):
         static_root = (

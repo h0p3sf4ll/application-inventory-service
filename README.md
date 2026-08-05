@@ -88,6 +88,8 @@ python -m pip install -e .
 
 ## Quick Start: UI
 
+Restart the UI process after applying package or source updates. The service captures its browser bundle at startup so browser routes and backend API handlers remain aligned.
+
 ```bash
 application-inventory-service-ui \
   --host 127.0.0.1 \
@@ -233,7 +235,7 @@ docker run --rm \
   -p 48731:48731 \
   --env-file .env \
   -v "$PWD/reports:/reports" \
-  h0p3sf4ll/application-inventory-service:1.9.0 \
+  h0p3sf4ll/application-inventory-service:1.9.1 \
   ui \
   --host 0.0.0.0 \
   --port 48731 \

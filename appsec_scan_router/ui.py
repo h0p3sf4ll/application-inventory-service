@@ -134,6 +134,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
     health_cache_at: float = 0.0
     startup_database_status: dict[str, Any] | None = None
     local_assistant: LocalInventoryAssistant
+    static_assets: dict[str, bytes] = {}
 
     def handle_one_request(self) -> None:
         started = time.monotonic()
@@ -342,12 +343,12 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
     def handle_static(self, path: str) -> None:
         name = path.removeprefix("/static/")
         try:
-            asset_path = static_asset_path(name)
+            name = static_asset_name(name)
         except FileNotFoundError:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        content_type = STATIC_CONTENT_TYPES.get(asset_path.suffix.lower())
-        if not content_type:
+        content_type = STATIC_CONTENT_TYPES.get(Path(name).suffix.lower())
+        if not content_type or name not in self.static_assets:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         self.send_static(name, content_type)
@@ -1358,9 +1359,8 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         )
 
     def send_static(self, name: str, content_type: str) -> None:
-        try:
-            content = static_content(name)
-        except FileNotFoundError:
+        content = self.static_assets.get(name)
+        if content is None:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         self.send_response(HTTPStatus.OK)
@@ -1683,6 +1683,19 @@ def scan_environment_for_user(config: dict[str, Any], auth: AuthManager) -> dict
 
 
 def static_asset_path(name: str) -> Path:
+    asset_name = static_asset_name(name)
+    root = STATIC_ROOT.resolve()
+    asset_path = (root / asset_name).resolve()
+    try:
+        asset_path.relative_to(root)
+    except ValueError as exc:
+        raise FileNotFoundError(name) from exc
+    if not asset_path.is_file() or asset_path.suffix.lower() not in STATIC_CONTENT_TYPES:
+        raise FileNotFoundError(name)
+    return asset_path
+
+
+def static_asset_name(name: str) -> str:
     raw_name = unquote(name)
     relative_path = Path(raw_name)
     if (
@@ -1692,15 +1705,23 @@ def static_asset_path(name: str) -> Path:
         or any(part in {".", ".."} or part.startswith(".") for part in relative_path.parts)
     ):
         raise FileNotFoundError(name)
-    root = STATIC_ROOT.resolve()
-    asset_path = (root / relative_path).resolve()
-    try:
-        asset_path.relative_to(root)
-    except ValueError as exc:
-        raise FileNotFoundError(name) from exc
-    if not asset_path.is_file() or asset_path.suffix.lower() not in STATIC_CONTENT_TYPES:
-        raise FileNotFoundError(name)
-    return asset_path
+    return relative_path.as_posix()
+
+
+def static_asset_bundle(root: Path | None = None) -> dict[str, bytes]:
+    static_root = (root or STATIC_ROOT).resolve()
+    bundle: dict[str, bytes] = {}
+    for asset_path in sorted(static_root.rglob("*")):
+        resolved_path = asset_path.resolve()
+        try:
+            resolved_path.relative_to(static_root)
+        except ValueError:
+            continue
+        if not resolved_path.is_file() or asset_path.suffix.lower() not in STATIC_CONTENT_TYPES:
+            continue
+        asset_name = static_asset_name(asset_path.relative_to(static_root).as_posix())
+        bundle[asset_name] = resolved_path.read_bytes()
+    return bundle
 
 
 def static_content(name: str) -> bytes:
@@ -1912,6 +1933,7 @@ def serve(host: str, port: int, reports_dir: Path) -> None:
     configured_observability_dsn = (
         observability_dsn() or startup_database_config["postgresDsn"]
     )
+    static_assets = static_asset_bundle()
     configure_logging(
         env_flag(
             "APPLICATION_INVENTORY_SERVICE_VERBOSE", "APPSEC_INVENTORY_SERVICE_VERBOSE"
@@ -1933,6 +1955,7 @@ def serve(host: str, port: int, reports_dir: Path) -> None:
             "health_cache": startup_database,
             "health_cache_at": time.monotonic(),
             "local_assistant": local_assistant,
+            "static_assets": static_assets,
         },
     )
     server = ThreadingHTTPServer((host, port), handler)

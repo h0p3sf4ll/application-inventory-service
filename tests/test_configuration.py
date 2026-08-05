@@ -205,6 +205,25 @@ class UserIntegrationStoreTests(unittest.TestCase):
         self.assertTrue(response["webhook"]["hasBearerToken"])
         self.assertNotIn("bearerToken", response["webhook"])
 
+    def test_configuration_routes_are_registered_for_post_requests(self) -> None:
+        routes = {
+            "/api/configuration/connectors": "handle_configuration_connectors",
+            "/api/configuration/webhooks": "handle_configuration_webhooks",
+            "/api/configuration/remediation-policy": "handle_configuration_remediation_policy",
+        }
+        for path, method_name in routes.items():
+            with self.subTest(path=path):
+                handler = object.__new__(ApplicationInventoryServiceHandler)
+                handler.path = path
+                handler.send_error = Mock()
+                endpoint = Mock()
+                setattr(handler, method_name, endpoint)
+
+                handler.do_POST()
+
+                endpoint.assert_called_once_with()
+                handler.send_error.assert_not_called()
+
     def test_configuration_remediation_policy_save_updates_user_policy(self) -> None:
         record = SessionRecord(
             "session-a",
