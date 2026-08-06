@@ -39,6 +39,8 @@ Remote connector requests retry rate limits and transient upstream errors within
 
 Vendor references: [Semgrep Enterprise API](https://semgrep.dev/api/v1/docs/), [Invicti API](https://www.netsparkercloud.com/swagger/docs/v1), and [NowSecure findings GraphQL](https://support.nowsecure.com/hc/en-us/articles/21777208143629-Platform-Findings-GraphQL-API).
 
+For implementation and registration guidance, see the [Connector Development Guide](CONNECTOR_DEVELOPMENT.md).
+
 ## Supported Inputs
 
 | Format | Detection | Typical source |

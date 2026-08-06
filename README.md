@@ -53,6 +53,7 @@ AppSec Atlas 2.0 publishes as `appsec-atlas`, with `appsec_atlas` as its primary
 - [How the Application Works](docs/HOW_THE_APPLICATION_WORKS.md)
 - [Application Intent](docs/APP_INTENT.md)
 - [ASPM Operations Guide](docs/ASPM_OPERATIONS.md)
+- [Connector Development Guide](docs/CONNECTOR_DEVELOPMENT.md)
 - [Security Baseline](SECURITY.md)
 - [Code Reference](docs/CODE_REFERENCE.md)
 - [GitHub SSO Guide](docs/GITHUB_SSO.md)
