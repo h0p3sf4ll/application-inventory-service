@@ -217,7 +217,7 @@ def build_scan_command(config: dict[str, Any], reports_dir: Path) -> list[str]:
     command = [
         sys.executable,
         "-m",
-        "application_inventory_service",
+        "appsec_atlas",
         "--provider",
         config["provider"],
         "--out-dir",

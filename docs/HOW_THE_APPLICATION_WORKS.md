@@ -1,8 +1,8 @@
-# How Application Security Posture Management Works
+# How AppSec Atlas Works
 
 ## Purpose
 
-Application Security Posture Management provides one operating view of application ownership, scanner findings, contextual risk, security-tool coverage, and remediation work. It combines data from Azure DevOps, GitHub, PostgreSQL, and security scanners without cloning or executing application source code.
+AppSec Atlas provides one operating view of application ownership, scanner findings, contextual risk, security-tool coverage, and remediation work. It combines data from Azure DevOps, GitHub, PostgreSQL, and security scanners without cloning or executing application source code.
 
 The application answers five questions:
 
@@ -51,7 +51,7 @@ flowchart LR
     PostgreSQL --> Posture["Posture, Findings, and Coverage views"]
 ```
 
-An inventory scan does not run Semgrep, SonarQube, or another security scanner. It discovers applications and produces scanner target files. Scanner pipelines can return result files, while configured Semgrep, Invicti, NowSecure, SonarQube, and OWASP ZAP connectors can pull current findings directly. Trivy, Gitleaks, Nuclei, and OWASP Dependency-Check output is imported as SARIF.
+An inventory scan does not run Semgrep, SonarQube, or another security scanner. It discovers applications and produces scanner target files. Scanner pipelines can return result files, while configured Semgrep Enterprise, Invicti, NowSecure, SonarQube, and OWASP ZAP connectors can pull current findings directly. Semgrep Community output is imported as `semgrep --json`; Trivy, Gitleaks, Nuclei, and OWASP Dependency-Check output is imported as SARIF.
 
 ## What Happens During an Inventory Scan
 
@@ -287,9 +287,9 @@ Example ASPM commands:
 ```bash
 export APPLICATION_INVENTORY_POSTGRES_DSN="postgresql://app_user:secret@postgres:5432/appsec"
 
-application-inventory-aspm --owner-user-id security-platform posture
-application-inventory-aspm --owner-user-id security-platform findings --severity critical --status open
-application-inventory-aspm --owner-user-id security-platform ingest results.sarif --tool-key codeql --complete-snapshot
+appsec-atlas-aspm --owner-user-id security-platform posture
+appsec-atlas-aspm --owner-user-id security-platform findings --severity critical --status open
+appsec-atlas-aspm --owner-user-id security-platform ingest results.sarif --tool-key codeql --complete-snapshot
 ```
 
 ## Recommended Operating Cycle

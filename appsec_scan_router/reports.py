@@ -253,7 +253,7 @@ def workbook_cell_value(value: object) -> object:
 
 
 def report_file_stem(out_prefix: str, application_types: tuple[str, ...] = ()) -> str:
-    prefix = safe_file_part(out_prefix) or "application_inventory_service"
+    prefix = safe_file_part(out_prefix) or "appsec_atlas"
     return f"{prefix}_{application_type_label(application_types)}"
 
 

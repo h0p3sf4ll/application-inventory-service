@@ -1,11 +1,11 @@
-# ASPM Operations Guide
+# AppSec Atlas Operations Guide
 
-Application Security Posture Management combines branch-level application inventory with normalized scanner findings, contextual risk, scanner coverage, and remediation workflow. Inventory remains the source of application identity. Scanner imports add security state without duplicating application records.
+AppSec Atlas combines branch-level application inventory with normalized scanner findings, contextual risk, scanner coverage, and remediation workflow. Inventory remains the source of application identity. Scanner imports add security state without duplicating application records.
 
 ## Operating Model
 
 1. Inventory scans discover repositories, branches, application types, languages, owners, activity, deployment domains, and mobile metadata.
-2. Security tools publish files or the service pulls findings through Semgrep, Invicti, NowSecure, SonarQube, and OWASP ZAP connectors.
+2. Security tools publish files or the service pulls findings through Semgrep Enterprise, Invicti, NowSecure, SonarQube, and OWASP ZAP connectors.
 3. The ingestion service normalizes severity, identity, source location, package data, CWE, CVE, CVSS, EPSS, exploit evidence, and remediation metadata.
 4. Findings correlate through exact repository identity, mobile package identifier, or web domain. Exact application name is used only when it identifies one asset. Ambiguous matches remain unlinked.
 5. A deterministic fingerprint deduplicates findings within a tool. Repeated imports update the existing record and preserve remediation state.
@@ -19,24 +19,25 @@ Application Security Posture Management combines branch-level application invent
 
 | Connector | Collection | Required configuration | Correlation anchors |
 | --- | --- | --- | --- |
-| Semgrep | Deployment findings and projects API | App token | Repository URL, project, repository, branch |
+| Semgrep Enterprise | Deployment findings and projects API | App token | Repository URL, project, repository, branch |
+| Semgrep Community | Local `semgrep --json` report | Report location | Upload through **Findings** > **Import findings**; no remote sync |
 | Invicti | `/api/1.0/issues/allissues` | User ID and API token; API root is overrideable | Website root domain, website name |
 | NowSecure | Platform GraphQL | Platform token | Android package or Apple bundle identifier, application name |
 | SonarQube | Issues API | Server URL and user token | Source metadata supplied by the issue |
 | OWASP ZAP | Alerts API | API URL and optional API key | Target URL or domain |
-| Trivy, Gitleaks, Nuclei, OWASP Dependency-Check | SARIF import profile | Report location | Upload through **Findings** > **Import SARIF**; no remote sync |
+| Trivy, Gitleaks, Nuclei, OWASP Dependency-Check | SARIF import profile | Report location | Upload through **Findings** > **Import findings**; no remote sync |
 
 Credentials belong in a deployment secret manager. Do not place them in source control, browser configuration, command output, or scanner metadata. Use **Configuration** > **Scanner connections** to add account-specific values through the setup wizard. Those values are encrypted per user, and secret fields are never returned to the browser. The status API reports only whether a connector is configured and its non-secret endpoint.
 
-Semgrep, Invicti, and NowSecure stream bounded API pages into page-sized database commits. Semgrep uses zero-based pages of up to 3,000 findings, server-side ref deduplication, and four ordered page-prefetch workers by default. Set `APPLICATION_INVENTORY_SEMGREP_WORKERS` from `1` through `16` to match the vendor rate limit. By default it synchronizes open, reviewing, fixing, and provisionally ignored findings for SAST, SCA, and AI-powered scans. Override `APPLICATION_INVENTORY_SEMGREP_STATUSES` or `APPLICATION_INVENTORY_SEMGREP_ISSUE_TYPES` only when the resulting snapshot semantics are understood. `APPLICATION_INVENTORY_SEMGREP_MAX_FINDINGS` controls the per-sync safety limit and defaults to 5,000,000 for large deployments.
+Semgrep Enterprise, Invicti, and NowSecure stream bounded API pages into page-sized database commits. Semgrep Enterprise uses zero-based pages of up to 3,000 findings, server-side ref deduplication, and four ordered page-prefetch workers by default. Set `APPLICATION_INVENTORY_SEMGREP_WORKERS` from `1` through `16` to match the vendor rate limit. By default it synchronizes open, reviewing, fixing, and provisionally ignored findings for SAST, SCA, and AI-powered scans. Override `APPLICATION_INVENTORY_SEMGREP_STATUSES` or `APPLICATION_INVENTORY_SEMGREP_ISSUE_TYPES` only when the resulting snapshot semantics are understood. `APPLICATION_INVENTORY_SEMGREP_MAX_FINDINGS` controls the per-sync safety limit and defaults to 5,000,000 for large deployments. Semgrep Community has no hosted connector: run `semgrep --json` and import the generated JSON.
 
-Invicti defaults to `https://www.netsparkercloud.com/api/1.0` and permits an API-root override for private deployments. It prefetches two pages by default to limit tenant throttling, commits ten pages per database batch, and applies a 120-second minimum page timeout. The connector requests `rawDetails=false` to avoid retaining unnecessary request and response content. NowSecure imports affected findings from each application's latest complete assessment and records all assessed applications as coverage targets. SonarQube and OWASP ZAP synchronize remotely; SARIF profiles intentionally do not call scanner APIs and must be uploaded from **Findings**.
+Invicti defaults to `https://www.netsparkercloud.com/api/1.0` and permits an API-root override for private deployments. It prefetches two pages by default to limit tenant throttling, commits ten pages per database batch, and applies a 120-second minimum page timeout. The connector requests `rawDetails=false` to avoid retaining unnecessary request and response content. NowSecure imports affected findings from each application's latest complete assessment and records all assessed applications as coverage targets. SonarQube and OWASP ZAP synchronize remotely; Semgrep Community and SARIF profiles intentionally do not call scanner APIs and must be uploaded from **Findings**.
 
 Use **Test connections** to make a lightweight request to configured remote scanners before synchronization. It does not import findings or update Dashboard tool health. Tool health reflects the latest import or connector sync, so it can retain a historical failure after a successful connection test until a later sync completes.
 
 Remote connector requests retry rate limits and transient upstream errors within each HTTP attempt. DNS, connection, and timeout failures retry the complete request up to `APPLICATION_INVENTORY_CONNECTOR_NETWORK_ATTEMPTS` times with bounded exponential backoff. Retry events are written to application observability logs with redacted endpoints and no credentials.
 
-Vendor references: [Semgrep API](https://semgrep.dev/api/v1/docs/), [Invicti API](https://www.netsparkercloud.com/swagger/docs/v1), and [NowSecure findings GraphQL](https://support.nowsecure.com/hc/en-us/articles/21777208143629-Platform-Findings-GraphQL-API).
+Vendor references: [Semgrep Enterprise API](https://semgrep.dev/api/v1/docs/), [Invicti API](https://www.netsparkercloud.com/swagger/docs/v1), and [NowSecure findings GraphQL](https://support.nowsecure.com/hc/en-us/articles/21777208143629-Platform-Findings-GraphQL-API).
 
 ## Supported Inputs
 
@@ -165,9 +166,9 @@ Coverage requires source context. Unlinked findings remain actionable but do not
 ## Python SDK
 
 ```python
-from application_inventory_service import AspmService
+from appsec_atlas import AppSecAtlasAspmService
 
-aspm = AspmService(
+aspm = AppSecAtlasAspmService(
     postgres_dsn="postgresql://app_user:secret@postgres:5432/appsec",
     postgres_schema="application_inventory",
     owner_user_id="security-platform",
@@ -206,7 +207,7 @@ The ASPM command is separate from the inventory scanner command, so existing aut
 ```bash
 export APPLICATION_INVENTORY_POSTGRES_DSN="postgresql://app_user:secret@postgres:5432/appsec"
 
-application-inventory-aspm \
+appsec-atlas-aspm \
   --owner-user-id security-platform \
   --owner-user-login scanner-automation \
   ingest results.sarif \
@@ -221,16 +222,16 @@ application-inventory-aspm \
 ```
 
 ```bash
-application-inventory-aspm --owner-user-id security-platform posture
-application-inventory-aspm --owner-user-id security-platform coverage --limit 200
-application-inventory-aspm --owner-user-id security-platform findings --severity critical --severity high --status open
-application-inventory-aspm --owner-user-id security-platform findings --overdue --export xlsx --output overdue.xlsx
-application-inventory-aspm --owner-user-id security-platform update FINDING_ID --status in_progress --assignee payments-platform --note "Remediation started"
-application-inventory-aspm --owner-user-id security-platform profile 42 --criticality mission_critical --internet-exposure true --data-classification restricted --tag pci
-application-inventory-aspm --owner-user-id security-platform connectors status
-application-inventory-aspm --owner-user-id security-platform connectors sync --connector semgrep --connector nowsecure
-application-inventory-aspm --owner-user-id security-platform connectors history --limit 20
-application-inventory-aspm --owner-user-id security-platform assets --risk-band critical --data-type payment_card_data
+appsec-atlas-aspm --owner-user-id security-platform posture
+appsec-atlas-aspm --owner-user-id security-platform coverage --limit 200
+appsec-atlas-aspm --owner-user-id security-platform findings --severity critical --severity high --status open
+appsec-atlas-aspm --owner-user-id security-platform findings --overdue --export xlsx --output overdue.xlsx
+appsec-atlas-aspm --owner-user-id security-platform update FINDING_ID --status in_progress --assignee payments-platform --note "Remediation started"
+appsec-atlas-aspm --owner-user-id security-platform profile 42 --criticality mission_critical --internet-exposure true --data-classification restricted --tag pci
+appsec-atlas-aspm --owner-user-id security-platform connectors status
+appsec-atlas-aspm --owner-user-id security-platform connectors sync --connector semgrep --connector nowsecure
+appsec-atlas-aspm --owner-user-id security-platform connectors history --limit 20
+appsec-atlas-aspm --owner-user-id security-platform assets --risk-band critical --data-type payment_card_data
 ```
 
 Global database and owner options precede the command. The CLI defaults to the local PostgreSQL development credentials and owner scope `cli`; production automation must supply a managed DSN and a stable explicit owner. Export files are created with owner-only permissions. CLI input is bounded to 256 MiB by default through `APPLICATION_INVENTORY_ASPM_CLI_MAX_IMPORT_BYTES`.
@@ -241,7 +242,7 @@ The container exposes the same command through its `aspm` dispatcher:
 docker run --rm \
   --env-file .env \
   -v "$PWD/results.sarif:/input/results.sarif:ro" \
-  h0p3sf4ll/application-inventory-service:1.9.1 \
+  h0p3sf4ll/appsec-atlas:2.0.0 \
   aspm --owner-user-id security-platform ingest /input/results.sarif
 ```
 
@@ -265,7 +266,7 @@ The browser uses session authentication and a CSRF token for every ASPM route. A
 | `POST /api/aspm/connectors/sync` | Pull, normalize, correlate, and persist selected connectors |
 | `POST /api/aspm/connectors/history` | Return user-scoped connector sync audit records |
 
-Use `AspmService` for service-to-service Python integration. Do not automate browser session cookies as an API credential.
+Use `AppSecAtlasAspmService` for service-to-service Python integration. Legacy `AspmService` remains available through the compatibility package. Do not automate browser session cookies as an API credential.
 
 ## Production Controls
 

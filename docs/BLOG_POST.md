@@ -1,8 +1,8 @@
-# Building an Evidence-Based Application Security Posture
+# AppSec Atlas: Evidence-Based Application Security Posture
 
 Security teams cannot manage application risk from separate repository lists, scanner dashboards, spreadsheets, and ticket queues. The operating problem is integration: identify the applications that matter, connect findings to the right source branch, establish business context, and move the highest-risk work to closure.
 
-Application Security Posture Management provides that system of record for Azure DevOps and GitHub Enterprise environments. It combines application discovery, scanner findings, risk prioritization, coverage, and remediation workflow while preserving the existing tools that perform security testing.
+AppSec Atlas provides that system of record for Azure DevOps and GitHub Enterprise environments. It combines application discovery, scanner findings, risk prioritization, coverage, and remediation workflow while preserving the existing tools that perform security testing.
 
 ## Establish the Application Baseline
 

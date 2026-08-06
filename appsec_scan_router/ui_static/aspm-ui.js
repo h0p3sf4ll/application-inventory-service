@@ -430,12 +430,15 @@ export class AspmWorkspace {
     this.elements.connectorGrid.innerHTML = connectors.map((connector) => {
       const syncReady = connector.syncReady === true;
       const managed = connector.configurationSource === "service";
-      const sarifProfile = connector.setup && connector.setup.type === "sarif_profile";
+      const importProfile = connector.setup && connector.setup.importFormat;
+      const importFormat = importProfile
+        ? `<span class="status-chip idle">${this.escapeHtml(importProfile)}</span>`
+        : "";
       const action = syncReady
         ? '<span class="status-chip status-succeeded">Ready</span>'
-        : `${managed ? '<span class="status-chip idle">Managed</span>' : ""}<button class="ghost small" type="button" data-connector-setup="${this.escapeHtml(connector.key)}">Configure</button>`;
+        : `${managed ? '<span class="status-chip idle">Managed</span>' : ""}${importFormat}<button class="ghost small" type="button" data-connector-setup="${this.escapeHtml(connector.key)}">Configure</button>`;
       const selection = `<label class="connector-select"><input type="checkbox" name="connectorSelection" value="${this.escapeHtml(connector.key)}" ${connector.configured ? "checked" : "disabled"} ${syncReady ? "" : "disabled"}><span class="connector-copy"><strong>${this.escapeHtml(connector.name)}</strong><small>${this.escapeHtml(connector.message)}</small></span></label>`;
-      return `<article class="connector-item ${connector.configured ? "configured" : "not-configured"}${sarifProfile ? " sarif-profile" : ""}">
+      return `<article class="connector-item ${connector.configured ? "configured" : "not-configured"}${importProfile ? " report-import-profile" : ""}">
         ${selection}
         <span class="connector-item-action">${action}</span>
       </article>`;
@@ -455,7 +458,7 @@ export class AspmWorkspace {
     const configuration = connector.configuration || {};
     const secrets = configuration.secrets || {};
     this.elements.connectorSetupKey.value = connector.key;
-    this.elements.connectorSetupType.textContent = this.readable(setup.type || "scanner setup");
+    this.elements.connectorSetupType.textContent = setup.importFormat || this.readable(setup.type || "scanner setup");
     this.elements.connectorSetupTitle.textContent = `Configure ${connector.name}`;
     this.elements.connectorSetupDescription.textContent = setup.description || "";
     this.elements.connectorSetupStatus.textContent = "";

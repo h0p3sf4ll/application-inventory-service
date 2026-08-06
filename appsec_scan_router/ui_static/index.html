@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AppSec Atlas | Application Security Posture Management</title>
-    <link rel="stylesheet" href="/static/styles.css?v=27">
+    <link rel="stylesheet" href="/static/styles.css?v=28">
   </head>
   <body class="login-mode">
     <main class="login-shell" id="loginPage">
@@ -161,7 +161,7 @@
                   <h3 id="toolPostureTitle">Scanner operations</h3>
                   <p>Latest completed or failed scanner operation and asset coverage.</p>
                 </div>
-                <button class="ghost compact-button" id="openFindingImport" type="button">Import SARIF</button>
+                <button class="ghost compact-button" id="openFindingImport" type="button">Import findings</button>
               </div>
               <div class="tool-health-grid" id="toolHealthGrid">
                 <p class="empty-state">Import scanner results to establish tool coverage.</p>
@@ -177,14 +177,14 @@
                 <h2>Security findings</h2>
                 <p>One deduplicated workflow across SAST, SCA, secrets, IaC, DAST, and custom tools.</p>
               </div>
-              <button class="primary compact-button" id="toggleFindingImport" type="button">Import SARIF</button>
+              <button class="primary compact-button" id="toggleFindingImport" type="button">Import findings</button>
             </div>
 
             <section class="finding-import hidden" id="findingImportPanel" aria-labelledby="findingImportTitle" hidden>
               <div class="subsection-heading">
                 <div>
-                  <h3 id="findingImportTitle">Import SARIF results</h3>
-                  <p>Upload SARIF 2.1 results from configured scanners, or import Semgrep, SonarQube, and generic JSON.</p>
+                  <h3 id="findingImportTitle">Import scanner results</h3>
+                  <p>Upload SARIF 2.1 results, Semgrep Community JSON, SonarQube issues, or generic JSON.</p>
                 </div>
                 <button class="icon-button compact-close" id="closeFindingImport" type="button" aria-label="Close import" title="Close">&times;</button>
               </div>
@@ -1236,6 +1236,6 @@
       </section>
     </main>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=31" type="module"></script>
+    <script src="/static/app.js?v=32" type="module"></script>
   </body>
 </html>

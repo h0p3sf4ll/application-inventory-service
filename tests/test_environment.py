@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import os
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from appsec_scan_router.environment import load_environment_file, project_environment
+from appsec_scan_router.environment import (
+    load_environment_file,
+    project_environment,
+    project_environment_path,
+)
 
 
 class EnvironmentFileTests(unittest.TestCase):
@@ -35,6 +40,32 @@ class EnvironmentFileTests(unittest.TestCase):
                 with project_environment(env_file):
                     self.assertEqual(os.environ["SCOPED_VALUE"], "from-file")
                 self.assertNotIn("SCOPED_VALUE", os.environ)
+
+    def test_appsec_atlas_environment_file_overrides_legacy_setting(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "APPSEC_ATLAS_ENV_FILE": "/tmp/appsec-atlas.env",
+                "APPLICATION_INVENTORY_ENV_FILE": "/tmp/legacy.env",
+            },
+            clear=True,
+        ):
+            self.assertEqual(project_environment_path(), Path("/tmp/appsec-atlas.env"))
+
+    def test_appsec_atlas_console_commands_preserve_legacy_aliases(self) -> None:
+        pyproject = tomllib.loads(
+            (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
+                encoding="utf-8"
+            )
+        )
+        scripts = pyproject["project"]["scripts"]
+
+        self.assertEqual(scripts["appsec-atlas"], "appsec_atlas.cli:main")
+        self.assertEqual(scripts["appsec-atlas-ui"], "appsec_atlas.ui:main")
+        self.assertEqual(scripts["appsec-atlas-aspm"], "appsec_atlas.aspm:main")
+        self.assertEqual(
+            scripts["application-inventory-service"], "appsec_atlas.cli:main"
+        )
 
 
 if __name__ == "__main__":

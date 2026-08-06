@@ -3,14 +3,14 @@ requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "application-inventory-service"
-version = "1.9.1"
-description = "Application security posture management for Azure DevOps and GitHub Enterprise inventory, scanner findings, risk, coverage, and remediation"
+name = "appsec-atlas"
+version = "2.0.0"
+description = "Application security posture management for inventory, findings, risk, coverage, and remediation"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{name = "Application Inventory Service contributors"}]
+authors = [{name = "AppSec Atlas contributors"}]
 keywords = [
     "appsec",
     "aspm",
@@ -57,22 +57,26 @@ Repository = "https://github.com/InfoSec-Actions/application-inventory-service"
 Issues = "https://github.com/InfoSec-Actions/application-inventory-service/issues"
 
 [project.scripts]
-application-inventory-service = "appsec_scan_router.cli:main"
-application-inventory-service-ui = "appsec_scan_router.ui:main"
-application-inventory-service-container = "appsec_scan_router.entrypoint:main"
-application-inventory-aspm = "appsec_scan_router.aspm_cli:main"
-appsec-aspm = "appsec_scan_router.aspm_cli:main"
-appsec-inventory-service = "appsec_scan_router.cli:main"
-appsec-inventory-service-ui = "appsec_scan_router.ui:main"
-appsec-inventory-service-container = "appsec_scan_router.entrypoint:main"
-appsec-scan-router = "appsec_scan_router.cli:main"
-appsec-scan-router-ui = "appsec_scan_router.ui:main"
-appsec-scan-router-container = "appsec_scan_router.entrypoint:main"
-mobile-app-inventory-tracer = "appsec_scan_router.cli:main"
-ado-mobile-scanner = "appsec_scan_router.cli:main"
+appsec-atlas = "appsec_atlas.cli:main"
+appsec-atlas-ui = "appsec_atlas.ui:main"
+appsec-atlas-container = "appsec_atlas.entrypoint:main"
+appsec-atlas-aspm = "appsec_atlas.aspm:main"
+application-inventory-service = "appsec_atlas.cli:main"
+application-inventory-service-ui = "appsec_atlas.ui:main"
+application-inventory-service-container = "appsec_atlas.entrypoint:main"
+application-inventory-aspm = "appsec_atlas.aspm:main"
+appsec-aspm = "appsec_atlas.aspm:main"
+appsec-inventory-service = "appsec_atlas.cli:main"
+appsec-inventory-service-ui = "appsec_atlas.ui:main"
+appsec-inventory-service-container = "appsec_atlas.entrypoint:main"
+appsec-scan-router = "appsec_atlas.cli:main"
+appsec-scan-router-ui = "appsec_atlas.ui:main"
+appsec-scan-router-container = "appsec_atlas.entrypoint:main"
+mobile-app-inventory-tracer = "appsec_atlas.cli:main"
+ado-mobile-scanner = "appsec_atlas.cli:main"
 
 [tool.setuptools]
-packages = ["appsec_scan_router", "appsec_scan_router.ui_static", "appsec_scan_router.ui_static.aspm", "application_inventory_service", "mobile_scanner"]
+packages = ["appsec_atlas", "appsec_scan_router", "appsec_scan_router.connectors", "appsec_scan_router.ui_static", "appsec_scan_router.ui_static.aspm", "application_inventory_service", "mobile_scanner"]
 py-modules = ["ado_mobile_scanner", "mobile_app_inventory_tracer"]
 include-package-data = false
 

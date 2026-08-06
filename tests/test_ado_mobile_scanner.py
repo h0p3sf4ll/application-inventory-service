@@ -15,6 +15,7 @@ import appsec_scan_router.scanner as scanner_module
 import appsec_scan_router.source_access as source_access_module
 import appsec_scan_router.source_discovery as source_discovery_module
 import appsec_scan_router.ui as ui_module
+import appsec_atlas
 import application_inventory_service
 import ado_mobile_scanner
 import mobile_scanner
@@ -54,6 +55,7 @@ class PublicApiTests(unittest.TestCase):
         self.assertIs(scanner.ScanConfig, ado_mobile_scanner.ScanConfig)
         self.assertIs(scanner.ScanConfig, mobile_scanner.ScanConfig)
         self.assertIs(scanner.ScanConfig, application_inventory_service.ScanConfig)
+        self.assertIs(scanner.ScanConfig, appsec_atlas.ScanConfig)
         self.assertTrue(callable(scanner.scan))
         self.assertTrue(callable(scanner.scan_to_reports))
         self.assertTrue(callable(scanner.validate_scan_source_access))
@@ -65,6 +67,8 @@ class PublicApiTests(unittest.TestCase):
             scanner.ApplicationInventoryService,
             application_inventory_service.ApplicationInventoryService,
         )
+        self.assertIs(scanner.AppSecAtlas, appsec_atlas.AppSecAtlas)
+        self.assertIs(scanner.AppSecAtlasService, appsec_atlas.AppSecAtlasService)
         self.assertTrue(callable(scanner.AppSecInventoryService))
         self.assertTrue(callable(scanner.AppSecScanRouter))
         self.assertTrue(callable(scanner.GitHubEnterpriseClient))
@@ -1321,7 +1325,7 @@ class UiServiceTests(unittest.TestCase):
         self.assertIn("FabrikamCloud", command)
         self.assertNotIn("--repo", command)
         self.assertIn("--store-lookup", command)
-        self.assertIn("application_inventory_service", command)
+        self.assertIn("appsec_atlas", command)
         self.assertIn("--owner-user-id", command)
         self.assertIn("--owner-user-login", command)
         self.assertIn("--postgres-table", command)
@@ -1466,7 +1470,7 @@ class UiServiceTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config["outPrefix"], "application_inventory_service")
+        self.assertEqual(config["outPrefix"], "appsec_atlas")
         self.assertTrue(config["postgresEnabled"])
         self.assertEqual(config["ownerUserId"], "anonymous")
         self.assertEqual(config["ownerUserLogin"], "anonymous")

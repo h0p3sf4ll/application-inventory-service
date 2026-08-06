@@ -10,7 +10,7 @@ from appsec_scan_router.aspm_asset_risk import (
     AssetFindingSummary,
     AssetRiskProfileEngine,
 )
-from appsec_scan_router.aspm_connector_http import (
+from appsec_scan_router.connectors.http import (
     ConnectorConfigurationError,
     ConnectorError,
     JsonApiClient,
@@ -18,11 +18,15 @@ from appsec_scan_router.aspm_connector_http import (
     network_error_reason,
     normalize_api_url,
 )
-from appsec_scan_router.aspm_connector_models import (
+from appsec_scan_router.connectors.models import (
+    ConnectorDefinition,
+    ConnectorField,
     ConnectorPullResult,
     ConnectorStatus,
 )
-from appsec_scan_router.aspm_connectors import ConnectorService, connector_status
+from appsec_scan_router.connectors.registry import ConnectorRegistry
+from appsec_scan_router.connectors.service import ConnectorService, connector_status
+from appsec_scan_router.aspm_connectors import ConnectorService as CompatibilityConnectorService
 from appsec_scan_router.aspm_data import (
     AssetDataInteraction,
     DataInteractionClassifier,
@@ -35,15 +39,32 @@ from appsec_scan_router.aspm_models import (
 )
 from appsec_scan_router.aspm_postgres import repository_asset_candidate
 from appsec_scan_router.aspm_risk import AssetRiskContext
-from appsec_scan_router.invicti_connector import InvictiConnector, invicti_finding
-from appsec_scan_router.nowsecure_connector import NowSecureConnector, nowsecure_finding
-from appsec_scan_router.semgrep_connector import SemgrepConnector, semgrep_finding
-from appsec_scan_router.sonarqube_connector import SonarQubeConnector
-from appsec_scan_router.zap_connector import ZapConnector
-from appsec_scan_router.report_import_connector import ReportImportConnector
+from appsec_scan_router.connectors.invicti import InvictiConnector, invicti_finding
+from appsec_scan_router.connectors.nowsecure import NowSecureConnector, nowsecure_finding
+from appsec_scan_router.connectors.semgrep_enterprise import SemgrepConnector, semgrep_finding
+from appsec_scan_router.connectors.semgrep_community import (
+    CONNECTOR_DEFINITION as SEMGREP_COMMUNITY_CONNECTOR,
+)
+from appsec_scan_router.connectors.report_import import ReportImportConnector
+from appsec_scan_router.connectors.sonarqube import SonarQubeConnector
+from appsec_scan_router.connectors.zap import ZapConnector
 
 
 class ConnectorNormalizationTests(unittest.TestCase):
+    def test_semgrep_enterprise_api_and_community_profile_are_distinct(self) -> None:
+        enterprise = SemgrepConnector(configuration={"token": "enterprise-token"})
+        community = SEMGREP_COMMUNITY_CONNECTOR.create(
+            30, {"reportPath": "reports/semgrep.json"}
+        )
+
+        self.assertEqual(enterprise.key, "semgrep")
+        self.assertEqual(enterprise.name, "Semgrep Enterprise")
+        self.assertTrue(enterprise.status().configured)
+        self.assertEqual(community.key, "semgrep_community")
+        self.assertEqual(community.name, "Semgrep Community")
+        self.assertTrue(community.status().configured)
+        self.assertIn("Semgrep JSON", community.status().message)
+
     def test_configured_service_scanner_stays_checked_and_sync_ready(self) -> None:
         connector = Mock()
         connector.key = "semgrep"
@@ -86,7 +107,7 @@ class ConnectorNormalizationTests(unittest.TestCase):
             ],
         }
         with patch(
-            "appsec_scan_router.sonarqube_connector.JsonApiClient", return_value=client
+            "appsec_scan_router.connectors.sonarqube.JsonApiClient", return_value=client
         ) as client_class:
             connector = SonarQubeConnector(
                 configuration={
@@ -121,7 +142,7 @@ class ConnectorNormalizationTests(unittest.TestCase):
             ]
         }
         with patch(
-            "appsec_scan_router.zap_connector.JsonApiClient", return_value=client
+            "appsec_scan_router.connectors.zap.JsonApiClient", return_value=client
         ):
             connector = ZapConnector(
                 configuration={
@@ -211,6 +232,79 @@ class ConnectorNormalizationTests(unittest.TestCase):
             {item.data_type for item in finding.data_interactions},
             {"device_identifiers", "tracking_data"},
         )
+
+
+class ConnectorRegistryTests(unittest.TestCase):
+    def test_registry_creates_connectors_from_individual_definitions(self) -> None:
+        connector = Mock()
+        factory = Mock(return_value=connector)
+        registry = ConnectorRegistry(
+            (
+                ConnectorDefinition(
+                    key="example",
+                    name="Example",
+                    connector_type="cloud_api",
+                    service_managed=False,
+                    description="Example connector.",
+                    fields=(ConnectorField("token", "API token", required=True, secret=True),),
+                    factory=factory,
+                ),
+            )
+        )
+
+        connectors = registry.create_all(45, {"example": {"token": "secret"}})
+
+        self.assertEqual(connectors, (connector,))
+        factory.assert_called_once_with(45, {"token": "secret"})
+        self.assertEqual(registry.keys, ("example",))
+        self.assertEqual(registry.remote_keys, ("example",))
+        self.assertEqual(
+            registry.setup("example")["fields"],
+            [{"key": "token", "label": "API token", "required": True, "secret": True}],
+        )
+
+    def test_service_uses_registry_extensions_without_concrete_wiring(self) -> None:
+        connector = Mock()
+        connector.key = "example"
+        connector.name = "Example"
+        connector.status.return_value = ConnectorStatus(
+            "example", "Example", True, "https://example.test", "Ready"
+        )
+        connector.test_connection.return_value = {"account": "verified"}
+        factory = Mock(return_value=connector)
+        registry = ConnectorRegistry(
+            (
+                ConnectorDefinition(
+                    key="example",
+                    name="Example",
+                    connector_type="cloud_api",
+                    service_managed=False,
+                    description="Example connector.",
+                    fields=(ConnectorField("token", "API token", required=True, secret=True),),
+                    factory=factory,
+                ),
+            )
+        )
+        service = ConnectorService(
+            None,
+            "user-a",
+            "alice",
+            timeout_seconds=45,
+            connector_configurations={"example": {"token": "secret"}},
+            registry=registry,
+        )
+
+        status = service.status()
+        result = service.test_connections(["example"])
+
+        factory.assert_called_once_with(45, {"token": "secret"})
+        self.assertEqual(status[0]["configurationSource"], "account")
+        self.assertTrue(status[0]["syncReady"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["results"][0]["metadata"], {"account": "verified"})
+
+    def test_compatibility_facade_reexports_connector_service(self) -> None:
+        self.assertIs(CompatibilityConnectorService, ConnectorService)
 
 
 class DataRiskTests(unittest.TestCase):
@@ -366,7 +460,7 @@ class ConnectorServiceTests(unittest.TestCase):
                 },
                 clear=True,
             ),
-            patch("appsec_scan_router.invicti_connector.JsonApiClient") as client_class,
+            patch("appsec_scan_router.connectors.invicti.JsonApiClient") as client_class,
         ):
             connector = InvictiConnector()
 
@@ -402,7 +496,7 @@ class ConnectorServiceTests(unittest.TestCase):
                 clear=False,
             ),
             patch(
-                "appsec_scan_router.invicti_connector.JsonApiClient",
+                "appsec_scan_router.connectors.invicti.JsonApiClient",
                 return_value=client,
             ),
         ):
@@ -533,7 +627,7 @@ class ConnectorServiceTests(unittest.TestCase):
                 clear=False,
             ),
             patch(
-                "appsec_scan_router.semgrep_connector.JsonApiClient",
+                "appsec_scan_router.connectors.semgrep_enterprise.JsonApiClient",
                 return_value=client,
             ),
         ):
@@ -573,7 +667,7 @@ class ConnectorServiceTests(unittest.TestCase):
                 clear=False,
             ),
             patch(
-                "appsec_scan_router.semgrep_connector.JsonApiClient",
+                "appsec_scan_router.connectors.semgrep_enterprise.JsonApiClient",
                 return_value=client,
             ),
         ):
@@ -603,7 +697,7 @@ class ConnectorServiceTests(unittest.TestCase):
                 clear=False,
             ),
             patch(
-                "appsec_scan_router.semgrep_connector.JsonApiClient",
+                "appsec_scan_router.connectors.semgrep_enterprise.JsonApiClient",
                 return_value=client,
             ),
         ):
@@ -662,7 +756,7 @@ class ConnectorServiceTests(unittest.TestCase):
                     "APPLICATION_INVENTORY_CONNECTOR_NETWORK_BACKOFF_SECONDS": "1",
                 },
             ),
-            patch("appsec_scan_router.aspm_connector_http.time.sleep") as sleep,
+            patch("appsec_scan_router.connectors.http.time.sleep") as sleep,
         ):
             document = client.get("findings")
 
@@ -685,7 +779,7 @@ class ConnectorServiceTests(unittest.TestCase):
                 os.environ,
                 {"APPLICATION_INVENTORY_CONNECTOR_NETWORK_ATTEMPTS": "2"},
             ),
-            patch("appsec_scan_router.aspm_connector_http.time.sleep"),
+            patch("appsec_scan_router.connectors.http.time.sleep"),
             self.assertRaisesRegex(
                 ConnectorError,
                 "failed after 2 network attempts: DNS resolution failed",

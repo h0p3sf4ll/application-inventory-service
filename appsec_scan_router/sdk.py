@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .aspm_connectors import ConnectorService
+from .connectors.service import ConnectorService
 from .aspm_ingest import parse_finding_document
 from .aspm_postgres import AspmRepository
 from .models import ScanConfig
@@ -29,6 +29,8 @@ class ApplicationInventoryService:
 
 AppSecInventoryService = ApplicationInventoryService
 AppSecScanRouter = ApplicationInventoryService
+AppSecAtlas = ApplicationInventoryService
+AppSecAtlasService = ApplicationInventoryService
 
 
 class ApplicationSecurityPostureManagementService:
@@ -168,3 +170,4 @@ class ApplicationSecurityPostureManagementService:
 
 
 AspmService = ApplicationSecurityPostureManagementService
+AppSecAtlasAspmService = ApplicationSecurityPostureManagementService

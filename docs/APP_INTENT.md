@@ -1,6 +1,6 @@
-# Application Intent
+# AppSec Atlas Intent
 
-Application Security Posture Management gives security, platform, and engineering teams a current software inventory, a correlated security finding system of record, and an operational remediation workflow without cloning repositories.
+AppSec Atlas gives security, platform, and engineering teams a current software inventory, a correlated security finding system of record, and an operational remediation workflow without cloning repositories.
 
 ## Problem
 

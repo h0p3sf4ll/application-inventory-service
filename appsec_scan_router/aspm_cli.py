@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .aspm_connectors import CONNECTOR_KEYS
+from .connectors.registry import CONNECTOR_KEYS
 from .aspm_ingest import SUPPORTED_FINDING_FORMATS
 from .aspm_models import FindingSeverity, FindingStatus, bounded_text
 from .constants import DEFAULT_POSTGRES_SCHEMA
@@ -22,8 +22,8 @@ DEFAULT_IMPORT_LIMIT_BYTES = 256 * 1024 * 1024
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="application-inventory-aspm",
-        description="Ingest, prioritize, query, and manage application security findings.",
+        prog="appsec-atlas-aspm",
+        description="Ingest, prioritize, query, and manage AppSec Atlas findings.",
     )
     parser.add_argument(
         "--postgres-dsn",

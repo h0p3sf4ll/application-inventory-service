@@ -1,4 +1,7 @@
-import {AspmWorkspace} from "/static/aspm-ui.js?v=19";
+import {AspmWorkspace} from "/static/aspm-ui.js?v=20";
+
+const APPSEC_ATLAS_STORAGE_KEY = "appsec-atlas-ui";
+const LEGACY_STORAGE_KEY = "application-inventory-service-ui";
 
 const form = document.querySelector("#scanForm");
 const loginPage = document.querySelector("#loginPage");
@@ -806,7 +809,7 @@ function renderActiveScan() {
     activeTitle.textContent = "No scan selected";
     detectedCount.textContent = "0";
     runtimeValue.textContent = "0s";
-    commandLine.textContent = "application-inventory-service";
+    commandLine.textContent = "appsec-atlas";
     copyCommandButton.disabled = true;
     pauseScanButton.disabled = true;
     resumeScanButton.disabled = true;
@@ -826,7 +829,7 @@ function renderActiveScan() {
   activeTitle.textContent = `${scan.org || "Unknown"} · ${scan.target || "all"} · ${providerLabel(scan.provider)} · ${applicationTypesLabel(scan.applicationTypes)}${attemptLabel}`;
   detectedCount.textContent = String(scan.detectedCount || 0);
   runtimeValue.textContent = scanRuntime(scan);
-  commandLine.textContent = scan.command || "application-inventory-service";
+  commandLine.textContent = scan.command || "appsec-atlas";
   copyCommandButton.disabled = !scan.command;
   const paused = scan.status === "paused";
   pauseScanButton.classList.toggle("hidden", paused);
@@ -2367,7 +2370,11 @@ function sourceFieldChanged(target) {
 }
 
 function loadForm() {
-  const saved = JSON.parse(localStorage.getItem("application-inventory-service-ui") || "{}");
+  const saved = JSON.parse(
+    localStorage.getItem(APPSEC_ATLAS_STORAGE_KEY)
+    || localStorage.getItem(LEGACY_STORAGE_KEY)
+    || "{}"
+  );
   applyDefaultValues();
   for (const name of persistedFields) {
     if (!(name in saved)) {
@@ -2413,7 +2420,7 @@ function saveForm() {
       saved[name] = value(data, name);
     }
   }
-  localStorage.setItem("application-inventory-service-ui", JSON.stringify(saved));
+  localStorage.setItem(APPSEC_ATLAS_STORAGE_KEY, JSON.stringify(saved));
 }
 
 function resetDefaults() {

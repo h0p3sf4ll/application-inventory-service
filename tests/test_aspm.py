@@ -155,6 +155,8 @@ class FindingIngestionTests(unittest.TestCase):
         )
 
         self.assertEqual(semgrep.source_format, "semgrep")
+        self.assertEqual(semgrep.tool_key, "semgrep_community")
+        self.assertEqual(semgrep.tool_name, "Semgrep Community")
         self.assertEqual(semgrep.findings[0].cwes, ("CWE-95",))
         self.assertEqual(sonarqube.source_format, "sonarqube")
         self.assertEqual(sonarqube.findings[0].severity, "critical")

@@ -36,7 +36,7 @@ jobs:
           python -m pip install -e . bandit pip-audit
 
       - name: Static security analysis
-        run: bandit -r appsec_scan_router application_inventory_service ado_mobile_scanner.py mobile_app_inventory_tracer.py -x tests -ll
+        run: bandit -r appsec_atlas appsec_scan_router application_inventory_service ado_mobile_scanner.py mobile_app_inventory_tracer.py -x tests -ll
 
       - name: Dependency vulnerability audit
         run: pip-audit -r requirements.txt

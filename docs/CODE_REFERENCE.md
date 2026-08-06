@@ -6,14 +6,14 @@ This document identifies module ownership and the principal runtime contracts. T
 
 | Surface | Entry point | Purpose |
 | --- | --- | --- |
-| CLI | `application-inventory-service` | Runs a scan and writes reports for shell automation and CI jobs |
-| UI | `application-inventory-service-ui` | Hosts authentication, scan operations, schedules, reports, and database exports |
-| SDK | `ApplicationInventoryService` | Embeds the inventory engine in another Python process |
-| ASPM SDK | `AspmService` | Embeds finding ingestion, posture, workflow, coverage, profile, and export operations |
-| ASPM CLI | `application-inventory-aspm` | Imports scanner results and manages posture, findings, coverage, workflow, profiles, and exports |
-| Module | `python -m application_inventory_service` | Executes the same CLI used by the console command |
+| CLI | `appsec-atlas` | Runs a scan and writes reports for shell automation and CI jobs |
+| UI | `appsec-atlas-ui` | Hosts authentication, scan operations, schedules, reports, and database exports |
+| SDK | `AppSecAtlas` | Embeds the inventory engine in another Python process |
+| ASPM SDK | `AppSecAtlasAspmService` | Embeds finding ingestion, posture, workflow, coverage, profile, and export operations |
+| ASPM CLI | `appsec-atlas-aspm` | Imports scanner results and manages posture, findings, coverage, workflow, profiles, and exports |
+| Module | `python -m appsec_atlas` | Executes the same CLI used by the console command |
 
-Compatibility packages and commands delegate to the same implementation. New integrations should import `application_inventory_service` or use the current console commands.
+New integrations should import `appsec_atlas` and use the `appsec-atlas*` commands. The `application_inventory_service` package and legacy commands remain compatibility aliases.
 
 ## Module Ownership
 
@@ -73,16 +73,17 @@ Provider clients expose a common operational shape: validate access, list projec
 | `aspm_risk.py` | Produces bounded explainable risk assessments from findings and application context |
 | `aspm_asset_risk.py` | Produces explainable technical, data-sensitivity, and context scores for each asset |
 | `aspm_data.py` | Normalizes data categories and classifies structured scanner, CWE, and bounded textual evidence |
-| `aspm_connector_http.py` | Enforces TLS, system trust, retry, timeout, pooling, URL validation, and JSON response limits for scanner APIs |
-| `aspm_connector_models.py` | Defines connector status, pull result, and adapter protocol contracts |
-| `aspm_connector_utils.py` | Maps scanner repository URLs and response structures into source locations |
-| `semgrep_connector.py` | Streams Semgrep projects and SAST, SCA, and AI-powered findings in bounded pages |
-| `invicti_connector.py` | Pages Invicti issues and maps website targets into DAST findings |
-| `nowsecure_connector.py` | Pages NowSecure applications and normalizes affected findings from latest complete assessments |
-| `sonarqube_connector.py` | Queries SonarQube health and issues APIs and normalizes source findings |
-| `zap_connector.py` | Queries OWASP ZAP health and alerts APIs and normalizes DAST findings |
-| `report_import_connector.py` | Models Trivy, Gitleaks, Nuclei, and OWASP Dependency-Check SARIF import profiles |
-| `aspm_connectors.py` | Coordinates configured adapters, connection tests, repository ingestion, redacted results, and sync audit state |
+| `connectors/http.py` | Enforces TLS, system trust, retry, timeout, pooling, URL validation, and JSON response limits for scanner APIs |
+| `connectors/models.py` | Defines connector status, pull result, setup fields, factories, and adapter protocol contracts |
+| `connectors/utils.py` | Maps scanner repository URLs and response structures into source locations |
+| `connectors/registry.py` | Assembles individual connector definitions, exposes setup metadata, and creates configured adapters |
+| `connectors/service.py` | Orchestrates connector status, connection tests, sync lifecycle, audit records, and ingestion through the registry |
+| `connectors/semgrep_enterprise.py` | Streams Semgrep Enterprise projects and SAST, SCA, and AI-powered findings in bounded pages |
+| `connectors/semgrep_community.py` | Defines the Semgrep Community local JSON report profile |
+| `connectors/invicti.py`, `connectors/nowsecure.py`, `connectors/sonarqube.py`, `connectors/zap.py` | Implement remote scanner adapters |
+| `connectors/report_import.py` | Supplies the reusable report-only import adapter and definition helper |
+| `connectors/trivy.py`, `connectors/gitleaks.py`, `connectors/nuclei.py`, `connectors/dependency_check.py` | Define individual SARIF profile metadata and factories |
+| `aspm_connectors.py` and root `*_connector.py` modules | Compatibility facades for pre-2.0 imports |
 | `aspm_postgres.py` | Owns ASPM schema, atomic and streamed imports, correlation, deduplication, data interactions, asset risk, workflow events, search, exports, profiles, posture, and coverage |
 | `aspm_cli.py` | Provides the dedicated automation CLI without changing the inventory scanner argument contract |
 | `ui_static/aspm-ui.js` | Drives Dashboard drill-downs, connector setup, tests and sync, finding workflow, asset risk, inventory, and coverage views |

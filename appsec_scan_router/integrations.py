@@ -5,8 +5,8 @@ import json
 from typing import Any, Mapping
 from uuid import uuid4
 
-from .aspm_connectors import CONNECTOR_KEYS, connector_setup
-from .aspm_connector_http import ConnectorConfigurationError, normalize_api_url
+from .connectors.http import ConnectorConfigurationError, normalize_api_url
+from .connectors.registry import CONNECTOR_KEYS, connector_setup
 from .remediation import default_remediation_policy, normalize_remediation_policy
 from .webhooks import WebhookConfig, WebhookConfigurationError
 

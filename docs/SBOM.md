@@ -6,8 +6,8 @@ The machine-readable SBOM is provided as [SBOM.cdx.json](SBOM.cdx.json) in Cyclo
 
 | Field | Value |
 | --- | --- |
-| Name | `application-inventory-service` |
-| Version | `1.9.1` |
+| Name | `appsec-atlas` |
+| Version | `2.0.0` |
 | License | MIT |
 | Runtime | Python `>=3.10` |
 
@@ -32,5 +32,5 @@ The machine-readable SBOM is provided as [SBOM.cdx.json](SBOM.cdx.json) in Cyclo
 Example:
 
 ```bash
-syft application-inventory-service:1.9.1 -o cyclonedx-json > container-sbom.cdx.json
+syft appsec-atlas:2.0.0 -o cyclonedx-json > container-sbom.cdx.json
 ```

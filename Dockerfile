@@ -9,6 +9,7 @@ WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY ado_mobile_scanner.py mobile_app_inventory_tracer.py ./
 COPY appsec_scan_router ./appsec_scan_router
+COPY appsec_atlas ./appsec_atlas
 COPY application_inventory_service ./application_inventory_service
 COPY mobile_scanner ./mobile_scanner
 
@@ -22,5 +23,5 @@ USER scanner
 VOLUME ["/reports"]
 EXPOSE 48731
 
-ENTRYPOINT ["application-inventory-service-container"]
+ENTRYPOINT ["appsec-atlas-container"]
 CMD ["--help"]

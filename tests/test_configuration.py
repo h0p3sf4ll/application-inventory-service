@@ -9,7 +9,11 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from appsec_scan_router.auth import AuthenticatedUser, CredentialStore, SessionRecord
-from appsec_scan_router.aspm_connectors import CONNECTOR_KEYS, connector_setup, normalize_connector_keys
+from appsec_scan_router.connectors.registry import (
+    CONNECTOR_KEYS,
+    connector_setup,
+    normalize_connector_keys,
+)
 from appsec_scan_router.github import github_app_public_config
 from appsec_scan_router.integrations import (
     connector_configurations,
@@ -98,6 +102,21 @@ class UserIntegrationStoreTests(unittest.TestCase):
             ["endpoint", "apiKey"],
         )
 
+    def test_semgrep_enterprise_and_community_use_distinct_connector_modes(self) -> None:
+        enterprise = connector_setup("semgrep")
+        community = connector_setup("semgrep_community")
+
+        self.assertIn("semgrep", CONNECTOR_KEYS)
+        self.assertIn("semgrep_community", CONNECTOR_KEYS)
+        self.assertTrue(enterprise["serviceManaged"])
+        self.assertEqual(enterprise["type"], "cloud_api")
+        self.assertEqual(community["type"], "semgrep_json_profile")
+        self.assertFalse(community["serviceManaged"])
+        self.assertEqual(community["importFormat"], "Semgrep JSON")
+        self.assertEqual(
+            [field["key"] for field in community["fields"]], ["reportPath"]
+        )
+
     def test_core_integrations_are_service_managed_and_popular_report_scanners_are_available(self) -> None:
         for connector in ("semgrep", "invicti", "nowsecure"):
             with self.subTest(connector=connector):
@@ -113,9 +132,13 @@ class UserIntegrationStoreTests(unittest.TestCase):
 
         self.assertNotIn("trivy", selected)
         self.assertNotIn("gitleaks", selected)
+        self.assertNotIn("semgrep_community", selected)
+        self.assertIn("semgrep", selected)
         self.assertIn("sonarqube", selected)
-        with self.assertRaisesRegex(ValueError, "SARIF import"):
+        with self.assertRaisesRegex(ValueError, "imported from a report"):
             normalize_connector_keys(["nuclei"])
+        with self.assertRaisesRegex(ValueError, "imported from a report"):
+            normalize_connector_keys(["semgrep_community"])
 
     def test_github_app_status_exposes_configuration_without_key_material(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

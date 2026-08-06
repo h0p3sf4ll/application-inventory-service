@@ -1,6 +1,6 @@
 # Azure Implementation Guide
 
-This guide describes a production Azure implementation for Application Security Posture Management. It covers the application runtime, ASPM persistence, secrets, networking, and source and scanner integration.
+This guide describes a production Azure implementation for AppSec Atlas. It covers the application runtime, ASPM persistence, secrets, networking, and source and scanner integration.
 
 ## Recommended Architecture
 
@@ -10,7 +10,7 @@ Use Azure Container Apps for the UI and scanner process, Azure Database for Post
 flowchart TB
   Users["Users / SSO"] --> FrontDoor["Azure Front Door or Application Gateway\noptional edge control"]
   FrontDoor --> Ingress["Container Apps Ingress\nHTTPS / custom domain"]
-  Ingress --> ACA["Azure Container Apps\nApplication Security Posture Management"]
+  Ingress --> ACA["Azure Container Apps\nAppSec Atlas"]
 
   ACA --> Files["Azure Files\n/reports and encrypted UI state"]
   ACA --> Postgres["Azure Database for PostgreSQL Flexible Server\napplication_inventory schema"]
@@ -107,8 +107,8 @@ APPLICATION_INVENTORY_GITHUB_API_URL, APPLICATION_INVENTORY_GITHUB_URLS, APPLICA
 AZURE_LOCATION=eastus
 RESOURCE_GROUP=rg-application-inventory-prod
 ACR_NAME=appinventoryprodacr
-IMAGE_NAME=application-inventory-service
-IMAGE_TAG=1.9.1
+IMAGE_NAME=appsec-atlas
+IMAGE_TAG=2.0.0
 
 az group create \
   --name "$RESOURCE_GROUP" \
@@ -293,7 +293,7 @@ az containerapp create \
   --memory 2Gi \
   --min-replicas 1 \
   --max-replicas 1 \
-  --command application-inventory-service-container \
+  --command appsec-atlas-container \
   --args ui --host 0.0.0.0 --port 48731 --reports-dir /reports
 ```
 
@@ -352,7 +352,7 @@ In `app.yaml`, add:
 ```yaml
 template:
   containers:
-    - name: application-inventory-service
+    - name: appsec-atlas
       volumeMounts:
         - volumeName: reports
           mountPath: /reports
@@ -445,7 +445,7 @@ Recommended PAT scopes:
 CLI examples:
 
 ```bash
-application-inventory-service \
+appsec-atlas \
   --provider azure-devops \
   --ado-org-pat "ContosoApps=$CONTOSO_PAT" \
   --ado-org-pat "FabrikamCloud=$FABRIKAM_PAT" \

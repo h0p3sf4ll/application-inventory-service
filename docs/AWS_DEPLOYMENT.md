@@ -1,6 +1,6 @@
-# AWS Deployment Guide
+# AppSec Atlas AWS Deployment Guide
 
-This guide describes a production-ready AWS deployment for Application Security Posture Management.
+This guide describes a production-ready AWS deployment for AppSec Atlas.
 
 ## Recommended Architecture
 
@@ -10,7 +10,7 @@ Use Amazon ECS on Fargate behind an HTTPS Application Load Balancer. Store norma
 flowchart TB
   Users["Users / SSO"] --> Route53["Route 53"]
   Route53 --> ALB["Application Load Balancer + ACM TLS"]
-  ALB --> ECS["ECS Fargate Service\nApplication Security Posture Management"]
+  ALB --> ECS["ECS Fargate Service\nAppSec Atlas"]
 
   ECS --> EFS["EFS\n/reports and encrypted UI state"]
   ECS --> RDS["RDS PostgreSQL\napplication_inventory schema"]
@@ -80,7 +80,7 @@ Use at least two Availability Zones.
 ```bash
 AWS_REGION=us-east-1
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-REPO=application-inventory-service
+REPO=appsec-atlas
 
 aws ecr create-repository \
   --repository-name "$REPO" \
@@ -93,7 +93,7 @@ aws ecr create-repository \
 aws ecr get-login-password --region "$AWS_REGION" \
   | docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 
-IMAGE_TAG=1.9.1
+IMAGE_TAG=2.0.0
 docker build -t "$REPO:$IMAGE_TAG" .
 docker tag "$REPO:$IMAGE_TAG" "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:$IMAGE_TAG"
 docker push "$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$REPO:$IMAGE_TAG"

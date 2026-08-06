@@ -241,8 +241,8 @@ def parse_semgrep(document: Any, context: Mapping[str, Any]) -> dict[str, Any]:
             )
         )
     return {
-        "tool_name": "Semgrep",
-        "tool_key": "semgrep",
+        "tool_name": "Semgrep Community",
+        "tool_key": "semgrep_community",
         "tool_type": "sast",
         "findings": findings,
     }

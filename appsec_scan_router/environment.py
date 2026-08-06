@@ -11,7 +11,7 @@ ENVIRONMENT_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def load_project_environment() -> Path | None:
-    configured = os.getenv("APPLICATION_INVENTORY_ENV_FILE", "").strip()
+    configured = environment_file_setting()
     path = Path(configured).expanduser() if configured else Path.cwd() / ".env"
     return load_environment_file(path)
 
@@ -34,8 +34,15 @@ def load_environment_file(path: Path) -> Path | None:
 
 
 def project_environment_path() -> Path:
-    configured = os.getenv("APPLICATION_INVENTORY_ENV_FILE", "").strip()
+    configured = environment_file_setting()
     return Path(configured).expanduser() if configured else Path.cwd() / ".env"
+
+
+def environment_file_setting() -> str:
+    return (
+        os.getenv("APPSEC_ATLAS_ENV_FILE", "").strip()
+        or os.getenv("APPLICATION_INVENTORY_ENV_FILE", "").strip()
+    )
 
 
 def load_environment_file_values(

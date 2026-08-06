@@ -1,30 +1,30 @@
-# Application Security Posture Management
+# AppSec Atlas
 
 ```text
     _    ____  ____  __  __
-   / \  / ___||  _ \|  \/  |   APPLICATION SECURITY POSTURE MANAGEMENT
+  / \  / ___||  _ \|  \/  |   APPSEC ATLAS
   / _ \ \___ \| |_) | |\/| |   ------------------------------------------------
  / ___ \ ___) |  __/| |  | |   DISCOVER -> CORRELATE -> PRIORITIZE -> REMEDIATE
 /_/   \_\____/|_|   |_|  |_|      ADO + GHE       RISK          WORKFLOW
 ```
 
-![Application Security Posture Management](docs/assets/application-inventory-service-banner.svg)
+![AppSec Atlas](docs/assets/appsec-atlas-banner.svg)
 
 [![CI](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/ci.yml/badge.svg)](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/ci.yml)
 [![Security](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/security.yml/badge.svg)](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/security.yml)
 [![Publish](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/publish.yml/badge.svg)](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/publish.yml)
-[![PyPI](https://img.shields.io/pypi/v/application-inventory-service.svg)](https://pypi.org/project/application-inventory-service/)
-[![Python](https://img.shields.io/pypi/pyversions/application-inventory-service.svg)](https://pypi.org/project/application-inventory-service/)
-[![License](https://img.shields.io/pypi/l/application-inventory-service.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/appsec-atlas.svg)](https://pypi.org/project/appsec-atlas/)
+[![Python](https://img.shields.io/pypi/pyversions/appsec-atlas.svg)](https://pypi.org/project/appsec-atlas/)
+[![License](https://img.shields.io/pypi/l/appsec-atlas.svg)](LICENSE)
 
-Application Security Posture Management builds a live software inventory from Azure DevOps and GitHub Enterprise, correlates normalized scanner findings to application branches, prioritizes them with explainable business context, measures scanner coverage, and coordinates remediation. Repository discovery does not require cloning or executing application code.
+AppSec Atlas builds a live software inventory from Azure DevOps and GitHub Enterprise, correlates normalized scanner findings to application branches, prioritizes them with explainable business context, measures scanner coverage, and coordinates remediation. Repository discovery does not require cloning or executing application code.
 
-The package remains `application-inventory-service` to preserve existing integrations. The original `appsec-*`, `ado-mobile-scanner`, and `mobile-app-inventory-tracer` commands remain available as compatibility aliases.
+AppSec Atlas 2.0 publishes as `appsec-atlas`, with `appsec_atlas` as its primary Python package. The legacy `application-inventory-service` distribution, `application_inventory_service` package, commands, and `APPLICATION_INVENTORY_*` configuration remain compatibility paths. The GitHub repository retains its existing URL during this migration.
 
 ## What It Does
 
 - Normalizes SARIF, Semgrep JSON, SonarQube issue JSON, and generic findings into one deduplicated remediation queue.
-- Pulls current findings from Semgrep, Invicti, NowSecure, SonarQube, and OWASP ZAP, and guides SARIF imports from Trivy, Gitleaks, Nuclei, and OWASP Dependency-Check.
+- Pulls current findings from Semgrep Enterprise, Invicti, NowSecure, SonarQube, and OWASP ZAP; imports Semgrep Community JSON and SARIF output from local scanners.
 - Provides an executive Dashboard with drill-down metrics, workflow totals, and priority applications that open the matching records.
 - Stores user-specific webhooks, scanner connection settings, and remediation timelines encrypted in Configuration.
 - Correlates findings to the branch-level application inventory and retains unlinked findings for review.
@@ -67,13 +67,18 @@ The package remains `application-inventory-service` to preserve existing integra
 ## Install
 
 ```bash
-python -m pip install application-inventory-service
+python -m pip install appsec-atlas
 ```
 
 ```bash
-application-inventory-service --help
-application-inventory-service-ui --help
+appsec-atlas --help
+appsec-atlas-ui --help
+appsec-atlas-aspm --help
 ```
+
+### Migration from Application Inventory Service
+
+Install `appsec-atlas` for new deployments. The 2.0 distribution retains the `application_inventory_service` import and legacy console commands so existing automation can migrate incrementally. New scans use the `appsec_atlas` output prefix; existing report and encrypted state directories remain readable.
 
 For local development:
 
@@ -91,7 +96,7 @@ python -m pip install -e .
 Restart the UI process after applying package or source updates. The service captures its browser bundle at startup so browser routes and backend API handlers remain aligned.
 
 ```bash
-application-inventory-service-ui \
+appsec-atlas-ui \
   --host 127.0.0.1 \
   --port 48731 \
   --reports-dir reports
@@ -119,7 +124,7 @@ Available frequencies are once, daily, and weekly. Each schedule can be run imme
 
 1. Run an inventory scan so source branches exist in PostgreSQL.
 2. Open **Dashboard** to review priority applications, coverage, workflow, and scanner health. Click a metric, workflow status, or priority application to open its related view or filtered findings.
-3. Open **Findings**, select **Import SARIF**, and upload SARIF, Semgrep JSON, SonarQube issue JSON, or the documented generic format. Add repository context when the scanner file does not identify its source.
+3. Open **Findings**, select **Import findings**, and upload SARIF, Semgrep Community JSON, SonarQube issue JSON, or the documented generic format. Add repository context when the scanner file does not identify its source.
 4. Set criticality, internet exposure, data classification, and owners from an application's inventory record. Risk scores recalculate in the same transaction.
 5. Assign, triage, accept, resolve, or mark findings false positive. Every workflow change is retained in the finding history.
 
@@ -134,12 +139,12 @@ export APPLICATION_INVENTORY_INVICTI_USER_ID="..."
 export APPLICATION_INVENTORY_INVICTI_TOKEN="..."
 export APPLICATION_INVENTORY_NOWSECURE_TOKEN="..."
 
-application-inventory-aspm connectors status
-application-inventory-aspm connectors sync --connector semgrep --connector invicti --connector nowsecure
-application-inventory-aspm assets --risk-band critical
+appsec-atlas-aspm connectors status
+appsec-atlas-aspm connectors sync --connector semgrep --connector invicti --connector nowsecure
+appsec-atlas-aspm assets --risk-band critical
 ```
 
-Open **Configuration** > **Scanner connections** to configure per-user connections. The setup wizard stores account-specific values encrypted and never returns secret values to the browser. Semgrep, Invicti, and NowSecure can use service-managed settings or account-specific overrides; SonarQube and OWASP ZAP synchronize directly. Trivy, Gitleaks, Nuclei, and OWASP Dependency-Check are SARIF profiles: configure the report location, then upload output from **Findings** > **Import SARIF**. Open **Asset risk** to filter contextual risk profiles and observed data interactions. Invicti defaults to its public cloud API root and supports an environment override for private deployments.
+Open **Configuration** > **Scanner connections** to configure per-user connections. The setup wizard stores account-specific values encrypted and never returns secret values to the browser. **Semgrep Enterprise** uses the App deployment API and an App token; it can synchronize and run a connection test. **Semgrep Community** runs locally with `semgrep --json`; configure its report location, then upload the JSON from **Findings** > **Import findings**. Invicti and NowSecure can use service-managed settings or account-specific overrides; SonarQube and OWASP ZAP synchronize directly. Trivy, Gitleaks, Nuclei, and OWASP Dependency-Check remain SARIF profiles. Open **Asset risk** to filter contextual risk profiles and observed data interactions. Invicti defaults to its public cloud API root and supports an environment override for private deployments.
 
 Use **Test connections** to make a lightweight request before synchronizing remote scanners. A test does not import findings or replace historical tool health. Dashboard **Tool health** shows the latest import or connector sync, so it can show a prior failure after a successful test until the next sync completes.
 
@@ -152,7 +157,7 @@ Automation can use the dedicated ASPM CLI without changing existing inventory sc
 ```bash
 export APPLICATION_INVENTORY_POSTGRES_DSN="postgresql://app_user:secret@postgres:5432/appsec"
 
-application-inventory-aspm \
+appsec-atlas-aspm \
   --owner-user-id security-platform \
   --owner-user-login scanner-automation \
   ingest results.sarif \
@@ -165,7 +170,7 @@ application-inventory-aspm \
   --branch main \
   --complete-snapshot
 
-application-inventory-aspm \
+appsec-atlas-aspm \
   --owner-user-id security-platform \
   findings --severity critical --severity high --status open --export xlsx
 ```
@@ -181,7 +186,7 @@ export APPLICATION_INVENTORY_WEBHOOK_URL="https://instance.service-now.com/api/n
 export APPLICATION_INVENTORY_WEBHOOK_BEARER_TOKEN="service-account-token"
 export APPLICATION_INVENTORY_WEBHOOK_DELIVERY_MODE="record"
 
-application-inventory-service --org example-engineering
+appsec-atlas --org example-engineering
 ```
 
 The webhook accepts any `2xx` response, retries transient network failures and `429`/`5xx` responses, and uses a stable delivery ID for each retry. Configure `APPLICATION_INVENTORY_WEBHOOK_SIGNING_SECRET` to add an `X-Application-Inventory-Signature` HMAC-SHA256 header. Webhook URLs require HTTPS unless they target loopback; credentials, query strings, redirects, and transport header overrides are rejected.
@@ -194,9 +199,9 @@ Python services can ingest scanner output without the UI:
 import json
 from pathlib import Path
 
-from application_inventory_service import AspmService
+from appsec_atlas import AppSecAtlasAspmService
 
-aspm = AspmService(
+aspm = AppSecAtlasAspmService(
     postgres_dsn="postgresql://app_user:secret@postgres:5432/appsec",
     postgres_schema="application_inventory",
     owner_user_id="security-platform",
@@ -235,19 +240,19 @@ docker run --rm \
   -p 48731:48731 \
   --env-file .env \
   -v "$PWD/reports:/reports" \
-  h0p3sf4ll/application-inventory-service:1.9.1 \
+  h0p3sf4ll/appsec-atlas:2.0.0 \
   ui \
   --host 0.0.0.0 \
   --port 48731 \
   --reports-dir /reports
 ```
 
-Local `application-inventory-service`, `application-inventory-aspm`, and UI commands load a `.env` file from the current working directory. Set `APPLICATION_INVENTORY_ENV_FILE` to select a different local file. Explicit process environment variables take precedence, so production secret injection continues to override local values.
+AppSec Atlas commands load a `.env` file from the current working directory. Set `APPSEC_ATLAS_ENV_FILE` to select a different local file; `APPLICATION_INVENTORY_ENV_FILE` remains supported for compatibility. Explicit process environment variables take precedence, so production secret injection continues to override local values.
 
 Build locally when you need to test unpublished changes:
 
 ```bash
-docker build -t application-inventory-service:local .
+docker build -t appsec-atlas:local .
 ```
 
 ## Azure DevOps
@@ -257,7 +262,7 @@ Scan one organization:
 ```bash
 export ADO_PAT="your-token"
 
-application-inventory-service \
+appsec-atlas \
   --provider azure-devops \
   --org FabrikamCloud \
   --out-dir reports
@@ -266,7 +271,7 @@ application-inventory-service \
 Scan selected projects:
 
 ```bash
-application-inventory-service \
+appsec-atlas \
   --provider azure-devops \
   --org FabrikamCloud \
   --project Go_To_Market \
@@ -277,7 +282,7 @@ application-inventory-service \
 Scan multiple organizations with separate PATs:
 
 ```bash
-application-inventory-service \
+appsec-atlas \
   --ado-org-pat "FabrikamCloud=$FABRIKAM_PAT" \
   --ado-org-pat "ContosoApps=$CONTOSO_PAT" \
   --target-filter "FabrikamCloud=Go_To_Market" \
@@ -297,7 +302,7 @@ export APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE="/run/secrets/github-ap
 export APPLICATION_INVENTORY_GITHUB_URLS="your-org-a,your-org-b"
 export APPLICATION_INVENTORY_GITHUB_REPOSITORIES="your-org-a=payments-api"
 
-application-inventory-service \
+appsec-atlas \
   --provider github-enterprise \
   --github-url your-org-a \
   --github-url https://github.com/your-org-b \
@@ -366,7 +371,7 @@ export APPLICATION_INVENTORY_GITHUB_APP_ID="your-github-app-id"
 export APPLICATION_INVENTORY_GITHUB_APP_INSTALLATION_ID="your-installation-id"
 export APPLICATION_INVENTORY_GITHUB_APP_PRIVATE_KEY_FILE="/run/secrets/github-app.pem"
 
-application-inventory-service \
+appsec-atlas \
   --provider mixed \
   --github-url your-github-owner \
   --out-dir reports
@@ -383,7 +388,7 @@ PostgreSQL sync is enabled by default in the UI. For CLI scans:
 ```bash
 export APPLICATION_INVENTORY_POSTGRES_DSN="postgresql://postgres:postgres@localhost:5432/postgres"
 
-application-inventory-service \
+appsec-atlas \
   --provider azure-devops \
   --org FabrikamCloud \
   --postgres-schema application_inventory \
@@ -431,6 +436,10 @@ The UI detects Ollama at `http://127.0.0.1:11434` and defaults to `llama3.1:late
 
 | Variable | Purpose |
 | --- | --- |
+| `APPSEC_ATLAS_ENV_FILE` | Preferred local `.env` path; overrides the legacy environment-file setting |
+| `APPSEC_ATLAS_UI_HOST` | Preferred UI bind host alias |
+| `APPSEC_ATLAS_UI_PORT` | Preferred UI bind port alias |
+| `APPSEC_ATLAS_REPORTS_DIR` | Preferred UI report and state directory alias |
 | `APPLICATION_INVENTORY_SERVICE_UI_HOST` | UI bind host |
 | `APPLICATION_INVENTORY_SERVICE_UI_PORT` | UI bind port |
 | `APPLICATION_INVENTORY_ENV_FILE` | Local `.env` path; defaults to `.env` in the working directory |
@@ -452,8 +461,8 @@ The UI detects Ollama at `http://127.0.0.1:11434` and defaults to `llama3.1:late
 | `APPLICATION_INVENTORY_WEBHOOK_BATCH_SIZE` | Inventory records per batch in `batch` mode; defaults to `100` |
 | `APPLICATION_INVENTORY_WEBHOOK_RETRIES` | Additional retries for temporary failures; defaults to `3` |
 | `APPLICATION_INVENTORY_WEBHOOK_DELIVERY_MODE` | `batch` envelope or `record` one-row-per-request mode; defaults to `batch` |
-| `SEMGREP_APP_TOKEN` | Semgrep App token used by the backend connector |
-| `APPLICATION_INVENTORY_SEMGREP_API_URL` | Semgrep API root; defaults to `https://semgrep.dev/api/v1` |
+| `SEMGREP_APP_TOKEN` | Semgrep Enterprise App token used by the hosted API connector |
+| `APPLICATION_INVENTORY_SEMGREP_API_URL` | Semgrep Enterprise API root; defaults to `https://semgrep.dev/api/v1` |
 | `APPLICATION_INVENTORY_SEMGREP_ISSUE_TYPES` | Comma-separated Semgrep products; defaults to `sast,sca,ai_sast` |
 | `APPLICATION_INVENTORY_SEMGREP_STATUSES` | Comma-separated Semgrep states synchronized as the current snapshot |
 | `APPLICATION_INVENTORY_SEMGREP_MAX_FINDINGS` | Per-sync Semgrep safety limit; defaults to `5000000` |
@@ -519,17 +528,17 @@ The UI detects Ollama at `http://127.0.0.1:11434` and defaults to `llama3.1:late
 | `APPLICATION_INVENTORY_POSTGRES_COMMIT_ROWS` | Findings per PostgreSQL transaction; defaults to `50` |
 | `APPLICATION_INVENTORY_POSTGRES_COMMIT_SECONDS` | Maximum seconds before pending findings become visible; defaults to `1` |
 
-Legacy `APPSEC_INVENTORY_*` and `APPSEC_INVENTORY_SERVICE_*` variables remain supported.
+AppSec Atlas recognizes the `APPSEC_ATLAS_*` aliases above. The established `APPLICATION_INVENTORY_*`, `APPSEC_INVENTORY_*`, and `APPSEC_INVENTORY_SERVICE_*` variables remain supported for compatibility.
 
 ## Outputs
 
 With the default prefix and no application type filter, the service writes:
 
-- `application_inventory_service_all_types.xlsx`
-- `application_inventory_service_all_types_semgrep_targets.txt`
-- `application_inventory_service_all_types_sonarqube_projects.csv`
+- `appsec_atlas_all_types.xlsx`
+- `appsec_atlas_all_types_semgrep_targets.txt`
+- `appsec_atlas_all_types_sonarqube_projects.csv`
 
-When application types are selected, the type label is added to the output name, for example `application_inventory_service_mobile_app_api_service.xlsx`.
+When application types are selected, the type label is added to the output name, for example `appsec_atlas_mobile_app_api_service.xlsx`.
 
 XLSX and database exports place source, ownership, activity, and scanner-routing fields first. Application classifications follow those fields. Mobile metadata and app-store validation columns are placed at the far right. Store fields remain empty for non-mobile records.
 
@@ -542,7 +551,7 @@ Mobile records also include `nowsecure_target`, which identifies the source repo
 ```python
 from pathlib import Path
 
-from application_inventory_service import AzureDevOpsOrgPat, ScanConfig, scan_reports, scan_to_reports
+from appsec_atlas import AzureDevOpsOrgPat, ScanConfig, scan_reports, scan_to_reports
 
 config = ScanConfig(
     provider="mixed",
@@ -559,7 +568,7 @@ config = ScanConfig(
     ),
     target_filters=(),
     out_dir=Path("reports"),
-    out_prefix="application_inventory_service",
+    out_prefix="appsec_atlas",
     max_workers=8,
     source_workers=2,
     branch_workers=16,
@@ -581,7 +590,7 @@ result_count, xlsx_path, semgrep_path, sonarqube_path = scan_reports(config)
 The scanner uses four bounded concurrency layers: sources, repository preparation, branch analysis, and manifest retrieval. Defaults are conservative enough for hosted provider APIs. Increase them only after observing provider latency, rate-limit headers, CPU, memory, and PostgreSQL commit time.
 
 ```bash
-application-inventory-service \
+appsec-atlas \
   --source-workers 2 \
   --max-workers 8 \
   --branch-workers 16 \
@@ -608,7 +617,7 @@ python -m twine check dist/*
 
 Publish with the `Publish` GitHub Actions workflow. The workflow uses the `pypi` environment and supports two release paths:
 
-- Preferred: configure PyPI Trusted Publishing for repository `InfoSec-Actions/application-inventory-service`, workflow `.github/workflows/publish.yml`, environment `pypi`.
+- Preferred: configure PyPI Trusted Publishing for project `appsec-atlas`, repository `InfoSec-Actions/application-inventory-service`, workflow `.github/workflows/publish.yml`, environment `pypi`.
 - Fallback: add a GitHub Actions secret named `PYPI_API_TOKEN` with a PyPI API token.
 
 ## Security Notes

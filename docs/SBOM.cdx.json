@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:892d1c3a-3954-47a6-934a-f0574f928d05",
+  "serialNumber": "urn:uuid:34b6a610-ceea-461b-9e3b-fce776f8d120",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-08-05T00:00:00Z",
+    "timestamp": "2026-08-06T00:00:00Z",
     "tools": [
       {
         "vendor": "Application Security Posture Management",
@@ -14,9 +14,9 @@
     ],
     "component": {
       "type": "application",
-      "name": "application-inventory-service",
-      "version": "1.9.1",
-      "purl": "pkg:pypi/application-inventory-service@1.9.1",
+      "name": "appsec-atlas",
+      "version": "2.0.0",
+      "purl": "pkg:pypi/appsec-atlas@2.0.0",
       "licenses": [
         {
           "license": {
@@ -135,7 +135,7 @@
   ],
   "dependencies": [
     {
-      "ref": "pkg:pypi/application-inventory-service@1.9.1",
+      "ref": "pkg:pypi/appsec-atlas@2.0.0",
       "dependsOn": [
         "pkg:pypi/cryptography@49.0.0",
         "pkg:pypi/defusedxml@0.7.1",

@@ -1,6 +1,6 @@
 # GitHub SSO
 
-GitHub OAuth authenticates people to the Application Security Posture Management UI. Repository discovery and scanning use separate GitHub App credentials. Configure both capabilities when the service must protect the UI and scan private repositories.
+GitHub OAuth authenticates people to the AppSec Atlas UI. Repository discovery and scanning use separate GitHub App credentials. Configure both capabilities when the service must protect the UI and scan private repositories.
 
 ## Prerequisites
 
@@ -19,7 +19,7 @@ Set these values:
 
 | Field | Value |
 | --- | --- |
-| Application name | `Application Security Posture Management` |
+| Application name | `AppSec Atlas` |
 | Homepage URL | `https://inventory.example.com` |
 | Authorization callback URL | `https://inventory.example.com/api/auth/github-enterprise/callback` |
 
@@ -68,7 +68,7 @@ Keep the application listener private. Restrict inbound traffic to the reverse p
 Restart the UI service after setting the environment variables:
 
 ```bash
-application-inventory-service-ui --host 0.0.0.0 --port 48731 --reports-dir reports
+appsec-atlas-ui --host 0.0.0.0 --port 48731 --reports-dir reports
 ```
 
 Verify the backend configuration without exposing secrets:

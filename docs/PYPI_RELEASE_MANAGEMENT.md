@@ -1,13 +1,13 @@
-# PyPI Release Management
+# AppSec Atlas PyPI Release Management
 
-Application Inventory Service publishes to PyPI from the GitHub `Publish` workflow.
+AppSec Atlas publishes the `appsec-atlas` distribution to PyPI from the GitHub `Publish AppSec Atlas` workflow.
 
 ## Current Release Policy
 
 - Publish only from GitHub Releases.
 - Keep the GitHub Actions environment named `pypi`.
 - Prefer PyPI Trusted Publishing over long-lived API tokens when the project owner can configure it.
-- If an API token is used, scope it to `application-inventory-service`, store it only as a GitHub environment secret, and rotate it after exposure in chat, logs, screenshots, or issue trackers.
+- If an API token is used, scope it to `appsec-atlas`, store it only as a GitHub environment secret, and rotate it after exposure in chat, logs, screenshots, or issue trackers.
 
 ## Old Releases
 
@@ -24,10 +24,12 @@ Keep only the current version active. Yank earlier versions from the PyPI projec
 Manual owner workflow:
 
 1. Sign in to PyPI as a project owner.
-2. Open `application-inventory-service`.
+2. Open `appsec-atlas`.
 3. Open **Releases**.
 4. For every version older than the current release, choose **Yank** or **Delete**.
 5. Use the reason `Superseded by current hardened release`.
 6. Confirm that the PyPI project page shows only the current version as active.
+
+The pre-2.0 `application-inventory-service` project remains a legacy distribution. Publish new releases only to `appsec-atlas`.
 
 The upload API token used by CI is not sufficient for this owner-only project management action.

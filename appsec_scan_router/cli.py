@@ -56,8 +56,8 @@ LOGGER = logging.getLogger("appsec_scan_router")
 
 def parse_args(argv: list[str]) -> ScanConfig:
     parser = argparse.ArgumentParser(
-        prog="application-inventory-service",
-        description="Inventory applications, services, middleware, and mobile apps across Azure DevOps or GitHub Enterprise.",
+        prog="appsec-atlas",
+        description="Discover and inventory applications across Azure DevOps and GitHub Enterprise.",
     )
     parser.add_argument(
         "--provider",

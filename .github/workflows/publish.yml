@@ -1,4 +1,4 @@
-name: Publish
+name: Publish AppSec Atlas
 
 on:
   release:
@@ -20,7 +20,7 @@ jobs:
     if: github.repository == 'InfoSec-Actions/application-inventory-service'
     environment:
       name: pypi
-      url: https://pypi.org/project/application-inventory-service/
+      url: https://pypi.org/project/appsec-atlas/
     permissions:
       contents: read
       id-token: write
@@ -77,7 +77,7 @@ jobs:
     env:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-      DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY || 'h0p3sf4ll/application-inventory-service' }}
+      DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY || 'h0p3sf4ll/appsec-atlas' }}
     permissions:
       contents: read
     steps:

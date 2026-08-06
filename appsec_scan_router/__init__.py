@@ -1,7 +1,8 @@
 from .aspm_ingest import SUPPORTED_FINDING_FORMATS, parse_finding_document
 from .aspm_asset_risk import AssetRiskProfile, AssetRiskProfileEngine
-from .aspm_connector_models import ConnectorPullResult, ConnectorStatus
-from .aspm_connectors import CONNECTOR_KEYS, ConnectorService
+from .connectors.models import ConnectorPullResult, ConnectorStatus
+from .connectors.registry import CONNECTOR_KEYS
+from .connectors.service import ConnectorService
 from .aspm_data import (
     DATA_TYPE_LABELS,
     DATA_TYPE_WEIGHTS,
@@ -220,6 +221,9 @@ from .scanner import (
 from .sdk import (
     ApplicationInventoryService,
     ApplicationSecurityPostureManagementService,
+    AppSecAtlas,
+    AppSecAtlasAspmService,
+    AppSecAtlasService,
     AppSecInventoryService,
     AppSecScanRouter,
     AspmService,
@@ -292,6 +296,9 @@ __all__ = [
     "APPLICATION_USER_AGENT",
     "APPLICATION_VERSION",
     "ApplicationSecurityPostureManagementService",
+    "AppSecAtlas",
+    "AppSecAtlasAspmService",
+    "AppSecAtlasService",
     "AspmRepository",
     "AspmService",
     "AssetDataInteraction",

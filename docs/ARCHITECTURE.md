@@ -4,7 +4,7 @@
 
 ```mermaid
 flowchart LR
-  User["Security / Platform User"] --> UI["ASPM UI"]
+  User["Security / Platform User"] --> UI["AppSec Atlas UI"]
   Automation["CLI / SDK / Scheduler"] --> Core["Inventory Engine"]
   UI --> Core
   UI --> Configuration["Encrypted User Configuration"]
@@ -44,7 +44,7 @@ flowchart LR
 | CLI | Non-interactive scans for automation and scheduled inventory jobs |
 | SDK | Importable API for other applications and orchestration processes |
 | Finding ingestion | SARIF, Semgrep, SonarQube, and generic normalization with atomic import audit |
-| Direct connectors | Remote Semgrep, Invicti, NowSecure, SonarQube, and OWASP ZAP synchronization; SARIF profiles for Trivy, Gitleaks, Nuclei, and OWASP Dependency-Check |
+| Direct connectors | Remote Semgrep Enterprise, Invicti, NowSecure, SonarQube, and OWASP ZAP synchronization; a Semgrep Community JSON profile and SARIF profiles for Trivy, Gitleaks, Nuclei, and OWASP Dependency-Check |
 | Data interaction analysis | Structured scanner taxonomy, privacy metadata, regulation, CWE, and bounded evidence normalization |
 | Asset risk profiles | Explainable technical, data-sensitivity, and context components per inventory asset |
 | Finding correlation | Deterministic deduplication and conservative branch-inventory matching |

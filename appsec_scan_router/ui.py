@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .aspm_connectors import ConnectorService
+from .connectors.service import ConnectorService
 from .aspm_ingest import parse_finding_document
 from .aspm_postgres import AspmRepository
 from .auth import (
@@ -123,7 +123,7 @@ LOGGER = logging.getLogger("appsec_scan_router")
 
 
 class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
-    server_version = "ApplicationInventoryService"
+    server_version = "AppSecAtlas"
     sys_version = ""
     manager: ScanManager
     scheduler: ScanScheduler
@@ -826,7 +826,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                 "status": "ok"
                 if database is None or database.get("connected")
                 else "degraded",
-                "service": "application-inventory-service",
+                "service": "appsec-atlas",
                 "database": database,
                 "observability": {
                     "enabled": bool(self.observability_dsn),
@@ -841,7 +841,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
         metrics.update(self.scheduler.metrics())
         self.send_json(
             {
-                "service": "application-inventory-service",
+                "service": "appsec-atlas",
                 "metrics": metrics,
                 "observability": {
                     "enabled": bool(self.observability_dsn),
@@ -1987,12 +1987,12 @@ def serve(host: str, port: int, reports_dir: Path) -> None:
     log_github_app_context(
         configured_github_app_id(), configured_github_installation_id()
     )
-    print(f"Application Inventory Service UI listening on http://{host}:{port}")
+    print(f"AppSec Atlas UI listening on http://{host}:{port}")
     print(f"Reports root: {manager.reports_root}")
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
-        print("Application Inventory Service UI stopped.")
+        print("AppSec Atlas UI stopped.")
     finally:
         server.server_close()
         scheduler.close()
@@ -2001,13 +2001,15 @@ def serve(host: str, port: int, reports_dir: Path) -> None:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="application-inventory-service-ui",
-        description="Run the Application Inventory Service web UI.",
+        prog="appsec-atlas-ui",
+        description="Run the AppSec Atlas web UI.",
     )
     parser.add_argument(
         "--host",
         default=env_value(
-            "APPLICATION_INVENTORY_SERVICE_UI_HOST", "APPSEC_INVENTORY_SERVICE_UI_HOST"
+            "APPSEC_ATLAS_UI_HOST",
+            "APPLICATION_INVENTORY_SERVICE_UI_HOST",
+            "APPSEC_INVENTORY_SERVICE_UI_HOST",
         )
         or os.getenv("APPSEC_SCAN_ROUTER_UI_HOST", DEFAULT_UI_HOST),
     )
@@ -2016,6 +2018,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=int,
         default=int(
             env_value(
+                "APPSEC_ATLAS_UI_PORT",
                 "APPLICATION_INVENTORY_SERVICE_UI_PORT",
                 "APPSEC_INVENTORY_SERVICE_UI_PORT",
             )
@@ -2027,6 +2030,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=Path,
         default=Path(
             env_value(
+                "APPSEC_ATLAS_REPORTS_DIR",
                 "APPLICATION_INVENTORY_SERVICE_REPORTS_DIR",
                 "APPSEC_INVENTORY_SERVICE_REPORTS_DIR",
             )
