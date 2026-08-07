@@ -57,6 +57,9 @@ const databaseReadyBadge = document.querySelector("#databaseReadyBadge");
 const exportDatabaseXlsxButton = document.querySelector("#exportDatabaseXlsx");
 const exportDatabaseCsvButton = document.querySelector("#exportDatabaseCsv");
 const exportDatabaseJsonButton = document.querySelector("#exportDatabaseJson");
+const exportDatabaseSbomButton = document.querySelector("#exportDatabaseSbom");
+const exportDatabaseAibomButton = document.querySelector("#exportDatabaseAibom");
+const exportDatabaseMlbomButton = document.querySelector("#exportDatabaseMlbom");
 const databaseStatus = document.querySelector("#databaseStatus");
 const githubAppStatus = document.querySelector("#githubAppStatus");
 const githubAppConfigurationStatus = document.querySelector("#githubAppConfigurationStatus");
@@ -349,6 +352,9 @@ function bindEvents() {
   exportDatabaseXlsxButton.addEventListener("click", () => exportDatabase("xlsx"));
   exportDatabaseCsvButton.addEventListener("click", () => exportDatabase("csv"));
   exportDatabaseJsonButton.addEventListener("click", () => exportDatabase("json"));
+  exportDatabaseSbomButton.addEventListener("click", () => exportDatabase("sbom"));
+  exportDatabaseAibomButton.addEventListener("click", () => exportDatabase("aibom"));
+  exportDatabaseMlbomButton.addEventListener("click", () => exportDatabase("mlbom"));
   inventoryFilterButtons.forEach((button) => {
     button.addEventListener("click", () => activateInventoryFilter(button.dataset.inventoryFilter));
   });
@@ -1455,7 +1461,11 @@ async function exportDatabase(format) {
       throw new Error("Database export failed.");
     }
     const blob = await response.blob();
-    downloadBlob(blob, `application_inventory_database_export.${format}`);
+    const bomFormats = {sbom: "sbom", aibom: "aibom", mlbom: "mlbom"};
+    const filename = bomFormats[format]
+      ? `application_inventory_${bomFormats[format]}.cdx.json`
+      : `application_inventory_database_export.${format}`;
+    downloadBlob(blob, filename);
     notify(`Database ${format.toUpperCase()} export downloaded.`);
   } catch (error) {
     notify(error.message || "Database export failed.");
@@ -2517,6 +2527,9 @@ function setDatabaseBusy(isBusy) {
   exportDatabaseXlsxButton.disabled = isBusy;
   exportDatabaseCsvButton.disabled = isBusy;
   exportDatabaseJsonButton.disabled = isBusy;
+  exportDatabaseSbomButton.disabled = isBusy;
+  exportDatabaseAibomButton.disabled = isBusy;
+  exportDatabaseMlbomButton.disabled = isBusy;
   databasePageSize.disabled = isBusy;
   inventoryFilterButtons.forEach((button) => {
     button.disabled = isBusy;

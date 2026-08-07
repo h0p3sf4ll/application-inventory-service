@@ -69,6 +69,7 @@ from .postgres import (
     database_status,
     export_inventory_csv,
     export_inventory_json,
+    export_inventory_sbom,
     export_inventory_xlsx,
     search_inventory,
 )
@@ -859,7 +860,7 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             payload = self.read_json()
             config = normalize_database_config(payload)
             export_format = clean_choice(
-                payload.get("format"), {"csv", "json", "xlsx"}, "xlsx"
+                payload.get("format"), {"csv", "json", "xlsx", "sbom", "aibom", "mlbom"}, "xlsx"
             )
             query = clean_text(payload.get("query"))
             filters = (
@@ -891,6 +892,18 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                 )
                 filename = "application_inventory_database_export.json"
                 content_type = "application/json"
+            elif export_format in {"sbom", "aibom", "mlbom"}:
+                content = export_inventory_sbom(
+                    config["postgresDsn"],
+                    schema=config["postgresSchema"],
+                    owner_user_id=owner_scope(record),
+                    query=query,
+                    table=config["postgresTable"],
+                    filters=filters,
+                    sbom_type=export_format,
+                )
+                filename = f"application_inventory_{export_format}.cdx.json"
+                content_type = "application/vnd.cyclonedx+json"
             else:
                 content = export_inventory_csv(
                     config["postgresDsn"],

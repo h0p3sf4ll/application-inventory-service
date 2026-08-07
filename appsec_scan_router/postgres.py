@@ -21,6 +21,7 @@ from .constants import (
 )
 from .domains import normalize_web_endpoint, normalized_confidence
 from .inventory_exports import json_cell, rows_to_csv, rows_to_json, rows_to_xlsx
+from .sbom_export import rows_to_sbom
 from .inventory_query import InventorySearchCriteria, repository_browse_url
 from .models import ScanConfig
 
@@ -2204,6 +2205,43 @@ def export_inventory_xlsx(
         table=table,
         filters=filters,
         renderer=lambda rows: rows_to_xlsx(rows, EXPORT_COLUMNS),
+    )
+
+
+def export_inventory_sbom(
+    dsn: str,
+    schema: str = DEFAULT_POSTGRES_SCHEMA,
+    owner_user_id: str = "",
+    limit: int = 50000,
+    query: str = "",
+    table: str = DEFAULT_POSTGRES_TABLE,
+    filters: dict[str, Any] | InventorySearchCriteria | None = None,
+    sbom_type: str = "sbom",
+) -> bytes:
+    resolved_filters: dict[str, Any] | None
+    if sbom_type == "aibom":
+        base = dict(filters) if isinstance(filters, dict) else {}
+        base.setdefault("application_types", [])
+        if "ai_enabled" not in base["application_types"]:
+            base["application_types"] = list(base["application_types"]) + ["ai_enabled"]
+        resolved_filters = base
+    elif sbom_type == "mlbom":
+        base = dict(filters) if isinstance(filters, dict) else {}
+        base.setdefault("application_types", [])
+        if "ml_enabled" not in base["application_types"]:
+            base["application_types"] = list(base["application_types"]) + ["ml_enabled"]
+        resolved_filters = base
+    else:
+        resolved_filters = filters if isinstance(filters, dict) else None
+    return render_inventory_export(
+        dsn,
+        schema=schema,
+        owner_user_id=owner_user_id,
+        limit=limit,
+        query=query,
+        table=table,
+        filters=resolved_filters,
+        renderer=lambda rows: rows_to_sbom(rows, sbom_type),
     )
 
 
