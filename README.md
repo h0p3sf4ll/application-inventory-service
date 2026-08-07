@@ -84,7 +84,7 @@ Install `appsec-atlas` for new deployments. The 2.0 distribution retains the `ap
 For local development:
 
 ```bash
-git clone https://github.com/InfoSec-Actions/application-inventory-service.git
+git clone https://github.com/h0p3sf4ll/application-inventory-service.git
 cd application-inventory-service
 python3 -m venv .venv
 source .venv/bin/activate

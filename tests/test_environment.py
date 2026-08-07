@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
-import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib  # type: ignore[no-redef]
 
 from appsec_scan_router.environment import (
     load_environment_file,
