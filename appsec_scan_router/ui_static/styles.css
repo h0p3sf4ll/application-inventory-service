@@ -1860,6 +1860,10 @@ button:focus-visible {
   width: 130px;
 }
 
+.database-table .column-contributors {
+  width: 200px;
+}
+
 .database-table .column-source {
   width: 150px;
 }

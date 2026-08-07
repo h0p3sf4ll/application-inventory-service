@@ -215,7 +215,7 @@ This is the deduplicated remediation queue. Users can:
 
 ### Inventory
 
-Inventory shows every repository retained by a full scan and separates repository count, inventory-record count, and classified-application count. `inventory_status` identifies classified, candidate, unclassified, empty, disabled, unavailable, branchless, and failed records. The table supports search, structured filters, sorting, pagination, record counts, and exports. Repository names link back to Azure DevOps or GitHub when a provider URL is available.
+Inventory shows every repository retained by a full scan and separates repository count, inventory-record count, and classified-application count. `inventory_status` identifies classified, candidate, unclassified, empty, disabled, unavailable, branchless, and failed records. The table provides sortable, filterable columns for application, repository, branch, language, web domain, last updated, confidence, contributors, source, and types. It supports search, structured filters, sorting, pagination, record counts, and exports. Repository names link back to Azure DevOps or GitHub when a provider URL is available.
 
 Opening a record shows ownership, contributors, activity, application types, domains, scanner targets, and mobile metadata when relevant.
 

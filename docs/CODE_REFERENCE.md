@@ -148,7 +148,7 @@ Repository, branch, and content queues are bounded. Increasing a worker count ca
 
 `ScanSchedule.summary()` is the browser-safe schedule contract. Encrypted scan configuration and credentials never appear in the response.
 
-`search_inventory()` accepts a user scope, bounded search text, literal column filters, structured filters, sort order, limit, and offset. Text uses an indexed PostgreSQL search vector. Filters and sort expressions are allowlisted and parameterized. XLSX, CSV, and JSON exports use the same query path and a server-side cursor.
+`search_inventory()` accepts a user scope, bounded search text, literal column filters (application, repository, branch, contributors), structured filters, sort order, limit, and offset. Text uses an indexed PostgreSQL search vector. Filters and sort expressions are allowlisted and parameterized. XLSX, CSV, and JSON exports use the same query path and a server-side cursor.
 
 `LocalInventoryAssistant` sends only the user's question and a fixed field schema to Ollama. `InventoryQueryPlan` drops unknown fields and never accepts SQL. The database layer remains responsible for parameterization, authorization, and owner scope.
 

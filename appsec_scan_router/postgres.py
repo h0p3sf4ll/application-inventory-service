@@ -2235,6 +2235,10 @@ def inventory_search_filter(
         (sql.SQL("COALESCE(inventory.repo_name, '')"), resolved.repository_search),
         (sql.SQL("COALESCE(inventory.branch_name, '')"), resolved.branch_search),
         (
+            sql.SQL("COALESCE(inventory.branch_contributing_developers, '')"),
+            resolved.contributor_search,
+        ),
+        (
             sql.SQL("COALESCE(inventory.primary_web_domain, '')"),
             resolved.domain_search,
         ),
@@ -2370,6 +2374,7 @@ def inventory_order_by(criteria: InventorySearchCriteria) -> Any:
         "language": sql.SQL("lower(inventory.primary_language)"),
         "source": sql.SQL("inventory.provider"),
         "types": sql.SQL("inventory.inventory_types"),
+        "contributors": sql.SQL("inventory.branch_contributing_developers"),
         "confidence": sql.SQL(
             "CASE lower(COALESCE(inventory.confidence, '')) "
             "WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END"

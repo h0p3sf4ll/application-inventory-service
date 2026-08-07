@@ -13,9 +13,9 @@
 [![CI](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/ci.yml/badge.svg)](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/ci.yml)
 [![Security](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/security.yml/badge.svg)](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/security.yml)
 [![Publish](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/publish.yml/badge.svg)](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/publish.yml)
-[![PyPI](https://img.shields.io/pypi/v/appsec-atlas.svg)](https://pypi.org/project/appsec-atlas/)
-[![Python](https://img.shields.io/pypi/pyversions/appsec-atlas.svg)](https://pypi.org/project/appsec-atlas/)
-[![License](https://img.shields.io/pypi/l/appsec-atlas.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/application-inventory-service.svg?label=PyPI)](https://pypi.org/project/application-inventory-service/)
+[![Python](https://img.shields.io/pypi/pyversions/application-inventory-service.svg)](https://pypi.org/project/application-inventory-service/)
+[![License](https://img.shields.io/pypi/l/application-inventory-service.svg)](LICENSE)
 
 AppSec Atlas builds a live software inventory from Azure DevOps and GitHub Enterprise, correlates normalized scanner findings to application branches, prioritizes them with explainable business context, measures scanner coverage, and coordinates remediation. Repository discovery does not require cloning or executing application code.
 
@@ -405,7 +405,7 @@ The schema separates repositories, branch inventory, application types, categori
 
 A full scan with no application-type filter inventories every repository visible to the source credential. The **Inventory** page reports repository, inventory-record, and classified-application counts separately. Selecting application types intentionally limits reports and database updates to matching applications at or above the configured confidence threshold.
 
-The **Inventory** page provides sortable columns, per-column filters, multi-select Language and Types filters, full-text search, activity/domain/type quick filters, record details, and XLSX, CSV, or JSON exports. The **Configuration** page contains connection, synchronization, schema, webhook, scanner, and remediation settings. Results and exports use the same filters, sort order, and signed-in user scope. XLSX, CSV, and JSON exports consume a server-side database cursor to bound application memory. Operational scan and observability records remain event-based because each execution and log entry is a distinct audit record.
+The **Inventory** page provides sortable columns, per-column filters, multi-select Language and Types filters, full-text search, activity/domain/type quick filters, record details, and XLSX, CSV, or JSON exports. Columns include application, repository, branch, language, web domain, last updated, confidence, contributors, source, and types; each column supports independent filtering and sorting. The **Configuration** page contains connection, synchronization, schema, webhook, scanner, and remediation settings. Results and exports use the same filters, sort order, and signed-in user scope. XLSX, CSV, and JSON exports consume a server-side database cursor to bound application memory. Operational scan and observability records remain event-based because each execution and log entry is a distinct audit record.
 
 Structured events include service lifecycle, HTTP request timing, scan lifecycle, provider, user scope, status, and sanitized metadata. The UI exposes database-backed health at `/api/health` and operational counters at `/api/metrics`.
 

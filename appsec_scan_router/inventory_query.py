@@ -27,6 +27,7 @@ SORT_FIELDS = frozenset(
         "application",
         "branch",
         "confidence",
+        "contributors",
         "domain",
         "language",
         "repository",
@@ -43,6 +44,7 @@ QUERY_FIELDS = frozenset(
         "application_search",
         "repository_search",
         "branch_search",
+        "contributor_search",
         "domain_search",
         "providers",
         "organizations",
@@ -98,6 +100,7 @@ class InventorySearchCriteria:
     application_search: str = ""
     repository_search: str = ""
     branch_search: str = ""
+    contributor_search: str = ""
     domain_search: str = ""
     providers: tuple[str, ...] = ()
     organizations: tuple[str, ...] = ()
@@ -129,6 +132,7 @@ class InventorySearchCriteria:
             application_search=clean_filter_text(source.get("application_search")),
             repository_search=clean_filter_text(source.get("repository_search")),
             branch_search=clean_filter_text(source.get("branch_search")),
+            contributor_search=clean_filter_text(source.get("contributor_search")),
             domain_search=clean_filter_text(source.get("domain_search")),
             providers=choice_values(source.get("providers"), PROVIDERS),
             organizations=text_values(source.get("organizations")),

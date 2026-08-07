@@ -85,6 +85,7 @@ const databaseColumnFilters = {
   application: document.querySelector("#filterApplication"),
   repository: document.querySelector("#filterRepository"),
   branch: document.querySelector("#filterBranch"),
+  contributors: document.querySelector("#filterContributors"),
   domain: document.querySelector("#filterDomain"),
   updated: document.querySelector("#filterUpdated"),
   confidence: document.querySelector("#filterConfidence"),
@@ -1061,7 +1062,7 @@ function renderDatabaseResults() {
   renderDatabaseSortHeaders(search.filters || {});
   if (!search.loaded) {
     databaseResultSummary.textContent = "Loading inventory records";
-    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="9">Loading inventory records.</td></tr>';
+    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="10">Loading inventory records.</td></tr>';
     databasePagePosition.textContent = "Page 1";
     databaseRecordCount.textContent = "Loading records";
     databasePreviousButton.disabled = true;
@@ -1077,7 +1078,7 @@ function renderDatabaseResults() {
     ? "Updating as findings are committed"
     : `Updated ${formatTime(search.refreshedAt || Date.now())}`;
   if (!search.rows.length) {
-    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="9">No inventory records match these filters.</td></tr>';
+    databaseResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="10">No inventory records match these filters.</td></tr>';
   } else {
     databaseResultRows.innerHTML = search.rows.map((row, index) => `
       <tr>
@@ -1088,6 +1089,7 @@ function renderDatabaseResults() {
         <td>${databaseDomainCell(row)}</td>
         <td>${databaseCell(formatDate(row.branch_last_updated || row.last_updated))}</td>
         <td>${confidenceCell(row.confidence)}</td>
+        <td>${databaseCell(row.branch_contributing_developers)}</td>
         <td>${databaseCell(providerLabel(row.provider))}</td>
         <td>${databaseCell(row.inventory_types)}</td>
       </tr>
@@ -1587,6 +1589,7 @@ function databaseFiltersFromControls() {
     "application_search",
     "repository_search",
     "branch_search",
+    "contributor_search",
     "has_domain",
     "has_active_findings",
     "updated_within_days",
@@ -1607,6 +1610,7 @@ function databaseColumnFilterCriteria() {
   const application = databaseColumnFilters.application.value.trim();
   const repository = databaseColumnFilters.repository.value.trim();
   const branch = databaseColumnFilters.branch.value.trim();
+  const contributors = databaseColumnFilters.contributors.value.trim();
   if (application) {
     filters.application_search = application;
   }
@@ -1615,6 +1619,9 @@ function databaseColumnFilterCriteria() {
   }
   if (branch) {
     filters.branch_search = branch;
+  }
+  if (contributors) {
+    filters.contributor_search = contributors;
   }
   if (databaseColumnFilters.domain.value) {
     filters.has_domain = databaseColumnFilters.domain.value === "has";
@@ -1645,6 +1652,7 @@ function populateDatabaseColumnFilters(filters = {}) {
   databaseColumnFilters.application.value = filters.application_search || "";
   databaseColumnFilters.repository.value = filters.repository_search || "";
   databaseColumnFilters.branch.value = filters.branch_search || "";
+  databaseColumnFilters.contributors.value = filters.contributor_search || "";
   databaseColumnFilters.domain.value = filters.has_domain === true ? "has" : filters.has_domain === false ? "missing" : "";
   databaseColumnFilters.updated.value = filters.updated_within_days ? "active" : filters.older_than_days ? "older" : "";
   databaseColumnFilters.confidence.value = filters.confidences && filters.confidences.length === 1 ? filters.confidences[0] : "";
