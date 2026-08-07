@@ -13,9 +13,9 @@
 [![CI](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/ci.yml/badge.svg)](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/ci.yml)
 [![Security](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/security.yml/badge.svg)](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/security.yml)
 [![Publish](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/publish.yml/badge.svg)](https://github.com/InfoSec-Actions/application-inventory-service/actions/workflows/publish.yml)
-[![PyPI](https://img.shields.io/pypi/v/application-inventory-service.svg?label=PyPI)](https://pypi.org/project/application-inventory-service/)
-[![Python](https://img.shields.io/pypi/pyversions/application-inventory-service.svg)](https://pypi.org/project/application-inventory-service/)
-[![License](https://img.shields.io/pypi/l/application-inventory-service.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/appsec-atlas.svg)](https://pypi.org/project/appsec-atlas/)
+[![Python](https://img.shields.io/pypi/pyversions/appsec-atlas.svg)](https://pypi.org/project/appsec-atlas/)
+[![License](https://img.shields.io/pypi/l/appsec-atlas.svg)](LICENSE)
 
 AppSec Atlas builds a live software inventory from Azure DevOps and GitHub Enterprise, correlates normalized scanner findings to application branches, prioritizes them with explainable business context, measures scanner coverage, and coordinates remediation. Repository discovery does not require cloning or executing application code.
 
