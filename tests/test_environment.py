@@ -1,16 +1,11 @@
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 import unittest
+from importlib.metadata import distribution
 from pathlib import Path
 from unittest.mock import patch
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib  # type: ignore[no-redef]
 
 from appsec_scan_router.environment import (
     load_environment_file,
@@ -58,18 +53,18 @@ class EnvironmentFileTests(unittest.TestCase):
             self.assertEqual(project_environment_path(), Path("/tmp/appsec-atlas.env"))
 
     def test_appsec_atlas_console_commands_preserve_legacy_aliases(self) -> None:
-        pyproject = tomllib.loads(
-            (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(
-                encoding="utf-8"
-            )
-        )
-        scripts = pyproject["project"]["scripts"]
+        dist = distribution("appsec-atlas")
+        scripts = {
+            ep.name: ep.value
+            for ep in dist.entry_points
+            if ep.group == "console_scripts"
+        }
 
-        self.assertEqual(scripts["appsec-atlas"], "appsec_atlas.cli:main")
-        self.assertEqual(scripts["appsec-atlas-ui"], "appsec_atlas.ui:main")
-        self.assertEqual(scripts["appsec-atlas-aspm"], "appsec_atlas.aspm:main")
+        self.assertEqual(scripts.get("appsec-atlas"), "appsec_atlas.cli:main")
+        self.assertEqual(scripts.get("appsec-atlas-ui"), "appsec_atlas.ui:main")
+        self.assertEqual(scripts.get("appsec-atlas-aspm"), "appsec_atlas.aspm:main")
         self.assertEqual(
-            scripts["application-inventory-service"], "appsec_atlas.cli:main"
+            scripts.get("application-inventory-service"), "appsec_atlas.cli:main"
         )
 
 
