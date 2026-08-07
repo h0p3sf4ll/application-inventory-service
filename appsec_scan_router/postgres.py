@@ -2217,6 +2217,7 @@ def export_inventory_sbom(
     table: str = DEFAULT_POSTGRES_TABLE,
     filters: dict[str, Any] | InventorySearchCriteria | None = None,
     sbom_type: str = "sbom",
+    bom_format: str = "cdx_json",
 ) -> bytes:
     resolved_filters: dict[str, Any] | None
     if sbom_type == "aibom":
@@ -2241,7 +2242,7 @@ def export_inventory_sbom(
         query=query,
         table=table,
         filters=resolved_filters,
-        renderer=lambda rows: rows_to_sbom(rows, sbom_type),
+        renderer=lambda rows: rows_to_sbom(rows, sbom_type, bom_format),
     )
 
 

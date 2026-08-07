@@ -985,9 +985,7 @@
                   <button class="primary" id="exportDatabaseXlsx" type="button">Export XLSX</button>
                   <button class="ghost" id="exportDatabaseCsv" type="button">Export CSV</button>
                   <button class="ghost" id="exportDatabaseJson" type="button">Export JSON</button>
-                  <button class="ghost" id="exportDatabaseSbom" type="button">Export SBOM</button>
-                  <button class="ghost" id="exportDatabaseAibom" type="button">Export AIBOM</button>
-                  <button class="ghost" id="exportDatabaseMlbom" type="button">Export MLBOM</button>
+                  <button class="ghost" id="exportDatabaseBom" type="button">Export BOM</button>
                 </div>
               </div>
               <div class="database-table-wrap">
@@ -1086,7 +1084,10 @@
                   <p class="eyebrow">Inventory record</p>
                   <h3 id="inventoryRecordTitle">Application details</h3>
                 </div>
-                <button class="icon-button" id="closeInventoryRecord" type="button" aria-label="Close" title="Close">&times;</button>
+                <div class="inventory-dialog-heading-actions">
+                  <button class="ghost compact-button" id="exportBomForRecord" type="button">Export BOM</button>
+                  <button class="icon-button" id="closeInventoryRecord" type="button" aria-label="Close" title="Close">&times;</button>
+                </div>
               </div>
               <dl id="inventoryRecordDetails"></dl>
               <section class="asset-profile" id="assetProfile" hidden>
@@ -1111,6 +1112,62 @@
                   <button class="primary" id="saveAssetProfile" type="button">Save security context</button>
                 </div>
               </section>
+            </dialog>
+            <dialog class="inventory-dialog bom-export-dialog" id="bomExportDialog" aria-labelledby="bomExportTitle">
+              <div class="inventory-dialog-heading">
+                <div>
+                  <p class="eyebrow" id="bomExportEyebrow">Export</p>
+                  <h3 id="bomExportTitle">Bill of Materials</h3>
+                </div>
+                <button class="icon-button" id="closeBomExport" type="button" aria-label="Close" title="Close">&times;</button>
+              </div>
+              <div class="bom-export-body">
+                <div class="bom-export-asset-info" id="bomExportAssetInfo" hidden>
+                  <p class="bom-export-field-label">Asset</p>
+                  <div class="bom-export-asset-card">
+                    <strong id="bomExportAssetName"></strong>
+                    <small id="bomExportAssetMeta"></small>
+                  </div>
+                </div>
+                <div class="bom-export-section" id="bomTypeSection">
+                  <p class="bom-export-field-label">BOM type</p>
+                  <div class="bom-option-group">
+                    <label class="bom-option">
+                      <input type="radio" name="bomType" value="sbom" checked>
+                      <span class="bom-option-text"><strong>SBOM</strong><small>Software BOM &mdash; all inventory records</small></span>
+                    </label>
+                    <label class="bom-option">
+                      <input type="radio" name="bomType" value="aibom">
+                      <span class="bom-option-text"><strong>AIBOM</strong><small>AI BOM &mdash; AI-enabled applications only</small></span>
+                    </label>
+                    <label class="bom-option">
+                      <input type="radio" name="bomType" value="mlbom">
+                      <span class="bom-option-text"><strong>MLBOM</strong><small>ML BOM &mdash; ML-enabled applications only</small></span>
+                    </label>
+                  </div>
+                </div>
+                <div class="bom-export-section">
+                  <p class="bom-export-field-label">Format</p>
+                  <div class="bom-option-group">
+                    <label class="bom-option">
+                      <input type="radio" name="bomFormat" value="cdx_json" checked>
+                      <span class="bom-option-text"><strong>CycloneDX JSON</strong><small>CycloneDX 1.5 &mdash; .cdx.json</small></span>
+                    </label>
+                    <label class="bom-option">
+                      <input type="radio" name="bomFormat" value="cdx_xml">
+                      <span class="bom-option-text"><strong>CycloneDX XML</strong><small>CycloneDX 1.5 &mdash; .cdx.xml</small></span>
+                    </label>
+                    <label class="bom-option">
+                      <input type="radio" name="bomFormat" value="spdx_json">
+                      <span class="bom-option-text"><strong>SPDX JSON</strong><small>SPDX 2.3 &mdash; .spdx.json</small></span>
+                    </label>
+                  </div>
+                </div>
+                <div class="bom-export-footer">
+                  <button class="primary" id="runBomExport" type="button">Export</button>
+                  <button class="ghost" id="cancelBomExport" type="button">Cancel</button>
+                </div>
+              </div>
             </dialog>
           </section>
         </form>

@@ -57,9 +57,17 @@ const databaseReadyBadge = document.querySelector("#databaseReadyBadge");
 const exportDatabaseXlsxButton = document.querySelector("#exportDatabaseXlsx");
 const exportDatabaseCsvButton = document.querySelector("#exportDatabaseCsv");
 const exportDatabaseJsonButton = document.querySelector("#exportDatabaseJson");
-const exportDatabaseSbomButton = document.querySelector("#exportDatabaseSbom");
-const exportDatabaseAibomButton = document.querySelector("#exportDatabaseAibom");
-const exportDatabaseMlbomButton = document.querySelector("#exportDatabaseMlbom");
+const exportDatabaseBomButton = document.querySelector("#exportDatabaseBom");
+const bomExportDialog = document.querySelector("#bomExportDialog");
+const closeBomExportButton = document.querySelector("#closeBomExport");
+const cancelBomExportButton = document.querySelector("#cancelBomExport");
+const runBomExportButton = document.querySelector("#runBomExport");
+const bomExportAssetInfo = document.querySelector("#bomExportAssetInfo");
+const bomExportAssetName = document.querySelector("#bomExportAssetName");
+const bomExportAssetMeta = document.querySelector("#bomExportAssetMeta");
+const bomExportEyebrow = document.querySelector("#bomExportEyebrow");
+const bomTypeSection = document.querySelector("#bomTypeSection");
+const exportBomForRecordButton = document.querySelector("#exportBomForRecord");
 const databaseStatus = document.querySelector("#databaseStatus");
 const githubAppStatus = document.querySelector("#githubAppStatus");
 const githubAppConfigurationStatus = document.querySelector("#githubAppConfigurationStatus");
@@ -150,6 +158,7 @@ const state = {
   session: null,
   database: null,
   databaseSearch: {query: "", filters: {}, rows: [], total: 0, limit: 25, offset: 0, loaded: false},
+  openRecordIndex: -1,
   databaseFacets: {languages: [], loaded: false},
   databaseSearchBusy: false,
   databaseConfigDirty: true,
@@ -352,9 +361,16 @@ function bindEvents() {
   exportDatabaseXlsxButton.addEventListener("click", () => exportDatabase("xlsx"));
   exportDatabaseCsvButton.addEventListener("click", () => exportDatabase("csv"));
   exportDatabaseJsonButton.addEventListener("click", () => exportDatabase("json"));
-  exportDatabaseSbomButton.addEventListener("click", () => exportDatabase("sbom"));
-  exportDatabaseAibomButton.addEventListener("click", () => exportDatabase("aibom"));
-  exportDatabaseMlbomButton.addEventListener("click", () => exportDatabase("mlbom"));
+  exportDatabaseBomButton.addEventListener("click", () => openBomExportDialog(null));
+  closeBomExportButton.addEventListener("click", () => bomExportDialog.close());
+  cancelBomExportButton.addEventListener("click", () => bomExportDialog.close());
+  runBomExportButton.addEventListener("click", runBomExport);
+  exportBomForRecordButton.addEventListener("click", () => {
+    const row = state.databaseSearch.rows[state.openRecordIndex];
+    if (row) {
+      openBomExportDialog(row);
+    }
+  });
   inventoryFilterButtons.forEach((button) => {
     button.addEventListener("click", () => activateInventoryFilter(button.dataset.inventoryFilter));
   });
@@ -1192,10 +1208,12 @@ function openInventoryRecordFromEvent(event) {
   if (!button) {
     return;
   }
-  const row = state.databaseSearch.rows[Number(button.dataset.recordIndex)];
+  const index = Number(button.dataset.recordIndex);
+  const row = state.databaseSearch.rows[index];
   if (!row) {
     return;
   }
+  state.openRecordIndex = index;
   const isMobileApp = inventoryRecordHasType(row, "mobile_app");
   inventoryRecordTitle.textContent = row.inventory_name || row.mobile_name || row.repo_name || "Application details";
   const fields = [
@@ -1439,17 +1457,20 @@ async function searchDatabase(offset = 0, query = "", {filters = state.databaseS
   }
 }
 
-async function exportDatabase(format) {
+async function exportDatabase(format, bomFormat = "cdx_json", overrideFilters = null) {
   setDatabaseBusy(true);
   try {
+    const useQuery = overrideFilters ? "" : state.databaseSearch.query;
+    const useFilters = overrideFilters || (state.databaseSearch.filters || {});
     const response = await fetch("/api/database/export", {
       method: "POST",
       headers: authHeaders(true),
       body: JSON.stringify({
         ...databasePayload(),
         format,
-        query: state.databaseSearch.query,
-        filters: state.databaseSearch.filters || {},
+        bom_format: bomFormat,
+        query: useQuery,
+        filters: useFilters,
       }),
     });
     const contentType = response.headers.get("Content-Type") || "";
@@ -1461,9 +1482,10 @@ async function exportDatabase(format) {
       throw new Error("Database export failed.");
     }
     const blob = await response.blob();
-    const bomFormats = {sbom: "sbom", aibom: "aibom", mlbom: "mlbom"};
-    const filename = bomFormats[format]
-      ? `application_inventory_${bomFormats[format]}.cdx.json`
+    const bomExts = {cdx_json: "cdx.json", cdx_xml: "cdx.xml", spdx_json: "spdx.json"};
+    const bomTypes = new Set(["sbom", "aibom", "mlbom"]);
+    const filename = bomTypes.has(format)
+      ? `application_inventory_${format}.${bomExts[bomFormat] || "cdx.json"}`
       : `application_inventory_database_export.${format}`;
     downloadBlob(blob, filename);
     notify(`Database ${format.toUpperCase()} export downloaded.`);
@@ -1472,6 +1494,41 @@ async function exportDatabase(format) {
   } finally {
     setDatabaseBusy(false);
   }
+}
+
+function openBomExportDialog(asset) {
+  if (asset) {
+    const name = asset.inventory_name || asset.mobile_name || asset.repo_name || "Unknown";
+    bomExportAssetName.textContent = name;
+    const meta = [asset.organization, asset.repo_name, asset.branch_name].filter(Boolean).join(" / ");
+    bomExportAssetMeta.textContent = meta;
+    bomExportAssetInfo.hidden = false;
+    bomExportEyebrow.textContent = "Export asset";
+    bomTypeSection.hidden = true;
+    document.querySelector('[name="bomType"][value="sbom"]').checked = true;
+  } else {
+    bomExportAssetInfo.hidden = true;
+    bomExportEyebrow.textContent = "Export";
+    bomTypeSection.hidden = false;
+  }
+  bomExportDialog._asset = asset;
+  bomExportDialog.showModal();
+}
+
+async function runBomExport() {
+  const asset = bomExportDialog._asset || null;
+  const bomType = asset ? "sbom" : document.querySelector('[name="bomType"]:checked').value;
+  const bomFormat = document.querySelector('[name="bomFormat"]:checked').value;
+  const overrideFilters = asset
+    ? {
+        providers: asset.provider ? [asset.provider] : undefined,
+        organizations: asset.organization ? [asset.organization] : undefined,
+        repositories: asset.repo_name ? [asset.repo_name] : undefined,
+        branch_search: asset.branch_name || undefined,
+      }
+    : null;
+  bomExportDialog.close();
+  await exportDatabase(bomType, bomFormat, overrideFilters);
 }
 
 async function askInventory() {
@@ -2527,9 +2584,7 @@ function setDatabaseBusy(isBusy) {
   exportDatabaseXlsxButton.disabled = isBusy;
   exportDatabaseCsvButton.disabled = isBusy;
   exportDatabaseJsonButton.disabled = isBusy;
-  exportDatabaseSbomButton.disabled = isBusy;
-  exportDatabaseAibomButton.disabled = isBusy;
-  exportDatabaseMlbomButton.disabled = isBusy;
+  exportDatabaseBomButton.disabled = isBusy;
   databasePageSize.disabled = isBusy;
   inventoryFilterButtons.forEach((button) => {
     button.disabled = isBusy;

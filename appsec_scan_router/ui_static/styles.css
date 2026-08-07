@@ -3146,6 +3146,114 @@ button.posture-kpi:focus-visible {
   color: var(--danger);
 }
 
+.inventory-dialog-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.bom-export-dialog {
+  width: min(460px, calc(100vw - 32px));
+}
+
+.bom-export-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 20px 18px 24px;
+}
+
+.bom-export-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bom-export-field-label {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.bom-option-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.bom-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+
+.bom-option:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--surface-muted);
+}
+
+.bom-option input[type="radio"] {
+  margin-top: 3px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+
+.bom-option-text {
+  min-width: 0;
+}
+
+.bom-option-text strong {
+  display: block;
+  font-size: 13px;
+}
+
+.bom-option-text small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.bom-export-asset-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bom-export-asset-card {
+  padding: 10px 12px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.bom-export-asset-card strong {
+  display: block;
+}
+
+.bom-export-asset-card small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.bom-export-footer {
+  display: flex;
+  gap: 8px;
+  padding-top: 4px;
+}
+
 .connector-setup-dialog {
   width: min(680px, calc(100vw - 32px));
   max-height: min(760px, calc(100vh - 32px));

@@ -862,6 +862,9 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             export_format = clean_choice(
                 payload.get("format"), {"csv", "json", "xlsx", "sbom", "aibom", "mlbom"}, "xlsx"
             )
+            bom_format = clean_choice(
+                payload.get("bom_format"), {"cdx_json", "cdx_xml", "spdx_json"}, "cdx_json"
+            )
             query = clean_text(payload.get("query"))
             filters = (
                 payload.get("filters")
@@ -893,6 +896,14 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                 filename = "application_inventory_database_export.json"
                 content_type = "application/json"
             elif export_format in {"sbom", "aibom", "mlbom"}:
+                ext = {"cdx_json": "cdx.json", "cdx_xml": "cdx.xml", "spdx_json": "spdx.json"}.get(
+                    bom_format, "cdx.json"
+                )
+                content_type = {
+                    "cdx_json": "application/vnd.cyclonedx+json",
+                    "cdx_xml": "application/vnd.cyclonedx+xml",
+                    "spdx_json": "application/spdx+json",
+                }.get(bom_format, "application/vnd.cyclonedx+json")
                 content = export_inventory_sbom(
                     config["postgresDsn"],
                     schema=config["postgresSchema"],
@@ -901,9 +912,9 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                     table=config["postgresTable"],
                     filters=filters,
                     sbom_type=export_format,
+                    bom_format=bom_format,
                 )
-                filename = f"application_inventory_{export_format}.cdx.json"
-                content_type = "application/vnd.cyclonedx+json"
+                filename = f"application_inventory_{export_format}.{ext}"
             else:
                 content = export_inventory_csv(
                     config["postgresDsn"],
