@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import unittest
 import uuid
@@ -10,7 +12,11 @@ from openpyxl import load_workbook
 
 from appsec_scan_router.aspm_ingest import parse_finding_document
 from appsec_scan_router.aspm_models import FindingDocument, FindingInput, SourceLocation
-from appsec_scan_router.aspm_postgres import AspmRepository
+from appsec_scan_router.aspm_postgres import (
+    ASPM_SCHEMA_READY,
+    ASPM_SCHEMA_VERSION,
+    AspmRepository,
+)
 from appsec_scan_router.postgres import create_database_schema
 
 try:
@@ -207,6 +213,144 @@ class AspmPostgresIntegrationTests(unittest.TestCase):
         )
         self.assertIn("Security Findings", workbook.sheetnames)
         self.assertEqual(sum(1 for _ in workbook["Security Findings"].iter_rows()), 2)
+
+    def test_findings_cursor_pagination_avoids_total_count(self) -> None:
+        payload = {
+            "format": "generic",
+            "tool": {"key": "codeql", "name": "CodeQL", "type": "sast"},
+            "context": {
+                "organization": "ExampleEngineering",
+                "repository": "payments-api",
+                "branch": "main",
+            },
+            "findings": [
+                {
+                    "id": "cursor-1",
+                    "title": "Critical cursor finding",
+                    "severity": "critical",
+                },
+                {
+                    "id": "cursor-2",
+                    "title": "High cursor finding",
+                    "severity": "high",
+                },
+                {
+                    "id": "cursor-3",
+                    "title": "Medium cursor finding",
+                    "severity": "medium",
+                },
+            ],
+        }
+        self.repository.ingest("user-a", "alice", parse_finding_document(payload))
+
+        first = self.repository.search_findings(
+            "user-a",
+            filters={"statuses": ["open"]},
+            limit=2,
+            include_facets=False,
+            include_total=False,
+        )
+        self.assertIsNone(first["total"])
+        self.assertTrue(first["hasMore"])
+        self.assertIsNotNone(first["nextCursor"])
+        second = self.repository.search_findings(
+            "user-a",
+            filters={"statuses": ["open"]},
+            limit=2,
+            offset=2,
+            include_facets=False,
+            include_total=False,
+            cursor=first["nextCursor"],
+        )
+        self.assertIsNone(second["total"])
+        self.assertFalse(second["hasMore"])
+        self.assertIsNone(second["nextCursor"])
+        external_ids = [row["external_id"] for row in first["rows"] + second["rows"]]
+        self.assertEqual(set(external_ids), {"cursor-1", "cursor-2", "cursor-3"})
+        self.assertEqual(len(external_ids), len(set(external_ids)))
+
+        with psycopg.connect(POSTGRES_TEST_DSN, autocommit=True) as connection:
+            indexes = connection.execute(
+                """
+                SELECT indexname
+                FROM pg_indexes
+                WHERE schemaname = %s AND tablename = 'aspm_findings'
+                """,
+                (self.schema,),
+            ).fetchall()
+        self.assertIn(
+            f"{self.schema}_aspm_finding_owner_risk_order_v2_idx"[:63],
+            {row[0] for row in indexes},
+        )
+
+    def test_findings_export_uses_cursor_pagination(self) -> None:
+        cursor = {
+            "riskScore": 80,
+            "lastSeen": "2026-08-10T00:00:00+00:00",
+            "findingId": "first",
+        }
+        pages = [
+            {
+                "rows": [{"finding_id": "first"}],
+                "nextCursor": cursor,
+            },
+            {
+                "rows": [{"finding_id": "second"}],
+                "nextCursor": None,
+            },
+        ]
+        with patch.object(
+            self.repository, "search_findings", side_effect=pages
+        ) as search_findings:
+            content = self.repository.export_findings("user-a", "json")
+
+        self.assertEqual(
+            [row["finding_id"] for row in json.loads(content)],
+            ["first", "second"],
+        )
+        initial_call, cursor_call = search_findings.call_args_list
+        self.assertFalse(initial_call.kwargs["include_total"])
+        self.assertNotIn("offset", initial_call.kwargs)
+        self.assertFalse(cursor_call.kwargs["include_total"])
+        self.assertEqual(cursor_call.kwargs["cursor"], cursor)
+        self.assertNotIn("offset", cursor_call.kwargs)
+
+    def test_schema_restores_missing_findings_order_index(self) -> None:
+        self.repository.search_findings("user-a", include_facets=False)
+        index_name = f"{self.schema}_aspm_finding_owner_risk_order_v2_idx"[:63]
+        cache_key = (
+            hashlib.sha256(POSTGRES_TEST_DSN.encode("utf-8")).hexdigest(),
+            self.schema,
+        )
+        with psycopg.connect(POSTGRES_TEST_DSN, autocommit=True) as connection:
+            connection.execute(
+                sql.SQL("DROP INDEX {index}").format(
+                    index=sql.Identifier(self.schema, index_name)
+                )
+            )
+            connection.execute(
+                sql.SQL(
+                    "UPDATE {versions} SET version = %s WHERE component = 'aspm'"
+                ).format(versions=sql.Identifier(self.schema, "schema_versions")),
+                (ASPM_SCHEMA_VERSION,),
+            )
+        ASPM_SCHEMA_READY.discard(cache_key)
+        try:
+            AspmRepository(POSTGRES_TEST_DSN, self.schema).ensure_schema()
+        finally:
+            ASPM_SCHEMA_READY.discard(cache_key)
+        with psycopg.connect(POSTGRES_TEST_DSN, autocommit=True) as connection:
+            index_exists = connection.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_indexes
+                    WHERE schemaname = %s AND indexname = %s
+                )
+                """,
+                (self.schema, index_name),
+            ).fetchone()[0]
+        self.assertTrue(index_exists)
 
     def test_asset_profile_changes_recalculate_risk_and_owner_scope_is_enforced(
         self,

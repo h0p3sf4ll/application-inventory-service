@@ -12,7 +12,8 @@ export class AspmWorkspace {
     this.openAffectedInventory = dependencies.openAffectedInventory;
     this.state = {
       posture: null,
-      findings: {rows: [], total: 0, limit: 25, offset: 0, facets: {}, loaded: false, findingRequest: 0},
+      findings: {rows: [], total: null, limit: 25, offset: 0, facets: {}, hasMore: false, nextCursor: null, loaded: false, findingRequest: 0},
+      findingCursors: [null],
       coverage: {rows: [], total: 0, limit: 100, offset: 0, summary: {}, loaded: false, requestId: 0},
       assetRisks: {rows: [], total: 0, limit: 25, offset: 0, activeOnly: false, loaded: false, assetRiskRequest: 0},
       connectors: {items: [], syncs: [], loaded: false},
@@ -124,12 +125,8 @@ export class AspmWorkspace {
       this.state.findings.limit = limit;
       this.searchFindings(0);
     });
-    this.elements.findingPrevious.addEventListener("click", () => {
-      this.searchFindings(Math.max(0, this.state.findings.offset - this.state.findings.limit));
-    });
-    this.elements.findingNext.addEventListener("click", () => {
-      this.searchFindings(this.state.findings.offset + this.state.findings.limit);
-    });
+    this.elements.findingPrevious.addEventListener("click", () => this.previousFindingsPage());
+    this.elements.findingNext.addEventListener("click", () => this.nextFindingsPage());
     this.elements.findingResultRows.addEventListener("click", (event) => this.openFindingFromEvent(event));
     this.elements.findingResultRows.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
@@ -192,7 +189,8 @@ export class AspmWorkspace {
 
   reset() {
     this.state.posture = null;
-    this.state.findings = {rows: [], total: 0, limit: 25, offset: 0, facets: {}, loaded: false, findingRequest: 0};
+    this.state.findings = {rows: [], total: null, limit: 25, offset: 0, facets: {}, hasMore: false, nextCursor: null, loaded: false, findingRequest: 0};
+    this.state.findingCursors = [null];
     this.state.coverage = {rows: [], total: 0, limit: 100, offset: 0, summary: {}, loaded: false, requestId: 0};
     this.state.assetRisks = {rows: [], total: 0, limit: 25, offset: 0, activeOnly: false, loaded: false, assetRiskRequest: 0};
     this.state.connectors = {items: [], syncs: [], loaded: false};
@@ -698,7 +696,7 @@ export class AspmWorkspace {
     }
   }
 
-  async searchFindings(offset = 0, force = false) {
+  async searchFindings(offset = 0, force = false, cursor = undefined) {
     if (!force && this.state.busy.has("findings")) {
       return;
     }
@@ -709,6 +707,10 @@ export class AspmWorkspace {
     try {
       const filters = this.findingFilters();
       const includeFacets = !this.state.findings.loaded;
+      const pageIndex = Math.floor(offset / this.state.findings.limit);
+      const pageCursor = cursor === undefined
+        ? this.state.findingCursors[pageIndex] || null
+        : cursor;
       const data = await this.postJson("/api/aspm/findings/search", {
         ...this.databasePayload(),
         query: this.elements.findingSearchQuery.value.trim(),
@@ -716,11 +718,26 @@ export class AspmWorkspace {
         limit: this.state.findings.limit,
         offset,
         includeFacets,
+        includeTotal: false,
+        cursor: pageCursor,
       });
       if (requestId !== this.state.findingRequest) {
         return;
       }
-      this.state.findings = {...data.findings, loaded: true, findingRequest: requestId};
+      const returnedFacets = data.findings.facets || {};
+      const facets = Object.keys(returnedFacets).length
+        ? returnedFacets
+        : this.state.findings.facets || {};
+      this.state.findings = {...data.findings, facets, loaded: true, findingRequest: requestId};
+      if (offset === 0) {
+        this.state.findingCursors = [null];
+      }
+      this.state.findingCursors[pageIndex] = pageCursor;
+      if (data.findings.nextCursor) {
+        this.state.findingCursors[pageIndex + 1] = data.findings.nextCursor;
+      } else {
+        this.state.findingCursors.length = pageIndex + 1;
+      }
       this.state.findingFilters = filters;
       this.state.refreshedAt.findings = Date.now();
       this.renderFindings();
@@ -736,6 +753,29 @@ export class AspmWorkspace {
         this.setBusy("findings", false);
       }
     }
+  }
+
+  previousFindingsPage() {
+    const findings = this.state.findings;
+    const offset = Math.max(0, findings.offset - findings.limit);
+    const pageIndex = Math.floor(offset / findings.limit);
+    this.searchFindings(offset, false, this.state.findingCursors[pageIndex] || null);
+  }
+
+  nextFindingsPage() {
+    const findings = this.state.findings;
+    const hasTotal = Number.isInteger(findings.total);
+    const hasMore = typeof findings.hasMore === "boolean"
+      ? findings.hasMore
+      : hasTotal && findings.offset + findings.limit < findings.total;
+    if (!hasMore) {
+      return;
+    }
+    this.searchFindings(
+      findings.offset + findings.limit,
+      false,
+      findings.nextCursor || null,
+    );
   }
 
   findingFilters() {
@@ -792,13 +832,24 @@ export class AspmWorkspace {
     const findings = this.state.findings;
     this.populateToolFilter(findings.facets && findings.facets.tools || []);
     this.elements.findingPageSize.value = String(findings.limit);
-    const start = findings.total ? findings.offset + 1 : 0;
-    const end = Math.min(findings.offset + findings.rows.length, findings.total);
-    this.elements.findingResultSummary.textContent = `${this.number(start)}-${this.number(end)} of ${this.number(findings.total)} findings`;
-    this.elements.findingPagePosition.textContent = `Page ${Math.floor(findings.offset / findings.limit) + 1} of ${Math.max(1, Math.ceil(findings.total / findings.limit))}`;
-    this.elements.findingRecordCount.textContent = `${this.number(findings.total)} matching records`;
+    const hasTotal = Number.isInteger(findings.total);
+    const start = findings.rows.length ? findings.offset + 1 : 0;
+    const end = findings.offset + findings.rows.length;
+    const page = Math.floor(findings.offset / findings.limit) + 1;
+    const hasMore = typeof findings.hasMore === "boolean"
+      ? findings.hasMore
+      : hasTotal && findings.offset + findings.limit < findings.total;
+    this.elements.findingResultSummary.textContent = hasTotal
+      ? `${this.number(start)}-${this.number(end)} of ${this.number(findings.total)} findings`
+      : findings.rows.length ? `${this.number(start)}-${this.number(end)} findings` : "No findings";
+    this.elements.findingPagePosition.textContent = hasTotal
+      ? `Page ${page} of ${Math.max(1, Math.ceil(findings.total / findings.limit))}`
+      : `Page ${page}`;
+    this.elements.findingRecordCount.textContent = hasTotal
+      ? `${this.number(findings.total)} matching records`
+      : hasMore ? "More matching records available" : `${this.number(end)} matching records`;
     this.elements.findingPrevious.disabled = findings.offset <= 0;
-    this.elements.findingNext.disabled = findings.offset + findings.limit >= findings.total;
+    this.elements.findingNext.disabled = !hasMore;
     if (!findings.rows.length) {
       this.elements.findingResultRows.innerHTML = '<tr><td class="database-empty-row" colspan="9">No findings match the current filters.</td></tr>';
       return;

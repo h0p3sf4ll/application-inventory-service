@@ -1059,6 +1059,8 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                 limit=positive_int(payload.get("limit"), 25),
                 offset=max(0, integer_value(payload.get("offset"), 0)),
                 include_facets=payload.get("includeFacets") is not False,
+                include_total=payload.get("includeTotal") is not False,
+                cursor=payload.get("cursor"),
             )
             self.send_json({"findings": result})
         except ValueError as exc:

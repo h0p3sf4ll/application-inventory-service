@@ -4,6 +4,7 @@ import hashlib
 import os
 import re
 import threading
+import time
 import uuid
 from collections.abc import Iterable, Mapping
 from itertools import chain
@@ -40,9 +41,12 @@ except ImportError:
 
 
 SQL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-ASPM_SCHEMA_VERSION = 4
+ASPM_SCHEMA_VERSION = 7
 ASPM_SCHEMA_LOCK = threading.Lock()
 ASPM_SCHEMA_READY: set[tuple[str, str]] = set()
+_FACET_CACHE: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
+_FACET_CACHE_LOCK = threading.Lock()
+_FACET_CACHE_TTL = 60.0
 DEFAULT_OPERATION_STALE_AFTER_SECONDS = 86_400
 MIN_OPERATION_STALE_AFTER_SECONDS = 300
 FINDING_EXPORT_COLUMNS = (
@@ -82,6 +86,54 @@ FINDING_EXPORT_COLUMNS = (
     "scanner_url",
     "remediation",
 )
+
+
+def create_aspm_finding_order_index(connection: Any, schema: str) -> None:
+    resolved = schema_name(schema)
+    connection.execute(
+        sql.SQL(
+            """
+            CREATE INDEX IF NOT EXISTS {finding_owner_risk_order_idx}
+                ON {findings} (owner_user_id, risk_score DESC NULLS LAST, last_seen DESC, finding_id)
+                INCLUDE (status)
+            """
+        ).format(
+            findings=identifier(resolved, "aspm_findings"),
+            finding_owner_risk_order_idx=sql.Identifier(
+                f"{resolved}_aspm_finding_owner_risk_order_v2_idx"[:63]
+            ),
+        )
+    )
+
+
+def create_aspm_performance_indexes(connection: Any, schema: str) -> None:
+    resolved = schema_name(schema)
+    connection.execute(
+        sql.SQL(
+            """
+            CREATE INDEX IF NOT EXISTS {finding_owner_risk_band_idx}
+                ON {findings} (owner_user_id, risk_band, risk_score DESC)
+            """
+        ).format(
+            findings=identifier(resolved, "aspm_findings"),
+            finding_owner_risk_band_idx=sql.Identifier(
+                f"{resolved}_aspm_finding_owner_risk_band_idx"[:63]
+            ),
+        )
+    )
+    connection.execute(
+        sql.SQL(
+            """
+            CREATE INDEX IF NOT EXISTS {finding_owner_tool_idx}
+                ON {findings} (owner_user_id, tool_id)
+            """
+        ).format(
+            findings=identifier(resolved, "aspm_findings"),
+            finding_owner_tool_idx=sql.Identifier(
+                f"{resolved}_aspm_finding_owner_tool_idx"[:63]
+            ),
+        )
+    )
 
 
 def create_aspm_schema(connection: Any, schema: str) -> None:
@@ -357,6 +409,7 @@ def create_aspm_schema(connection: Any, schema: str) -> None:
             ),
         )
     )
+    create_aspm_finding_order_index(connection, resolved)
     connection.execute(
         sql.SQL(
             """
@@ -416,23 +469,30 @@ class AspmRepository:
             remediation_policy or default_remediation_policy()
         )
 
+    def _facet_cache_key(self, owner: str) -> tuple[str, str, str]:
+        return (hashlib.sha256(self.dsn.encode("utf-8")).hexdigest()[:16], self.schema, owner)
+
+    def _invalidate_facet_cache(self, owner: str) -> None:
+        key = self._facet_cache_key(owner)
+        with _FACET_CACHE_LOCK:
+            _FACET_CACHE.pop(key, None)
+
     def ensure_schema(self) -> None:
         key = (hashlib.sha256(self.dsn.encode("utf-8")).hexdigest(), self.schema)
         with ASPM_SCHEMA_LOCK:
             if key in ASPM_SCHEMA_READY:
                 return
             with psycopg.connect(self.dsn) as connection:
+                lock_name = f"application-inventory:{self.schema}:schema"
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (lock_name,),
+                )
                 if current_aspm_schema_version(connection, self.schema) < ASPM_SCHEMA_VERSION:
-                    lock_name = f"application-inventory:{self.schema}:schema"
-                    connection.execute(
-                        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                        (lock_name,),
-                    )
-                    if (
-                        current_aspm_schema_version(connection, self.schema)
-                        < ASPM_SCHEMA_VERSION
-                    ):
-                        create_aspm_schema(connection, self.schema)
+                    create_aspm_schema(connection, self.schema)
+                else:
+                    create_aspm_finding_order_index(connection, self.schema)
+                create_aspm_performance_indexes(connection, self.schema)
             ASPM_SCHEMA_READY.add(key)
 
     def ingest(
@@ -490,6 +550,7 @@ class AspmRepository:
                     (bounded_text(exc, 2000), import_id, owner),
                 )
             raise
+        self._invalidate_facet_cache(owner)
         return {
             "importId": import_id,
             "status": "completed",
@@ -654,6 +715,7 @@ class AspmRepository:
                     (bounded_text(exc, 2000), import_id, owner),
                 )
             raise
+        self._invalidate_facet_cache(owner)
         return {
             "importId": import_id,
             "status": "completed",
@@ -1017,33 +1079,100 @@ class AspmRepository:
         limit: int = 100,
         offset: int = 0,
         include_facets: bool = True,
+        include_total: bool = True,
+        cursor: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         self.ensure_schema()
         owner = bounded_text(owner_user_id, 500) or "anonymous"
         resolved_filters = normalize_finding_filters(filters)
-        where, parameters = self._finding_filter(owner, query, resolved_filters)
         bounded_limit = max(1, min(int(limit), 500))
         bounded_offset = max(0, int(offset))
-        order = finding_order(resolved_filters)
-        with psycopg.connect(self.dsn, row_factory=dict_row) as connection:
-            total = connection.execute(
-                sql.SQL("SELECT count(*) FROM {view} f WHERE {where}").format(
-                    view=self._finding_view(), where=where
+        resolved_cursor = normalize_finding_cursor(cursor)
+        if resolved_cursor and (
+            resolved_filters["sort_by"] != "risk"
+            or resolved_filters["sort_direction"] != "desc"
+        ):
+            raise ValueError("Finding cursors require risk descending order.")
+        page_source, page_tool_alias, page_branch_alias = self._finding_match_source(
+            resolved_filters, include_order=True
+        )
+        where, parameters = self._finding_filter(
+            owner, query, resolved_filters, tool_alias=page_tool_alias
+        )
+        if resolved_cursor:
+            where = sql.SQL("({where}) AND {cursor}").format(
+                where=where,
+                cursor=sql.SQL(
+                    "(f.risk_score < %s OR (f.risk_score = %s AND "
+                    "(f.last_seen < %s OR (f.last_seen = %s AND f.finding_id > %s))))"
                 ),
-                parameters,
-            ).fetchone()["count"]
-            rows = connection.execute(
+            )
+            parameters.extend(
+                (
+                    resolved_cursor["risk_score"],
+                    resolved_cursor["risk_score"],
+                    resolved_cursor["last_seen"],
+                    resolved_cursor["last_seen"],
+                    resolved_cursor["finding_id"],
+                )
+            )
+        order = finding_order(
+            resolved_filters,
+            tool_alias=page_tool_alias,
+            branch_alias=page_branch_alias,
+        )
+        with psycopg.connect(self.dsn, row_factory=dict_row) as connection:
+            total: int | None = None
+            if include_total:
+                count_source, count_tool_alias, _ = self._finding_match_source(
+                    resolved_filters
+                )
+                count_where, count_parameters = self._finding_filter(
+                    owner, query, resolved_filters, tool_alias=count_tool_alias
+                )
+                total = connection.execute(
+                    sql.SQL("SELECT count(*) FROM {source} WHERE {where}").format(
+                        source=count_source, where=count_where
+                    ),
+                    count_parameters,
+                ).fetchone()["count"]
+            page_rows = connection.execute(
                 sql.SQL(
-                    "SELECT * FROM {view} f WHERE {where} ORDER BY {order} LIMIT %s OFFSET %s"
-                ).format(view=self._finding_view(), where=where, order=order),
-                (*parameters, bounded_limit, bounded_offset),
+                    "SELECT f.finding_id, f.risk_score, f.last_seen "
+                    "FROM {source} WHERE {where} ORDER BY {order} LIMIT %s OFFSET %s"
+                ).format(source=page_source, where=where, order=order),
+                (
+                    *parameters,
+                    bounded_limit + 1,
+                    0 if resolved_cursor else bounded_offset,
+                ),
             ).fetchall()
+            has_more = len(page_rows) > bounded_limit
+            page_rows = page_rows[:bounded_limit]
+            finding_ids = [row["finding_id"] for row in page_rows]
+            rows: list[dict[str, Any]] = []
+            if finding_ids:
+                rows = connection.execute(
+                    sql.SQL(
+                        "SELECT * FROM {view} f "
+                        "WHERE f.owner_user_id = %s AND f.finding_id = ANY(%s::text[])"
+                    ).format(view=self._finding_view()),
+                    (owner, finding_ids),
+                ).fetchall()
+                row_order = {
+                    finding_id: position
+                    for position, finding_id in enumerate(finding_ids)
+                }
+                rows.sort(key=lambda row: row_order[row["finding_id"]])
             facets = self._finding_facets(connection, owner) if include_facets else {}
+        next_cursor = finding_page_cursor(page_rows[-1]) if has_more else None
         return {
             "rows": json_rows(rows),
-            "total": int(total),
+            "total": int(total) if total is not None else None,
             "limit": bounded_limit,
             "offset": bounded_offset,
+            "hasMore": has_more,
+            "nextCursor": next_cursor,
             "filters": resolved_filters,
             "facets": facets,
         }
@@ -1061,22 +1190,25 @@ class AspmRepository:
             filters=filters,
             limit=500,
             include_facets=False,
+            include_total=False,
         )
         rows = result["rows"]
-        offset = len(rows)
-        while offset < result["total"] and offset < 100_000:
-            page = self.search_findings(
+        cursor = result["nextCursor"]
+        while cursor and len(rows) < 100_000:
+            page_result = self.search_findings(
                 owner_user_id,
                 query=query,
                 filters=filters,
                 limit=500,
-                offset=offset,
                 include_facets=False,
-            )["rows"]
+                include_total=False,
+                cursor=cursor,
+            )
+            page = page_result["rows"]
             if not page:
                 break
-            rows.extend(page)
-            offset += len(page)
+            rows.extend(page[: 100_000 - len(rows)])
+            cursor = page_result["nextCursor"]
         if export_format == "json":
             return rows_to_json(rows)
         if export_format == "csv":
@@ -1162,6 +1294,7 @@ class AspmRepository:
                 self._refresh_asset_risk_profile(
                     connection, owner, asset_id, interactions
                 )
+        self._invalidate_facet_cache(owner)
         return json_rows([updated])[0]
 
     def update_remediation_policy(
@@ -1194,6 +1327,7 @@ class AspmRepository:
             filters={"finding_id": bounded_text(finding_id, 100)},
             limit=1,
             include_facets=False,
+            include_total=False,
         )
         if not result["rows"]:
             raise KeyError("Finding not found.")
@@ -2669,27 +2803,58 @@ class AspmRepository:
         return result
 
     def _finding_facets(self, connection: Any, owner: str) -> dict[str, Any]:
-        facets: dict[str, Any] = {}
-        for column in ("severity", "status", "risk_band"):
-            rows = connection.execute(
-                sql.SQL(
-                    "SELECT {column} AS value, count(*) AS count FROM {findings} WHERE owner_user_id = %s GROUP BY {column} ORDER BY count(*) DESC, {column}"
-                ).format(
-                    column=sql.Identifier(column),
-                    findings=self._table("aspm_findings"),
-                ),
-                (owner,),
-            ).fetchall()
-            facets[column] = json_rows(rows)
-        tool_types = connection.execute(
+        key = self._facet_cache_key(owner)
+        with _FACET_CACHE_LOCK:
+            cached = _FACET_CACHE.get(key)
+        if cached and (time.monotonic() - cached[0]) < _FACET_CACHE_TTL:
+            return cached[1]
+
+        facets: dict[str, list[dict[str, Any]]] = {
+            "severity": [],
+            "status": [],
+            "risk_band": [],
+            "tool_type": [],
+            "tools": [],
+        }
+        # UNION ALL lets each sub-query use its own (owner_user_id, column) index,
+        # avoiding a single sequential scan over all rows.
+        finding_facets = connection.execute(
             sql.SQL(
                 """
-                SELECT t.tool_type AS value, count(*) AS count
+                SELECT facet, value, count FROM (
+                    SELECT 'severity' AS facet, severity AS value, count(*) AS count
+                    FROM {findings} WHERE owner_user_id = %s GROUP BY severity
+                    UNION ALL
+                    SELECT 'status', status, count(*)
+                    FROM {findings} WHERE owner_user_id = %s GROUP BY status
+                    UNION ALL
+                    SELECT 'risk_band', risk_band, count(*)
+                    FROM {findings} WHERE owner_user_id = %s GROUP BY risk_band
+                ) dimensions
+                """
+            ).format(findings=self._table("aspm_findings")),
+            (owner, owner, owner),
+        ).fetchall()
+        for row in finding_facets:
+            facets[row["facet"]].append(
+                {"value": row["value"], "count": int(row["count"])}
+            )
+        for facet in ("severity", "status", "risk_band"):
+            facets[facet].sort(key=lambda row: (-row["count"], row["value"]))
+        # Tool facets: aggregate per tool_id first using the (owner_user_id, tool_id)
+        # index, then join to the small tools table.
+        tool_facets = connection.execute(
+            sql.SQL(
+                """
+                SELECT
+                    CASE WHEN t.tool_key IS NULL THEN 'tool_type' ELSE 'tools' END AS facet,
+                    COALESCE(t.tool_key, t.tool_type) AS value,
+                    max(t.tool_name) AS label,
+                    count(*) AS count
                 FROM {findings} f
                 JOIN {tools} t ON t.tool_id = f.tool_id
                 WHERE f.owner_user_id = %s
-                GROUP BY t.tool_type
-                ORDER BY count(*) DESC, t.tool_type
+                GROUP BY GROUPING SETS ((t.tool_key, t.tool_name), (t.tool_type))
                 """
             ).format(
                 findings=self._table("aspm_findings"),
@@ -2697,28 +2862,25 @@ class AspmRepository:
             ),
             (owner,),
         ).fetchall()
-        facets["tool_type"] = json_rows(tool_types)
-        tools = connection.execute(
-            sql.SQL(
-                """
-                SELECT t.tool_key AS value, max(t.tool_name) AS label, count(*) AS count
-                FROM {findings} f
-                JOIN {tools} t ON t.tool_id = f.tool_id
-                WHERE f.owner_user_id = %s
-                GROUP BY t.tool_key
-                ORDER BY max(t.tool_name), t.tool_key
-                """
-            ).format(
-                findings=self._table("aspm_findings"),
-                tools=self._table("aspm_tools"),
-            ),
-            (owner,),
-        ).fetchall()
-        facets["tools"] = json_rows(tools)
+        for row in tool_facets:
+            facet = row["facet"]
+            item = {"value": row["value"], "count": int(row["count"])}
+            if facet == "tools":
+                item["label"] = row["label"]
+            facets[facet].append(item)
+        facets["tool_type"].sort(key=lambda row: (-row["count"], row["value"]))
+        facets["tools"].sort(key=lambda row: (row["label"], row["value"]))
+
+        with _FACET_CACHE_LOCK:
+            _FACET_CACHE[key] = (time.monotonic(), facets)
         return facets
 
     def _finding_filter(
-        self, owner: str, query: str, filters: dict[str, Any]
+        self,
+        owner: str,
+        query: str,
+        filters: dict[str, Any],
+        tool_alias: Any | None = None,
     ) -> tuple[Any, list[Any]]:
         clauses = [sql.SQL("f.owner_user_id = %s")]
         parameters: list[Any] = [owner]
@@ -2738,14 +2900,23 @@ class AspmRepository:
             ("severity", "severities"),
             ("status", "statuses"),
             ("risk_band", "risk_bands"),
-            ("tool_key", "tools"),
-            ("tool_type", "tool_types"),
         ):
             values = filters.get(key, [])
             if values:
                 clauses.append(
                     sql.SQL("lower(f.{column}) = ANY(%s::text[])").format(
                         column=sql.Identifier(column)
+                    )
+                )
+                parameters.append(values)
+        tool_reference = tool_alias if tool_alias is not None else sql.Identifier("f")
+        for column, key in (("tool_key", "tools"), ("tool_type", "tool_types")):
+            values = filters.get(key, [])
+            if values:
+                clauses.append(
+                    sql.SQL("lower({alias}.{column}) = ANY(%s::text[])").format(
+                        alias=tool_reference,
+                        column=sql.Identifier(column),
                     )
                 )
                 parameters.append(values)
@@ -2771,6 +2942,30 @@ class AspmRepository:
         if filters.get("has_asset") is False:
             clauses.append(sql.SQL("f.branch_inventory_id IS NULL"))
         return sql.SQL(" AND ").join(clauses), parameters
+
+    def _finding_match_source(
+        self, filters: dict[str, Any], include_order: bool = False
+    ) -> tuple[Any, Any | None, Any | None]:
+        source = sql.SQL("{findings} f").format(
+            findings=self._table("aspm_findings")
+        )
+        tool_alias: Any | None = None
+        branch_alias: Any | None = None
+        if (
+            filters["tools"]
+            or filters["tool_types"]
+            or (include_order and filters["sort_by"] == "tool")
+        ):
+            source += sql.SQL(" JOIN {tools} t ON t.tool_id = f.tool_id").format(
+                tools=self._table("aspm_tools")
+            )
+            tool_alias = sql.Identifier("t")
+        if include_order and filters["sort_by"] == "application":
+            source += sql.SQL(
+                " LEFT JOIN {branches} b ON b.branch_inventory_id = f.branch_inventory_id"
+            ).format(branches=self._table("branch_inventory"))
+            branch_alias = sql.Identifier("b")
+        return source, tool_alias, branch_alias
 
     def _finding_view(self) -> Any:
         return sql.SQL(
@@ -2930,7 +3125,48 @@ def normalize_finding_filters(filters: dict[str, Any] | None) -> dict[str, Any]:
     return normalized
 
 
-def finding_order(filters: dict[str, Any]) -> Any:
+def normalize_finding_cursor(cursor: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if cursor is None:
+        return None
+    if not isinstance(cursor, Mapping):
+        raise ValueError("Finding cursor must be an object.")
+    try:
+        risk_score = int(cursor.get("riskScore"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Finding cursor risk score is invalid.") from exc
+    last_seen = bounded_text(cursor.get("lastSeen"), 100)
+    try:
+        timestamp = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("Finding cursor timestamp is invalid.") from exc
+    if timestamp.tzinfo is None:
+        raise ValueError("Finding cursor timestamp must include a timezone.")
+    finding_id = bounded_text(cursor.get("findingId"), 500)
+    if not finding_id:
+        raise ValueError("Finding cursor identifier is invalid.")
+    return {
+        "risk_score": risk_score,
+        "last_seen": timestamp.astimezone(timezone.utc),
+        "finding_id": finding_id,
+    }
+
+
+def finding_page_cursor(row: Mapping[str, Any]) -> dict[str, Any]:
+    timestamp = row["last_seen"]
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return {
+        "riskScore": int(row["risk_score"]),
+        "lastSeen": timestamp.astimezone(timezone.utc).isoformat(),
+        "findingId": row["finding_id"],
+    }
+
+
+def finding_order(
+    filters: dict[str, Any],
+    tool_alias: Any | None = None,
+    branch_alias: Any | None = None,
+) -> Any:
     expressions = {
         "risk": sql.SQL("f.risk_score"),
         "severity": sql.SQL(
@@ -2938,8 +3174,19 @@ def finding_order(filters: dict[str, Any]) -> Any:
         ),
         "updated": sql.SQL("f.last_seen"),
         "due": sql.SQL("f.due_at"),
-        "application": sql.SQL("lower(f.application)"),
-        "tool": sql.SQL("lower(f.tool_name)"),
+        "application": (
+            sql.SQL(
+                "lower(COALESCE({branch}.inventory_name, {branch}.mobile_name, "
+                "f.repository, 'Unlinked finding'))"
+            ).format(branch=branch_alias)
+            if branch_alias is not None
+            else sql.SQL("lower(f.application)")
+        ),
+        "tool": (
+            sql.SQL("lower({tool}.tool_name)").format(tool=tool_alias)
+            if tool_alias is not None
+            else sql.SQL("lower(f.tool_name)")
+        ),
         "status": sql.SQL("f.status"),
     }
     direction = (

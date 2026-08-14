@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +61,8 @@ class ApplicationSecurityPostureManagementService:
         filters: dict[str, Any] | None = None,
         limit: int = 100,
         offset: int = 0,
+        include_total: bool = True,
+        cursor: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         return self.repository.search_findings(
             self.owner_user_id,
@@ -68,6 +70,8 @@ class ApplicationSecurityPostureManagementService:
             filters=filters,
             limit=limit,
             offset=offset,
+            include_total=include_total,
+            cursor=cursor,
         )
 
     def update_finding(
