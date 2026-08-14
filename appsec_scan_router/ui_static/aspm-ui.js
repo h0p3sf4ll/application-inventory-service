@@ -12,7 +12,8 @@ export class AspmWorkspace {
     this.openAffectedInventory = dependencies.openAffectedInventory;
     this.state = {
       posture: null,
-      findings: {rows: [], total: null, limit: 25, offset: 0, facets: {}, hasMore: false, nextCursor: null, loaded: false, findingRequest: 0},
+      findingRequest: 0,
+      findings: {rows: [], total: null, limit: 25, offset: 0, facets: {}, hasMore: false, nextCursor: null, loaded: false},
       findingCursors: [null],
       coverage: {rows: [], total: 0, limit: 100, offset: 0, summary: {}, loaded: false, requestId: 0},
       assetRisks: {rows: [], total: 0, limit: 25, offset: 0, activeOnly: false, loaded: false, assetRiskRequest: 0},
@@ -189,7 +190,8 @@ export class AspmWorkspace {
 
   reset() {
     this.state.posture = null;
-    this.state.findings = {rows: [], total: null, limit: 25, offset: 0, facets: {}, hasMore: false, nextCursor: null, loaded: false, findingRequest: 0};
+    this.state.findingRequest = 0;
+    this.state.findings = {rows: [], total: null, limit: 25, offset: 0, facets: {}, hasMore: false, nextCursor: null, loaded: false};
     this.state.findingCursors = [null];
     this.state.coverage = {rows: [], total: 0, limit: 100, offset: 0, summary: {}, loaded: false, requestId: 0};
     this.state.assetRisks = {rows: [], total: 0, limit: 25, offset: 0, activeOnly: false, loaded: false, assetRiskRequest: 0};
@@ -728,7 +730,7 @@ export class AspmWorkspace {
       const facets = Object.keys(returnedFacets).length
         ? returnedFacets
         : this.state.findings.facets || {};
-      this.state.findings = {...data.findings, facets, loaded: true, findingRequest: requestId};
+      this.state.findings = {...data.findings, facets, loaded: true};
       if (offset === 0) {
         this.state.findingCursors = [null];
       }
