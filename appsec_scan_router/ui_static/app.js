@@ -1,4 +1,4 @@
-import {AspmWorkspace} from "/static/aspm-ui.js?v=20";
+import {AspmWorkspace} from "/static/aspm-ui.js?v=21";
 
 const APPSEC_ATLAS_STORAGE_KEY = "appsec-atlas-ui";
 const LEGACY_STORAGE_KEY = "application-inventory-service-ui";
