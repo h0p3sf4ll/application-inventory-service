@@ -40,6 +40,8 @@ export class AspmWorkspace {
         "connectorSetupDialog", "connectorSetupType", "connectorSetupTitle",
         "connectorSetupDescription", "connectorSetupKey", "connectorSetupFields",
         "connectorSetupStatus", "closeConnectorSetup", "saveConnectorSetup",
+        "connectorLogsDialog", "connectorLogsTitle", "connectorLogsEyebrow",
+        "connectorLogsBody", "closeConnectorLogs",
         "viewAllFindings", "openFindingImport", "toggleFindingImport",
         "findingImportPanel", "closeFindingImport", "findingImportFormat",
         "findingImportTool", "findingImportFile", "findingCompleteSnapshot",
@@ -81,6 +83,10 @@ export class AspmWorkspace {
       if (event.target.closest("[data-tool-health-action='configuration']")) {
         this.setActiveView("databaseView");
         this.loadConnectors(true);
+      }
+      const logsBtn = event.target.closest("[data-tool-health-action='logs']");
+      if (logsBtn) {
+        this.openConnectorLogs(logsBtn.dataset.toolKey, logsBtn.dataset.toolName);
       }
     });
     this.elements.priorityAssetList.addEventListener("click", (event) => {
@@ -148,6 +154,7 @@ export class AspmWorkspace {
       }
     });
     this.elements.closeConnectorSetup.addEventListener("click", () => this.elements.connectorSetupDialog.close());
+    this.elements.closeConnectorLogs.addEventListener("click", () => this.elements.connectorLogsDialog.close());
     this.elements.saveConnectorSetup.addEventListener("click", () => this.saveConnectorSetup());
     this.elements.refreshAssetRisks.addEventListener("click", () => this.loadAssetRisks(this.state.assetRisks.offset, true));
     this.elements.searchAssetRisks.addEventListener("click", () => this.loadAssetRisks(0, true));
@@ -390,11 +397,18 @@ export class AspmWorkspace {
           : status === "completed" ? "status-succeeded" : "idle";
       const source = item.last_import_source ? ` · ${this.readable(item.last_import_source)}` : "";
       const timestamp = item.last_import_completed_at || item.last_import_at || item.last_seen_at;
+      const displayName = item.tool_name === "Semgrep" ? "Semgrep Enterprise" : item.tool_name;
+      const failedActions = status === "failed"
+        ? `<div class="tool-health-actions">
+            <button class="ghost small" type="button" data-tool-health-action="configuration">Review connection</button>
+            <button class="ghost small" type="button" data-tool-health-action="logs" data-tool-key="${this.escapeHtml(item.tool_key)}" data-tool-name="${this.escapeHtml(displayName)}">Review logging</button>
+          </div>`
+        : "";
       return `<div class="tool-health-item">
-      <span class="tool-health-heading"><strong>${this.escapeHtml(item.tool_name)}</strong><span class="status-chip ${statusClass}">${this.escapeHtml(this.readable(status))}</span></span>
+      <span class="tool-health-heading"><strong>${this.escapeHtml(displayName)}</strong><span class="status-chip ${statusClass}">${this.escapeHtml(this.readable(status))}</span></span>
       <span>${this.number(item.covered_assets)} assets covered · ${this.number(item.active_findings)} active findings</span>
       <small>Latest ${this.escapeHtml(source ? `operation${source}` : "import")} ${this.escapeHtml(this.formatDate(timestamp))}${item.last_import_error ? ` · ${this.escapeHtml(item.last_import_error)}` : ""}</small>
-      ${status === "failed" ? '<button class="ghost small" type="button" data-tool-health-action="configuration">Review connection</button>' : ""}
+      ${failedActions}
     </div>`;
     }).join("");
   }
@@ -414,6 +428,46 @@ export class AspmWorkspace {
       this.notify(error.message || "Scanner configuration could not be loaded.");
     } finally {
       this.setBusy("connectors", false);
+    }
+  }
+
+  async openConnectorLogs(toolKey, toolName) {
+    this.elements.connectorLogsEyebrow.textContent = "Scanner logs";
+    this.elements.connectorLogsTitle.textContent = toolName || "Connection history";
+    this.elements.connectorLogsBody.innerHTML = '<p class="empty-state">Loading logs…</p>';
+    if (!this.elements.connectorLogsDialog.open) {
+      this.elements.connectorLogsDialog.showModal();
+    }
+    try {
+      const data = await this.postJson("/api/aspm/connectors/history", {
+        ...this.databasePayload(),
+        limit: 20,
+      });
+      const syncs = (data.syncs || []).filter((s) => !toolKey || s.connector_key === toolKey);
+      if (!syncs.length) {
+        this.elements.connectorLogsBody.innerHTML = '<p class="empty-state">No sync history found for this connector.</p>';
+        return;
+      }
+      this.elements.connectorLogsBody.innerHTML = syncs.map((sync) => {
+        const statusClass = sync.status === "failed" ? "status-failed"
+          : sync.status === "completed" ? "status-succeeded"
+          : "idle";
+        const started = sync.started_at ? this.formatDate(sync.started_at) : "Unknown";
+        const duration = sync.started_at && sync.completed_at
+          ? `${Math.round((new Date(sync.completed_at) - new Date(sync.started_at)) / 1000)}s`
+          : null;
+        return `<div class="connector-log-entry">
+          <div class="connector-log-header">
+            <span class="status-chip ${statusClass}">${this.escapeHtml(this.readable(sync.status))}</span>
+            <strong>${this.escapeHtml(started)}</strong>
+            ${duration ? `<small>${this.escapeHtml(duration)}</small>` : ""}
+          </div>
+          ${sync.error_message ? `<p class="connector-log-error">${this.escapeHtml(sync.error_message)}</p>` : ""}
+          <small>${this.number(sync.findings_imported || 0)} findings · ${this.number(sync.assets_covered || 0)} assets · ${this.escapeHtml(this.readable(sync.connector_key || ""))}</small>
+        </div>`;
+      }).join("");
+    } catch (error) {
+      this.elements.connectorLogsBody.innerHTML = `<p class="empty-state">${this.escapeHtml(error.message || "Logs could not be loaded.")}</p>`;
     }
   }
 

@@ -2926,6 +2926,57 @@ button.posture-kpi:focus-visible {
   margin: 0;
 }
 
+.tool-health-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.connector-logs-dialog {
+  width: min(560px, 92vw);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.connector-logs-body {
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.connector-log-entry {
+  padding: 10px 12px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.connector-log-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.connector-log-error {
+  font-size: 11px;
+  color: var(--status-failed, #e05);
+  word-break: break-word;
+  margin: 0;
+}
+
+.connector-log-entry small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .connector-actions {
   display: flex;
   align-items: center;
