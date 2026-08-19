@@ -3536,6 +3536,21 @@ button.posture-kpi:focus-visible {
   width: 20%;
 }
 
+.asset-risk-table th .database-sort-button {
+  flex: 1 1 auto;
+  width: auto;
+}
+
+.asset-risk-table th .col-help-trigger {
+  flex-shrink: 0;
+}
+
+.asset-risk-table th:has(.database-sort-button) {
+  display: flex;
+  align-items: center;
+  padding: 0;
+}
+
 .table-subtext {
   display: block;
   margin-top: 4px;

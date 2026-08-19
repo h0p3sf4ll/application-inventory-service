@@ -1327,6 +1327,8 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
                 active_only=payload.get("activeOnly") is True,
                 limit=positive_int(payload.get("limit"), 25),
                 offset=max(0, integer_value(payload.get("offset"), 0)),
+                sort_column=clean_text(payload.get("sortColumn")) or "risk_score",
+                sort_dir=clean_text(payload.get("sortDir")) or "desc",
             )
             self.send_json({"assets": result})
         except ValueError as exc:

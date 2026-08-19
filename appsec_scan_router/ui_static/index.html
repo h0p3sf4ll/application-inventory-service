@@ -401,14 +401,18 @@
               <table class="database-table asset-risk-table">
                 <thead><tr>
                   <th scope="col">
-                    Risk
+                    <button class="database-sort-button" type="button" data-risk-sort="risk_score">Risk<span class="sort-indicator" aria-hidden="true">↓</span></button>
                     <button class="col-help-trigger" type="button" aria-label="What is risk score?" data-tooltip="risk-score">ⓘ</button>
                   </th>
-                  <th scope="col">Application</th>
-                  <th scope="col">Repository</th>
-                  <th scope="col">Active findings</th>
                   <th scope="col">
-                    Data sensitivity
+                    <button class="database-sort-button" type="button" data-risk-sort="application">Application<span class="sort-indicator" aria-hidden="true">↕</span></button>
+                  </th>
+                  <th scope="col">Repository</th>
+                  <th scope="col">
+                    <button class="database-sort-button" type="button" data-risk-sort="active_findings">Active findings<span class="sort-indicator" aria-hidden="true">↕</span></button>
+                  </th>
+                  <th scope="col">
+                    <button class="database-sort-button" type="button" data-risk-sort="data_sensitivity_score">Data sensitivity<span class="sort-indicator" aria-hidden="true">↕</span></button>
                     <button class="col-help-trigger" type="button" aria-label="What is data sensitivity?" data-tooltip="data-sensitivity">ⓘ</button>
                   </th>
                   <th scope="col">
@@ -416,7 +420,7 @@
                     <button class="col-help-trigger" type="button" aria-label="What are data interactions?" data-tooltip="data-interactions">ⓘ</button>
                   </th>
                   <th scope="col">
-                    Context
+                    <button class="database-sort-button" type="button" data-risk-sort="context_score">Context<span class="sort-indicator" aria-hidden="true">↕</span></button>
                     <button class="col-help-trigger" type="button" aria-label="What is context score?" data-tooltip="context">ⓘ</button>
                   </th>
                 </tr></thead>
@@ -1434,7 +1438,7 @@
         <button class="ghost compact-button" id="closeConnectorLogsFooter" type="button">Close</button>
       </div>
     </dialog>
-    <script src="/static/app.js?v=40" type="module"></script>
+    <script src="/static/app.js?v=41" type="module"></script>
 
     <!-- Column help tooltips (shared, repositioned by JS) -->
     <div class="col-help-popover" id="colHelpPopover" role="tooltip" hidden>

@@ -16,7 +16,7 @@ export class AspmWorkspace {
       findings: {rows: [], total: null, limit: 25, offset: 0, facets: {}, hasMore: false, nextCursor: null, loaded: false},
       findingCursors: [null],
       coverage: {rows: [], total: 0, limit: 100, offset: 0, summary: {}, loaded: false, requestId: 0},
-      assetRisks: {rows: [], total: 0, limit: 25, offset: 0, activeOnly: false, loaded: false, assetRiskRequest: 0},
+      assetRisks: {rows: [], total: 0, limit: 25, offset: 0, activeOnly: false, loaded: false, assetRiskRequest: 0, sortColumn: "risk_score", sortDir: "desc"},
       connectors: {items: [], syncs: [], loaded: false},
       findingFilters: {},
       findingDrilldownFilters: {},
@@ -192,6 +192,18 @@ export class AspmWorkspace {
     this.elements.assetRiskNext.addEventListener("click", () => {
       this.loadAssetRisks(this.state.assetRisks.offset + this.state.assetRisks.limit);
     });
+    document.querySelectorAll("[data-risk-sort]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const col = btn.dataset.riskSort;
+        if (this.state.assetRisks.sortColumn === col) {
+          this.state.assetRisks.sortDir = this.state.assetRisks.sortDir === "asc" ? "desc" : "asc";
+        } else {
+          this.state.assetRisks.sortColumn = col;
+          this.state.assetRisks.sortDir = col === "application" ? "asc" : "desc";
+        }
+        this.loadAssetRisks(0, true);
+      });
+    });
     this.elements.coveragePrevious.addEventListener("click", () => {
       this.loadCoverage(Math.max(0, this.state.coverage.offset - this.state.coverage.limit));
     });
@@ -211,7 +223,7 @@ export class AspmWorkspace {
     this.state.findings = {rows: [], total: null, limit: 25, offset: 0, facets: {}, hasMore: false, nextCursor: null, loaded: false};
     this.state.findingCursors = [null];
     this.state.coverage = {rows: [], total: 0, limit: 100, offset: 0, summary: {}, loaded: false, requestId: 0};
-    this.state.assetRisks = {rows: [], total: 0, limit: 25, offset: 0, activeOnly: false, loaded: false, assetRiskRequest: 0};
+    this.state.assetRisks = {rows: [], total: 0, limit: 25, offset: 0, activeOnly: false, loaded: false, assetRiskRequest: 0, sortColumn: "risk_score", sortDir: "desc"};
     this.state.connectors = {items: [], syncs: [], loaded: false};
     this.state.findingDrilldownFilters = {};
     this.state.activeFinding = null;
@@ -654,8 +666,17 @@ export class AspmWorkspace {
         activeOnly: this.state.assetRisks.activeOnly === true,
         limit: this.state.assetRisks.limit,
         offset,
+        sortColumn: this.state.assetRisks.sortColumn || "risk_score",
+        sortDir: this.state.assetRisks.sortDir || "desc",
       });
-      this.state.assetRisks = {...data.assets, activeOnly: Boolean(data.assets.filters && data.assets.filters.activeOnly), loaded: true, assetRiskRequest: requestId};
+      this.state.assetRisks = {
+        ...data.assets,
+        activeOnly: Boolean(data.assets.filters && data.assets.filters.activeOnly),
+        loaded: true,
+        assetRiskRequest: requestId,
+        sortColumn: this.state.assetRisks.sortColumn || "risk_score",
+        sortDir: this.state.assetRisks.sortDir || "desc",
+      };
       this.state.refreshedAt.assetRisks = Date.now();
       this.renderAssetRisks();
     } catch (error) {
@@ -688,6 +709,14 @@ export class AspmWorkspace {
     this.elements.assetRiskRecordCount.textContent = `${this.number(assets.total)} matching assets`;
     this.elements.assetRiskPrevious.disabled = assets.offset <= 0;
     this.elements.assetRiskNext.disabled = assets.offset + assets.limit >= assets.total;
+    const sortCol = assets.sortColumn || "risk_score";
+    const sortDir = assets.sortDir || "desc";
+    document.querySelectorAll("[data-risk-sort]").forEach((btn) => {
+      const ind = btn.querySelector(".sort-indicator");
+      const active = btn.dataset.riskSort === sortCol;
+      btn.classList.toggle("active", active);
+      if (ind) ind.textContent = active ? (sortDir === "asc" ? "↑" : "↓") : "↕";
+    });
     if (!assets.rows.length) {
       this.elements.assetRiskRows.innerHTML = '<tr><td class="database-empty-row" colspan="7">No assets match the current risk filters.</td></tr>';
       return;

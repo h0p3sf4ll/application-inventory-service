@@ -1571,12 +1571,23 @@ class AspmRepository:
         active_only: bool = False,
         limit: int = 100,
         offset: int = 0,
+        sort_column: str = "risk_score",
+        sort_dir: str = "desc",
     ) -> dict[str, Any]:
         self.ensure_schema()
         owner = bounded_text(owner_user_id, 500) or "anonymous"
         self._ensure_asset_risk_profiles(owner)
         bounded_limit = max(1, min(int(limit), 500))
         bounded_offset = max(0, int(offset))
+        valid_sort_cols = {
+            "risk_score": "risk_score",
+            "active_findings": "active_findings",
+            "data_sensitivity_score": "data_sensitivity_score",
+            "context_score": "context_score",
+            "application": "lower(application)",
+        }
+        sort_col_expr = sql.SQL(valid_sort_cols.get(sort_column, "risk_score"))
+        sort_dir_expr = sql.SQL("ASC") if (sort_dir or "").casefold() == "asc" else sql.SQL("DESC")
         clauses = [sql.SQL("b.owner_user_id = %s")]
         parameters: list[Any] = [owner]
         search = bounded_text(query, 500)
@@ -1663,10 +1674,10 @@ class AspmRepository:
                 sql.SQL(
                     """
                     SELECT * FROM ({view}) assets
-                    ORDER BY risk_score DESC, lower(application), branch_inventory_id
+                    ORDER BY {sort_col} {sort_dir}, branch_inventory_id
                     LIMIT %s OFFSET %s
                     """
-                ).format(view=view),
+                ).format(view=view, sort_col=sort_col_expr, sort_dir=sort_dir_expr),
                 (*parameters, bounded_limit, bounded_offset),
             ).fetchall()
         return {
@@ -2021,12 +2032,9 @@ class AspmRepository:
     ) -> AssetRiskContext:
         if not asset:
             return AssetRiskContext()
-        exposed = asset.get("internet_exposed")
-        if exposed is None:
-            exposed = bool(asset.get("primary_web_domain"))
         return AssetRiskContext(
             criticality=asset.get("criticality") or "medium",
-            internet_exposed=bool(exposed),
+            internet_exposed=bool(asset.get("internet_exposed")),
             data_classification=asset.get("data_classification") or "internal",
         )
 
@@ -2331,6 +2339,25 @@ class AspmRepository:
 
     def _ensure_asset_risk_profiles(self, owner: str) -> None:
         with psycopg.connect(self.dsn, row_factory=dict_row) as connection:
+            # Remove profiles computed with the old "has_domain → internet_exposed" fallback
+            # (those always produced context_score=53). They'll be recreated below.
+            connection.execute(
+                sql.SQL(
+                    """
+                    DELETE FROM {asset_risks} ar
+                    WHERE ar.owner_user_id = %s
+                      AND ar.context_score = 53
+                      AND NOT EXISTS (
+                          SELECT 1 FROM {profiles} p
+                          WHERE p.branch_inventory_id = ar.branch_inventory_id
+                      )
+                    """
+                ).format(
+                    asset_risks=self._table("asset_risk_profiles"),
+                    profiles=self._table("asset_security_profiles"),
+                ),
+                (owner,),
+            )
             assets = connection.execute(
                 sql.SQL(
                     """
