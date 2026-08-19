@@ -3573,9 +3573,65 @@ button.posture-kpi:focus-visible {
   color: var(--accent-strong);
 }
 
+.table-scroll-mirror {
+  overflow-x: auto;
+  overflow-y: hidden;
+  height: 14px;
+  margin-bottom: 2px;
+  border-radius: 4px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+}
+
+.table-scroll-mirror-inner {
+  height: 1px;
+}
+
+.finding-table-wrap {
+  position: relative;
+}
+
+.finding-table-wrap::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 64px;
+  height: 100%;
+  pointer-events: none;
+  background: linear-gradient(to right, transparent, rgb(13 21 30 / 85%));
+  border-radius: 0 8px 8px 0;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.finding-table-wrap.scroll-edge-right::after {
+  opacity: 1;
+}
+
 .finding-table {
   min-width: 1480px;
 }
+
+.finding-table th:nth-child(1),
+.finding-table td:nth-child(1) {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+}
+
+.finding-table th:nth-child(1) {
+  background: var(--surface-raised);
+}
+
+.finding-table td:nth-child(1) {
+  background: var(--surface);
+}
+
+.finding-table tbody tr:hover td:nth-child(1) {
+  background: var(--surface-raised);
+}
+
 
 .finding-table th:nth-child(1) {
   width: 70px;

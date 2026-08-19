@@ -1,4 +1,4 @@
-import {AspmWorkspace} from "/static/aspm-ui.js?v=23";
+import {AspmWorkspace} from "/static/aspm-ui.js?v=24";
 
 const APPSEC_ATLAS_STORAGE_KEY = "appsec-atlas-ui";
 const LEGACY_STORAGE_KEY = "application-inventory-service-ui";
@@ -159,6 +159,52 @@ appNav.addEventListener("click", (e) => {
     closeNav();
   }
 });
+
+// Synchronized top scrollbar + edge-shadow affordance for the findings table
+(function setupFindingTableScroll() {
+  const wrap = document.querySelector(".finding-table-wrap");
+  if (!wrap) return;
+
+  const mirror = document.createElement("div");
+  mirror.className = "table-scroll-mirror";
+  const inner = document.createElement("div");
+  inner.className = "table-scroll-mirror-inner";
+  mirror.appendChild(inner);
+  wrap.parentNode.insertBefore(mirror, wrap);
+
+  function syncMirrorWidth() {
+    inner.style.width = wrap.scrollWidth + "px";
+  }
+  syncMirrorWidth();
+
+  let syncing = false;
+  mirror.addEventListener("scroll", () => {
+    if (syncing) return;
+    syncing = true;
+    wrap.scrollLeft = mirror.scrollLeft;
+    syncing = false;
+  });
+  wrap.addEventListener("scroll", () => {
+    if (syncing) return;
+    syncing = true;
+    mirror.scrollLeft = wrap.scrollLeft;
+    const atRight = wrap.scrollLeft + wrap.clientWidth >= wrap.scrollWidth - 4;
+    wrap.classList.toggle("scroll-edge-right", !atRight);
+    syncing = false;
+  });
+
+  new ResizeObserver(() => {
+    syncMirrorWidth();
+    const atRight = wrap.scrollLeft + wrap.clientWidth >= wrap.scrollWidth - 4;
+    wrap.classList.toggle("scroll-edge-right", !atRight);
+  }).observe(wrap);
+
+  requestAnimationFrame(() => {
+    syncMirrorWidth();
+    wrap.classList.toggle("scroll-edge-right", wrap.scrollWidth > wrap.clientWidth);
+  });
+})();
+
 const createScheduleButton = document.querySelector("#createSchedule");
 const scheduleName = document.querySelector("#scheduleName");
 const scheduleFrequency = document.querySelector("#scheduleFrequency");
