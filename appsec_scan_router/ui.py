@@ -64,7 +64,7 @@ from .integrations import (
     webhook_configurations,
 )
 from .observability import configure_logging, log_github_app_context, observability_dsn
-from .local_llm import LocalInventoryAssistant
+from .local_llm import LocalInventoryAssistant, LlmConfigStore, LlmProviderConfig, KNOWN_PROVIDERS
 from .postgres import (
     database_status,
     export_inventory_csv,
@@ -316,6 +316,21 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/aspm/connectors/history":
             self.handle_aspm_connector_history()
+            return
+        if path == "/api/aspm/llm/config":
+            self.handle_aspm_llm_config()
+            return
+        if path == "/api/aspm/llm/models":
+            self.handle_aspm_llm_models()
+            return
+        if path == "/api/aspm/llm/test":
+            self.handle_aspm_llm_test()
+            return
+        if path == "/api/aspm/llm/save":
+            self.handle_aspm_llm_save()
+            return
+        if path == "/api/aspm/assets/interpret":
+            self.handle_aspm_asset_risk_interpret()
             return
         if path.startswith("/api/scans/") and path.rsplit("/", 1)[-1] in {
             "pause",
@@ -1015,6 +1030,87 @@ class ApplicationInventoryServiceHandler(BaseHTTPRequestHandler):
             },
         )
         self.send_json({"plan": plan.as_dict()})
+
+    def handle_aspm_llm_config(self) -> None:
+        try:
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.UNAUTHORIZED)
+            return
+        cfg = self.local_assistant.active_config()
+        self.send_json({"config": cfg.to_public_dict()})
+
+    def handle_aspm_llm_save(self) -> None:
+        try:
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
+            payload = self.read_json()
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        if self.local_assistant.config_store is None:
+            self.send_json({"error": "LLM config store is not available."}, HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+        try:
+            new_cfg = LlmProviderConfig.from_dict(payload)
+            self.local_assistant.config_store.write(new_cfg)
+            self.local_assistant.invalidate_status()
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self.send_json({"ok": True, "config": new_cfg.to_public_dict()})
+
+    def handle_aspm_llm_models(self) -> None:
+        try:
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.UNAUTHORIZED)
+            return
+        try:
+            models = self.local_assistant.list_models()
+        except Exception:
+            models = []
+        self.send_json({"models": models})
+
+    def handle_aspm_llm_test(self) -> None:
+        try:
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.UNAUTHORIZED)
+            return
+        result = self.local_assistant.test_connection()
+        status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_GATEWAY
+        self.send_json(result, status)
+
+    def handle_aspm_asset_risk_interpret(self) -> None:
+        try:
+            record = self.current_session()
+            if not self.valid_csrf(record):
+                return
+            payload = self.read_json()
+            status = self.local_assistant.status()
+            if not status.get("available"):
+                self.send_json(
+                    {"error": status.get("message") or "The AI assistant is unavailable."},
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+            plan = self.local_assistant.interpret_asset_risk(clean_text(payload.get("question")))
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        except Exception:
+            LOGGER.exception("Asset risk interpret failed", extra={"event_type": "local_llm.failed"})
+            self.send_json({"error": "The AI assistant could not interpret that request."}, HTTPStatus.BAD_GATEWAY)
+            return
+        self.send_json({"plan": plan})
 
     def handle_source_targets(self) -> None:
         try:
@@ -1946,6 +2042,9 @@ def serve(host: str, port: int, reports_dir: Path) -> None:
         table=startup_database_config["postgresTable"],
     )
     local_assistant = LocalInventoryAssistant.from_env()
+    local_assistant.config_store = LlmConfigStore.from_state_dir(
+        service_state_dir, local_assistant.config
+    )
     local_llm_status = local_assistant.status(refresh=True)
     observability_schema = (
         env_value(

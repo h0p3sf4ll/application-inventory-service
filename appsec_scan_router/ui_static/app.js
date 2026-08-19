@@ -1,4 +1,4 @@
-import {AspmWorkspace} from "/static/aspm-ui.js?v=24";
+import {AspmWorkspace} from "/static/aspm-ui.js?v=25";
 
 const APPSEC_ATLAS_STORAGE_KEY = "appsec-atlas-ui";
 const LEGACY_STORAGE_KEY = "application-inventory-service-ui";
@@ -1280,12 +1280,7 @@ function databaseDomainCell(row) {
 }
 
 function renderLocalLlmStatus() {
-  const localLlm = state.localLlm || {};
-  const available = Boolean(localLlm.enabled && localLlm.available);
-  localLlmStatus.className = `status-chip ${available ? "status-succeeded" : "idle"}`;
-  localLlmStatus.textContent = available ? `AI ready · ${localLlm.model || "Local model"}` : localLlm.message || "Local AI offline";
-  askInventoryButton.disabled = !available;
-  inventoryAssistantQuery.disabled = !available;
+  updateLocalLlmStatus();
 }
 
 function openInventoryRecordFromEvent(event) {
@@ -2998,6 +2993,9 @@ function setActiveView(viewId) {
     loadRemediationPolicy();
     aspmWorkspace.loadConnectors();
   }
+  if (viewId === "aiSettingsView" && isLoggedIn()) {
+    loadLlmConfig();
+  }
 }
 
 async function loadWebhooks() {
@@ -3175,3 +3173,277 @@ function notify(message) {
   window.clearTimeout(notify.timeout);
   notify.timeout = window.setTimeout(() => toast.classList.remove("visible"), 2400);
 }
+
+// ── LLM Configuration ────────────────────────────────────────────────────
+
+const llmProvider = document.querySelector("#llmProvider");
+const llmBaseUrl = document.querySelector("#llmBaseUrl");
+const llmBaseUrlField = document.querySelector("#llmBaseUrlField");
+const llmApiKey = document.querySelector("#llmApiKey");
+const llmApiKeyField = document.querySelector("#llmApiKeyField");
+const llmModel = document.querySelector("#llmModel");
+const llmModelSelect = document.querySelector("#llmModelSelect");
+const llmFetchModels = document.querySelector("#llmFetchModels");
+const llmTestConnection = document.querySelector("#llmTestConnection");
+const llmTestStatus = document.querySelector("#llmTestStatus");
+const llmSaveConfig = document.querySelector("#llmSaveConfig");
+const aiSettingsStatus = document.querySelector("#aiSettingsStatus");
+
+const LOCAL_PROVIDERS = new Set(["ollama", "lmstudio"]);
+
+function llmUpdateFieldVisibility() {
+  if (!llmProvider) return;
+  const isLocal = LOCAL_PROVIDERS.has(llmProvider.value);
+  llmBaseUrlField.classList.toggle("hidden", !isLocal);
+  llmApiKeyField.classList.toggle("hidden", isLocal);
+  llmFetchModels.disabled = !isLocal;
+  const hint = document.querySelector("#llmApiKeyHint");
+  if (hint) {
+    hint.textContent = llmProvider.value === "openai"
+      ? "Get your key at platform.openai.com"
+      : "Get your key at console.anthropic.com";
+  }
+}
+
+async function loadLlmConfig() {
+  if (!isLoggedIn()) return;
+  try {
+    const response = await fetch("/api/aspm/llm/config", {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify({}),
+    });
+    const data = await response.json();
+    const cfg = data.config || {};
+    if (llmProvider) llmProvider.value = cfg.provider || "ollama";
+    if (llmBaseUrl) llmBaseUrl.value = cfg.base_url || "";
+    if (llmModel) llmModel.value = cfg.model || "";
+    if (llmApiKey) llmApiKey.value = "";
+    llmUpdateFieldVisibility();
+    const available = cfg.enabled && cfg.available;
+    if (aiSettingsStatus) {
+      aiSettingsStatus.className = `status-chip ${available ? "status-succeeded" : "idle"}`;
+      aiSettingsStatus.textContent = cfg.message || (available ? "Ready" : "Not configured");
+    }
+  } catch {}
+}
+
+async function llmFetchModelList() {
+  if (!llmFetchModels) return;
+  llmFetchModels.disabled = true;
+  llmFetchModels.textContent = "Fetching…";
+  try {
+    const data = await fetch("/api/aspm/llm/models", {method: "POST", headers: authHeaders(true), body: JSON.stringify({})}).then((r) => r.json());
+    const models = data.models || [];
+    if (!llmModelSelect) return;
+    llmModelSelect.innerHTML = '<option value="">— select a model —</option>' +
+      models.map((m) => `<option value="${escHtml(m)}">${escHtml(m)}</option>`).join("");
+    if (models.length) {
+      llmModelSelect.classList.remove("hidden");
+      llmModelSelect.addEventListener("change", () => {
+        if (llmModelSelect.value) {
+          llmModel.value = llmModelSelect.value;
+          llmModelSelect.classList.add("hidden");
+        }
+      }, {once: true});
+    } else {
+      notify("No models returned from server.");
+    }
+  } catch (e) {
+    notify(e.message || "Could not fetch models.");
+  } finally {
+    llmFetchModels.disabled = false;
+    llmFetchModels.textContent = "Fetch models";
+  }
+}
+
+async function llmTest() {
+  if (!llmTestConnection) return;
+  llmTestConnection.disabled = true;
+  llmTestStatus.textContent = "Testing…";
+  llmTestStatus.className = "llm-test-status";
+  try {
+    const data = await fetch("/api/aspm/llm/test", {method: "POST", headers: authHeaders(true), body: JSON.stringify({})}).then((r) => r.json());
+    llmTestStatus.textContent = data.message || (data.ok ? "Connected" : "Failed");
+    llmTestStatus.className = `llm-test-status ${data.ok ? "ok" : "err"}`;
+  } catch (e) {
+    llmTestStatus.textContent = e.message || "Test failed.";
+    llmTestStatus.className = "llm-test-status err";
+  } finally {
+    llmTestConnection.disabled = false;
+  }
+}
+
+async function llmSave() {
+  if (!llmSaveConfig) return;
+  llmSaveConfig.disabled = true;
+  try {
+    const body = {
+      provider: llmProvider.value,
+      base_url: llmBaseUrl.value.trim(),
+      model: llmModel.value.trim(),
+      api_key: llmApiKey.value.trim(),
+    };
+    const data = await fetch("/api/aspm/llm/save", {method: "POST", headers: authHeaders(true), body: JSON.stringify(body)}).then((r) => r.json());
+    if (data.ok) {
+      notify("AI settings saved.");
+      const cfg = data.config || {};
+      state.localLlm = {...(state.localLlm || {}), ...cfg};
+      updateLocalLlmStatus();
+      if (aiSettingsStatus) {
+        aiSettingsStatus.textContent = cfg.message || "Saved";
+      }
+      llmApiKey.value = "";
+    } else {
+      notify(data.error || "Could not save settings.");
+    }
+  } catch (e) {
+    notify(e.message || "Save failed.");
+  } finally {
+    llmSaveConfig.disabled = false;
+  }
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+if (llmProvider) llmProvider.addEventListener("change", llmUpdateFieldVisibility);
+if (llmFetchModels) llmFetchModels.addEventListener("click", llmFetchModelList);
+if (llmTestConnection) llmTestConnection.addEventListener("click", llmTest);
+if (llmSaveConfig) llmSaveConfig.addEventListener("click", llmSave);
+
+// ── Asset risk AI assistant ──────────────────────────────────────────────
+
+const assetRiskAiQuery = document.querySelector("#assetRiskAiQuery");
+const askAssetRiskButton = document.querySelector("#askAssetRisk");
+const assetRiskAiStatus = document.querySelector("#assetRiskAiStatus");
+
+function updateLocalLlmStatus() {
+  const localLlm = state.localLlm || {};
+  const available = Boolean(localLlm.enabled && localLlm.available);
+  if (localLlmStatus) {
+    localLlmStatus.className = `status-chip ${available ? "status-succeeded" : "idle"}`;
+    localLlmStatus.textContent = available
+      ? `AI ready · ${localLlm.model || "Model"}`
+      : localLlm.message || "AI offline";
+  }
+  if (askInventoryButton) askInventoryButton.disabled = !available;
+  if (inventoryAssistantQuery) inventoryAssistantQuery.disabled = !available;
+  if (askAssetRiskButton) askAssetRiskButton.disabled = !available;
+  if (assetRiskAiQuery) assetRiskAiQuery.disabled = !available;
+  if (assetRiskAiStatus) {
+    assetRiskAiStatus.textContent = available
+      ? `AI ready · ${localLlm.providerDisplay || "AI"}`
+      : (localLlm.message || "Configure an AI provider in AI Settings");
+  }
+}
+
+async function askAssetRisk() {
+  if (!assetRiskAiQuery) return;
+  const question = assetRiskAiQuery.value.trim();
+  if (!question) { assetRiskAiQuery.focus(); return; }
+  askAssetRiskButton.disabled = true;
+  assetRiskAiStatus.textContent = "AI is interpreting your request…";
+  try {
+    const response = await fetch("/api/aspm/assets/interpret", {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify({question}),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "AI could not interpret that request.");
+    const plan = data.plan || {};
+    const assetRiskBand = document.querySelector("#assetRiskBand");
+    const assetRiskDataType = document.querySelector("#assetRiskDataType");
+    const assetRiskQuery = document.querySelector("#assetRiskQuery");
+    if (assetRiskBand && plan.risk_band) assetRiskBand.value = plan.risk_band;
+    if (assetRiskDataType && plan.data_types && plan.data_types.length) {
+      assetRiskDataType.value = plan.data_types[0];
+    }
+    if (assetRiskQuery && plan.query) assetRiskQuery.value = plan.query;
+    assetRiskAiStatus.textContent = "Filters applied — click Apply to search";
+  } catch (error) {
+    assetRiskAiStatus.textContent = error.message || "AI could not interpret that request.";
+  } finally {
+    const llm = state.localLlm || {};
+    askAssetRiskButton.disabled = !(llm.enabled && llm.available);
+  }
+}
+
+if (askAssetRiskButton) askAssetRiskButton.addEventListener("click", askAssetRisk);
+if (assetRiskAiQuery) {
+  assetRiskAiQuery.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); askAssetRisk(); }
+  });
+}
+
+// ── Column help popovers ─────────────────────────────────────────────────
+
+const COL_HELP = {
+  "risk-score": {
+    title: "Risk score",
+    body: "A composite score (0–100) combining active finding severity, data sensitivity, contextual exposure, and remediation pressure. Higher = greater urgency.",
+  },
+  "data-sensitivity": {
+    title: "Data sensitivity",
+    body: "Rates how sensitive the data types this asset processes or stores are (0–100). Credentials, health data, and payment data score highest. Calculated from observed data interactions.",
+  },
+  "data-interactions": {
+    title: "Data interactions",
+    body: "Categories of sensitive data this asset was observed handling — e.g. Authentication Data, Credentials, PII. Detected from source code analysis and network traffic patterns.",
+  },
+  "context": {
+    title: "Context score",
+    body: "Rates the asset's exposure and business importance (0–100). Considers whether it has a public domain, its application type, and how critical it is to the business.",
+  },
+};
+
+const colHelpPopover = document.querySelector("#colHelpPopover");
+const colHelpTitle = document.querySelector("#colHelpTitle");
+const colHelpBody = document.querySelector("#colHelpBody");
+let colHelpVisible = false;
+
+function showColHelp(trigger) {
+  const key = trigger.dataset.tooltip;
+  const entry = COL_HELP[key];
+  if (!entry || !colHelpPopover) return;
+  colHelpTitle.textContent = entry.title;
+  colHelpBody.textContent = entry.body;
+  colHelpPopover.hidden = false;
+  colHelpVisible = true;
+  positionColHelp(trigger);
+}
+
+function positionColHelp(trigger) {
+  const rect = trigger.getBoundingClientRect();
+  const pop = colHelpPopover;
+  pop.style.left = "0";
+  pop.style.top = "0";
+  const pw = pop.offsetWidth;
+  let left = rect.left + rect.width / 2 - pw / 2;
+  let top = rect.bottom + 8;
+  left = Math.max(8, Math.min(left, window.innerWidth - pw - 8));
+  if (top + pop.offsetHeight > window.innerHeight - 8) {
+    top = rect.top - pop.offsetHeight - 8;
+  }
+  pop.style.left = `${Math.round(left)}px`;
+  pop.style.top = `${Math.round(top)}px`;
+}
+
+function hideColHelp() {
+  if (!colHelpPopover) return;
+  colHelpPopover.hidden = true;
+  colHelpVisible = false;
+}
+
+document.addEventListener("click", (e) => {
+  const trigger = e.target.closest(".col-help-trigger");
+  if (trigger) { showColHelp(trigger); return; }
+  if (colHelpVisible) hideColHelp();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && colHelpVisible) hideColHelp();
+});
+

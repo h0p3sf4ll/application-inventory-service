@@ -71,6 +71,7 @@
             <button class="tab-button" type="button" data-view="schedulesView" role="tab" aria-controls="schedulesView" aria-selected="false">Schedules</button>
             <button class="tab-button" type="button" data-view="reportsView" role="tab" aria-controls="reportsView" aria-selected="false">Reports</button>
             <button class="tab-button" type="button" data-view="databaseView" role="tab" aria-controls="databaseView" aria-selected="false">Configuration</button>
+            <button class="tab-button" type="button" data-view="aiSettingsView" role="tab" aria-controls="aiSettingsView" aria-selected="false">AI Settings</button>
           </nav>
         </div>
         <div class="topbar-brand">
@@ -384,12 +385,41 @@
               <button class="primary compact-button" id="searchAssetRisks" type="button">Apply</button>
               <button class="ghost compact-button" id="clearAssetRisks" type="button">Clear</button>
             </div>
+
+            <div class="risk-ai-assistant">
+              <div class="risk-ai-field">
+                <input id="assetRiskAiQuery" type="search" maxlength="500" placeholder="Ask AI to filter — e.g. &quot;high risk assets with payment data&quot;" aria-label="AI risk filter">
+                <button class="ghost compact-button" id="askAssetRisk" type="button" disabled>Ask AI</button>
+              </div>
+              <span id="assetRiskAiStatus" class="risk-ai-status"></span>
+            </div>
+
             <div class="database-results-toolbar">
               <strong id="assetRiskSummary" aria-live="polite">Loading asset risk profiles</strong>
             </div>
             <div class="database-table-wrap">
               <table class="database-table asset-risk-table">
-                <thead><tr><th scope="col">Risk</th><th scope="col">Application</th><th scope="col">Repository</th><th scope="col">Active findings</th><th scope="col">Data sensitivity</th><th scope="col">Data interactions</th><th scope="col">Context</th></tr></thead>
+                <thead><tr>
+                  <th scope="col">
+                    Risk
+                    <button class="col-help-trigger" type="button" aria-label="What is risk score?" data-tooltip="risk-score">ⓘ</button>
+                  </th>
+                  <th scope="col">Application</th>
+                  <th scope="col">Repository</th>
+                  <th scope="col">Active findings</th>
+                  <th scope="col">
+                    Data sensitivity
+                    <button class="col-help-trigger" type="button" aria-label="What is data sensitivity?" data-tooltip="data-sensitivity">ⓘ</button>
+                  </th>
+                  <th scope="col">
+                    Data interactions
+                    <button class="col-help-trigger" type="button" aria-label="What are data interactions?" data-tooltip="data-interactions">ⓘ</button>
+                  </th>
+                  <th scope="col">
+                    Context
+                    <button class="col-help-trigger" type="button" aria-label="What is context score?" data-tooltip="context">ⓘ</button>
+                  </th>
+                </tr></thead>
                 <tbody id="assetRiskRows"><tr><td class="database-empty-row" colspan="7">Loading asset risk profiles.</td></tr></tbody>
               </table>
             </div>
@@ -1303,6 +1333,91 @@
               <div class="report-list" id="reportList"></div>
             </section>
           </section>
+
+          <section class="panel aspm-panel tab-view hidden" id="aiSettingsView" role="tabpanel" hidden>
+            <div class="section-heading aspm-heading">
+              <div>
+                <p class="eyebrow">AI assistant</p>
+                <h2>AI Settings</h2>
+                <p>Connect the AI assistant to a local or cloud inference provider.</p>
+              </div>
+              <span class="status-chip idle" id="aiSettingsStatus">Loading</span>
+            </div>
+
+            <section class="configuration-region" aria-labelledby="llmProviderTitle">
+              <div class="subsection-heading">
+                <div>
+                  <h3 id="llmProviderTitle">Inference provider</h3>
+                  <p>Choose a provider and configure the model used for the AI assistant.</p>
+                </div>
+              </div>
+              <div class="llm-config-form">
+                <label>
+                  <span>Provider</span>
+                  <select id="llmProvider">
+                    <option value="ollama">Ollama (local)</option>
+                    <option value="lmstudio">LM Studio (local)</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="anthropic">Anthropic</option>
+                  </select>
+                </label>
+                <label id="llmBaseUrlField">
+                  <span>Server URL</span>
+                  <input id="llmBaseUrl" type="url" maxlength="500" placeholder="http://127.0.0.1:11434">
+                  <small>Local server base URL (no path)</small>
+                </label>
+                <label id="llmApiKeyField" class="hidden">
+                  <span>API key</span>
+                  <input id="llmApiKey" type="password" maxlength="500" placeholder="sk-…" autocomplete="off">
+                  <small id="llmApiKeyHint">Your API key is stored encrypted on this server</small>
+                </label>
+                <div id="llmModelRow" class="llm-model-row">
+                  <label>
+                    <span>Model</span>
+                    <div class="llm-model-input-group">
+                      <input id="llmModel" type="text" maxlength="200" placeholder="Select or enter model name">
+                      <button class="ghost compact-button" id="llmFetchModels" type="button">Fetch models</button>
+                    </div>
+                  </label>
+                  <select id="llmModelSelect" class="hidden" aria-label="Select a model" size="1">
+                    <option value="">— select a model —</option>
+                  </select>
+                </div>
+                <div class="llm-config-actions">
+                  <button class="ghost compact-button" id="llmTestConnection" type="button">Test connection</button>
+                  <span id="llmTestStatus" class="llm-test-status" aria-live="polite"></span>
+                  <button class="primary compact-button" id="llmSaveConfig" type="button">Save</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="configuration-region" aria-labelledby="llmHowItWorksTitle">
+              <div class="subsection-heading">
+                <div>
+                  <h3 id="llmHowItWorksTitle">How the AI assistant works</h3>
+                </div>
+              </div>
+              <div class="llm-info-grid">
+                <div class="llm-info-card">
+                  <strong>Inventory queries</strong>
+                  <p>On the Inventory page, describe what you're looking for in plain language. The AI translates your question into a structured filter — no SQL required.</p>
+                </div>
+                <div class="llm-info-card">
+                  <strong>Asset risk filters</strong>
+                  <p>On the Asset risk page, ask the AI to narrow results — e.g. "high risk apps with payment data" — and it will apply the matching filters automatically.</p>
+                </div>
+                <div class="llm-info-card">
+                  <strong>Privacy</strong>
+                  <p>Queries sent to the AI describe your filter intent only — no application names, finding content, or sensitive inventory data is included in the prompt.</p>
+                </div>
+                <div class="llm-info-card">
+                  <strong>Local vs cloud</strong>
+                  <p>Ollama and LM Studio run entirely on your infrastructure. OpenAI and Anthropic send the filter prompt to their APIs; review their data policies before enabling.</p>
+                </div>
+              </div>
+            </section>
+          </section>
+
         </section>
       </section>
     </main>
@@ -1319,6 +1434,12 @@
         <button class="ghost compact-button" id="closeConnectorLogsFooter" type="button">Close</button>
       </div>
     </dialog>
-    <script src="/static/app.js?v=39" type="module"></script>
+    <script src="/static/app.js?v=40" type="module"></script>
+
+    <!-- Column help tooltips (shared, repositioned by JS) -->
+    <div class="col-help-popover" id="colHelpPopover" role="tooltip" hidden>
+      <p class="col-help-title" id="colHelpTitle"></p>
+      <p class="col-help-body" id="colHelpBody"></p>
+    </div>
   </body>
 </html>

@@ -3993,3 +3993,171 @@ button.posture-kpi:focus-visible {
     display: block;
   }
 }
+
+/* ── Column help tooltips ─────────────────────────────────────────── */
+
+.col-help-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 4px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: color 0.12s;
+}
+
+.col-help-trigger:hover,
+.col-help-trigger:focus {
+  color: var(--accent-strong);
+  outline: none;
+}
+
+.col-help-popover {
+  position: fixed;
+  z-index: 500;
+  max-width: 280px;
+  padding: 12px 14px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+}
+
+.col-help-popover[hidden] {
+  display: none;
+}
+
+.col-help-title {
+  margin: 0 0 5px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.col-help-body {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* ── Asset risk AI assistant ──────────────────────────────────────── */
+
+.risk-ai-assistant {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0 6px;
+  flex-wrap: wrap;
+}
+
+.risk-ai-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 260px;
+}
+
+.risk-ai-field input {
+  flex: 1;
+}
+
+.risk-ai-status {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ── LLM config form ──────────────────────────────────────────────── */
+
+.llm-config-form {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.7fr) minmax(240px, 0.7fr);
+  gap: 14px;
+  max-width: 760px;
+}
+
+.llm-model-row {
+  grid-column: 1 / -1;
+}
+
+.llm-model-input-group {
+  display: flex;
+  gap: 6px;
+}
+
+.llm-model-input-group input {
+  flex: 1;
+}
+
+.llm-config-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.llm-test-status {
+  flex: 1;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.llm-test-status.ok {
+  color: var(--success);
+}
+
+.llm-test-status.err {
+  color: var(--danger);
+}
+
+.llm-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.llm-info-card {
+  padding: 14px 16px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.llm-info-card strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.llm-info-card p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+@media (max-width: 720px) {
+  .llm-config-form {
+    grid-template-columns: 1fr;
+  }
+
+  .llm-info-grid {
+    grid-template-columns: 1fr;
+  }
+}
+

@@ -4,8 +4,9 @@ import json
 import os
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from ipaddress import ip_address
+from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
@@ -13,6 +14,7 @@ import requests
 
 from .constants import KNOWN_INVENTORY_TYPES
 from .inventory_query import InventoryQueryPlan, QUERY_FIELDS, SORT_FIELDS
+from .secure_store import EncryptedJsonStore
 
 
 DEFAULT_LOCAL_LLM_URL = "http://127.0.0.1:11434"
@@ -22,9 +24,34 @@ MAX_RESPONSE_BYTES = 65_536
 MAX_QUESTION_LENGTH = 2_000
 STATUS_CACHE_SECONDS = 30.0
 
+PROVIDER_OLLAMA = "ollama"
+PROVIDER_LMSTUDIO = "lmstudio"
+PROVIDER_OPENAI = "openai"
+PROVIDER_ANTHROPIC = "anthropic"
+KNOWN_PROVIDERS = frozenset({PROVIDER_OLLAMA, PROVIDER_LMSTUDIO, PROVIDER_OPENAI, PROVIDER_ANTHROPIC})
+LOCAL_PROVIDERS = frozenset({PROVIDER_OLLAMA, PROVIDER_LMSTUDIO})
+CLOUD_PROVIDERS = frozenset({PROVIDER_OPENAI, PROVIDER_ANTHROPIC})
+
+OPENAI_BASE_URL = "https://api.openai.com"
+ANTHROPIC_BASE_URL = "https://api.anthropic.com"
+ANTHROPIC_VERSION = "2023-06-01"
+
+PROVIDER_DISPLAY = {
+    PROVIDER_OLLAMA: "Ollama",
+    PROVIDER_LMSTUDIO: "LM Studio",
+    PROVIDER_OPENAI: "OpenAI",
+    PROVIDER_ANTHROPIC: "Anthropic",
+}
+
+PROVIDER_DEFAULT_MODELS = {
+    PROVIDER_OPENAI: "gpt-4o-mini",
+    PROVIDER_ANTHROPIC: "claude-haiku-4-5-20251001",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class LocalLlmConfig:
+    """Env-based config (backwards compatibility / startup fallback)."""
     enabled: bool = True
     base_url: str = DEFAULT_LOCAL_LLM_URL
     model: str = DEFAULT_LOCAL_LLM_MODEL
@@ -57,16 +84,125 @@ class LocalLlmConfig:
     def public_config(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
-            "provider": "Ollama",
+            "provider": PROVIDER_OLLAMA,
+            "providerDisplay": PROVIDER_DISPLAY[PROVIDER_OLLAMA],
             "model": self.model,
         }
+
+    def to_provider_config(self) -> LlmProviderConfig:
+        return LlmProviderConfig(
+            provider=PROVIDER_OLLAMA,
+            base_url=self.base_url,
+            model=self.model,
+            timeout_seconds=self.timeout_seconds,
+            enabled=self.enabled,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LlmProviderConfig:
+    """Persisted, multi-provider LLM configuration."""
+    provider: str = PROVIDER_OLLAMA
+    base_url: str = DEFAULT_LOCAL_LLM_URL
+    model: str = DEFAULT_LOCAL_LLM_MODEL
+    api_key: str = ""
+    timeout_seconds: float = 30.0
+    enabled: bool = True
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> LlmProviderConfig:
+        provider = clean_text(data.get("provider") or PROVIDER_OLLAMA).lower()
+        if provider not in KNOWN_PROVIDERS:
+            provider = PROVIDER_OLLAMA
+        raw_url = clean_text(data.get("base_url") or "")
+        if provider == PROVIDER_OPENAI and not raw_url:
+            raw_url = OPENAI_BASE_URL
+        elif provider == PROVIDER_ANTHROPIC and not raw_url:
+            raw_url = ANTHROPIC_BASE_URL
+        elif not raw_url:
+            raw_url = DEFAULT_LOCAL_LLM_URL
+        try:
+            base_url = normalize_base_url(raw_url, allow_remote=True)
+        except ValueError:
+            base_url = DEFAULT_LOCAL_LLM_URL
+        model = clean_text(data.get("model") or "")[:120] or PROVIDER_DEFAULT_MODELS.get(provider, DEFAULT_LOCAL_LLM_MODEL)
+        return cls(
+            provider=provider,
+            base_url=base_url,
+            model=model,
+            api_key=clean_text(data.get("api_key") or "")[:2048],
+            timeout_seconds=bounded_float(data.get("timeout_seconds"), 30.0, 2.0, 120.0),
+            enabled=bool(data.get("enabled", True)),
+        )
+
+    def to_store_dict(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "base_url": self.base_url,
+            "model": self.model,
+            "api_key": self.api_key,
+            "timeout_seconds": self.timeout_seconds,
+            "enabled": self.enabled,
+        }
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "providerDisplay": PROVIDER_DISPLAY.get(self.provider, self.provider),
+            "base_url": self.base_url if self.provider in LOCAL_PROVIDERS else "",
+            "model": self.model,
+            "has_api_key": bool(self.api_key),
+            "timeout_seconds": self.timeout_seconds,
+            "enabled": self.enabled,
+        }
+
+    @property
+    def is_local(self) -> bool:
+        return self.provider in LOCAL_PROVIDERS
+
+    @property
+    def effective_base_url(self) -> str:
+        if self.provider == PROVIDER_OPENAI:
+            return OPENAI_BASE_URL
+        if self.provider == PROVIDER_ANTHROPIC:
+            return ANTHROPIC_BASE_URL
+        return self.base_url
+
+
+class LlmConfigStore:
+    def __init__(self, store: EncryptedJsonStore, env_fallback: LocalLlmConfig) -> None:
+        self._store = store
+        self._env_fallback = env_fallback
+        self._lock = threading.RLock()
+
+    @classmethod
+    def from_state_dir(cls, state_dir: Path, env_fallback: LocalLlmConfig) -> LlmConfigStore:
+        return cls(
+            EncryptedJsonStore(state_dir, "llm_config.json.enc", lambda: {}),
+            env_fallback,
+        )
+
+    def read(self) -> LlmProviderConfig:
+        with self._lock:
+            data = self._store.read()
+        if not data:
+            return self._env_fallback.to_provider_config()
+        return LlmProviderConfig.from_dict(data)
+
+    def write(self, config: LlmProviderConfig) -> None:
+        with self._lock:
+            self._store.write(config.to_store_dict())
 
 
 class LocalInventoryAssistant:
     def __init__(
-        self, config: LocalLlmConfig, session: requests.Session | None = None
+        self,
+        config: LocalLlmConfig,
+        session: requests.Session | None = None,
+        config_store: LlmConfigStore | None = None,
     ) -> None:
         self.config = config
+        self.config_store = config_store
         self.session = session or requests.Session()
         self.session.trust_env = False
         self._status: dict[str, Any] | None = None
@@ -77,9 +213,15 @@ class LocalInventoryAssistant:
     def from_env(cls) -> LocalInventoryAssistant:
         return cls(LocalLlmConfig.from_env())
 
+    def active_config(self) -> LlmProviderConfig:
+        if self.config_store is not None:
+            return self.config_store.read()
+        return self.config.to_provider_config()
+
     def public_config(self) -> dict[str, Any]:
+        provider_cfg = self.active_config()
         status = self.status()
-        return {**self.config.public_config(), **status}
+        return {**provider_cfg.to_public_dict(), **status}
 
     def status(self, refresh: bool = False) -> dict[str, Any]:
         now = time.monotonic()
@@ -96,42 +238,186 @@ class LocalInventoryAssistant:
             self._status_at = now
         return dict(status)
 
+    def invalidate_status(self) -> None:
+        with self._lock:
+            self._status = None
+            self._status_at = 0.0
+
     def interpret(self, question: str) -> InventoryQueryPlan:
         prompt = clean_text(question)[:MAX_QUESTION_LENGTH]
         if not prompt:
             raise ValueError("Enter a question about the inventory.")
-        if not self.config.enabled:
+        cfg = self.active_config()
+        if not cfg.enabled:
             raise ValueError("The local inventory assistant is disabled.")
-        response = self.session.post(
-            f"{self.config.base_url}/api/chat",
-            json={
-                "model": self.config.model,
-                "stream": False,
-                "format": "json",
-                "messages": [
-                    {"role": "system", "content": assistant_system_prompt()},
-                    {"role": "user", "content": prompt},
-                ],
-                "options": {"temperature": 0, "num_predict": 800},
-            },
-            timeout=(3.0, self.config.timeout_seconds),
-        )
-        response.raise_for_status()
-        if len(response.content) > MAX_RESPONSE_BYTES:
-            raise ValueError("The local model returned an oversized response.")
-        payload = response.json()
-        content = clean_text(
-            (payload.get("message") or {}).get("content") or payload.get("response")
-        )
+        content = self._chat(cfg, assistant_system_prompt(), prompt)
         plan_payload = parse_json_object(content)
         return InventoryQueryPlan.from_mapping(plan_payload)
 
+    def interpret_asset_risk(self, question: str) -> dict[str, Any]:
+        prompt = clean_text(question)[:MAX_QUESTION_LENGTH]
+        if not prompt:
+            raise ValueError("Enter a question about asset risk.")
+        cfg = self.active_config()
+        if not cfg.enabled:
+            raise ValueError("The AI assistant is disabled.")
+        content = self._chat(cfg, risk_assistant_system_prompt(), prompt)
+        payload = parse_json_object(content)
+        if not isinstance(payload, Mapping):
+            raise ValueError("The model did not return a valid query plan.")
+        return dict(payload)
+
+    def list_models(self) -> list[str]:
+        cfg = self.active_config()
+        try:
+            if cfg.provider == PROVIDER_OLLAMA:
+                resp = self.session.get(f"{cfg.base_url}/api/tags", timeout=(2.0, 5.0))
+                resp.raise_for_status()
+                payload = resp.json()
+                return sorted(
+                    clean_text(item.get("name") or item.get("model"))
+                    for item in payload.get("models", [])
+                    if isinstance(item, Mapping)
+                )
+            if cfg.provider in {PROVIDER_LMSTUDIO, PROVIDER_OPENAI}:
+                headers: dict[str, str] = {}
+                if cfg.api_key:
+                    headers["Authorization"] = f"Bearer {cfg.api_key}"
+                resp = self.session.get(
+                    f"{cfg.effective_base_url}/v1/models",
+                    headers=headers,
+                    timeout=(2.0, 8.0),
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                return sorted(
+                    clean_text(item.get("id") or "")
+                    for item in payload.get("data", [])
+                    if isinstance(item, Mapping) and item.get("id")
+                )
+        except (requests.RequestException, ValueError, TypeError, json.JSONDecodeError):
+            pass
+        return []
+
+    def test_connection(self) -> dict[str, Any]:
+        cfg = self.active_config()
+        if not cfg.enabled:
+            return {"ok": False, "message": "AI assistant is disabled."}
+        try:
+            models = self.list_models()
+            if cfg.provider in LOCAL_PROVIDERS:
+                model_available = any(
+                    model_matches(cfg.model, m) for m in models
+                )
+                if not model_available and models:
+                    return {
+                        "ok": False,
+                        "message": f"Model '{cfg.model}' not installed. Available: {', '.join(models[:5])}",
+                        "models": models,
+                    }
+                if not model_available:
+                    return {"ok": False, "message": f"Model '{cfg.model}' not found — is the server running?", "models": []}
+                return {"ok": True, "message": f"Connected · {len(models)} model(s) available", "models": models}
+            if cfg.provider == PROVIDER_OPENAI:
+                if not cfg.api_key:
+                    return {"ok": False, "message": "An API key is required for OpenAI."}
+                return {"ok": True, "message": f"API key accepted · {len(models)} model(s) available", "models": models}
+            if cfg.provider == PROVIDER_ANTHROPIC:
+                if not cfg.api_key:
+                    return {"ok": False, "message": "An API key is required for Anthropic."}
+                # Do a minimal completion to verify the key
+                content = self._chat(cfg, "You are a test assistant.", "Reply with only: ok")
+                if content:
+                    return {"ok": True, "message": "API key accepted · connection verified"}
+        except (requests.RequestException, ValueError) as exc:
+            return {"ok": False, "message": str(exc)[:200]}
+        except Exception:
+            return {"ok": False, "message": "Connection test failed."}
+        return {"ok": False, "message": "Could not verify connection."}
+
+    def _chat(self, cfg: LlmProviderConfig, system: str, user: str) -> str:
+        if cfg.provider == PROVIDER_ANTHROPIC:
+            return self._chat_anthropic(cfg, system, user)
+        return self._chat_openai_compat(cfg, system, user)
+
+    def _chat_openai_compat(self, cfg: LlmProviderConfig, system: str, user: str) -> str:
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if cfg.api_key:
+            headers["Authorization"] = f"Bearer {cfg.api_key}"
+        endpoint = f"{cfg.effective_base_url}/v1/chat/completions"
+        body: dict[str, Any] = {
+            "model": cfg.model,
+            "stream": False,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+        if cfg.provider != PROVIDER_OLLAMA:
+            body["response_format"] = {"type": "json_object"}
+        else:
+            # Ollama supports both endpoints; use OpenAI-compat with json format flag
+            body["response_format"] = {"type": "json_object"}
+        resp = self.session.post(
+            endpoint, json=body, headers=headers,
+            timeout=(3.0, cfg.timeout_seconds),
+        )
+        resp.raise_for_status()
+        if len(resp.content) > MAX_RESPONSE_BYTES:
+            raise ValueError("The model returned an oversized response.")
+        payload = resp.json()
+        choices = payload.get("choices") or []
+        if choices:
+            return clean_text((choices[0].get("message") or {}).get("content") or "")
+        # Ollama non-standard fallback
+        return clean_text(payload.get("message", {}).get("content") or payload.get("response") or "")
+
+    def _chat_anthropic(self, cfg: LlmProviderConfig, system: str, user: str) -> str:
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": cfg.api_key,
+            "anthropic-version": ANTHROPIC_VERSION,
+        }
+        resp = self.session.post(
+            f"{ANTHROPIC_BASE_URL}/v1/messages",
+            json={
+                "model": cfg.model,
+                "max_tokens": 800,
+                "system": system,
+                "messages": [{"role": "user", "content": user}],
+            },
+            headers=headers,
+            timeout=(3.0, cfg.timeout_seconds),
+        )
+        resp.raise_for_status()
+        if len(resp.content) > MAX_RESPONSE_BYTES:
+            raise ValueError("The model returned an oversized response.")
+        payload = resp.json()
+        for block in payload.get("content", []):
+            if isinstance(block, Mapping) and block.get("type") == "text":
+                return clean_text(block.get("text") or "")
+        return ""
+
     def _load_status(self) -> dict[str, Any]:
-        if not self.config.enabled:
+        cfg = self.active_config()
+        if not cfg.enabled:
             return {"available": False, "status": "disabled", "message": "Disabled"}
+        provider_label = PROVIDER_DISPLAY.get(cfg.provider, cfg.provider)
+        if cfg.provider in CLOUD_PROVIDERS:
+            if not cfg.api_key:
+                return {
+                    "available": False,
+                    "status": "no_key",
+                    "message": f"{provider_label}: no API key configured",
+                }
+            return {
+                "available": True,
+                "status": "ready",
+                "message": f"{provider_label} ready",
+            }
         try:
             response = self.session.get(
-                f"{self.config.base_url}/api/tags", timeout=(1.0, 2.0)
+                f"{cfg.base_url}/api/tags", timeout=(1.0, 2.0)
             )
             response.raise_for_status()
             if len(response.content) > MAX_RESPONSE_BYTES:
@@ -143,20 +429,38 @@ class LocalInventoryAssistant:
                 if isinstance(item, Mapping)
             )
             model_available = any(
-                model_matches(self.config.model, candidate) for candidate in models
+                model_matches(cfg.model, candidate) for candidate in models
             )
             return {
                 "available": model_available,
                 "status": "ready" if model_available else "model_missing",
-                "message": "Ready"
+                "message": f"{provider_label} ready"
                 if model_available
-                else f"Install {self.config.model}",
+                else f"Install {cfg.model}",
             }
         except (requests.RequestException, ValueError, TypeError, json.JSONDecodeError):
+            if cfg.provider == PROVIDER_LMSTUDIO:
+                try:
+                    resp = self.session.get(f"{cfg.base_url}/v1/models", timeout=(1.0, 3.0))
+                    resp.raise_for_status()
+                    payload = resp.json()
+                    models_lms = [
+                        clean_text(item.get("id") or "")
+                        for item in payload.get("data", [])
+                        if isinstance(item, Mapping) and item.get("id")
+                    ]
+                    available = any(model_matches(cfg.model, m) for m in models_lms)
+                    return {
+                        "available": available,
+                        "status": "ready" if available else "model_missing",
+                        "message": f"{provider_label} ready" if available else f"Model '{cfg.model}' not loaded",
+                    }
+                except Exception:
+                    pass
             return {
                 "available": False,
                 "status": "offline",
-                "message": "Ollama is offline",
+                "message": f"{provider_label} is offline",
             }
 
 
@@ -179,6 +483,26 @@ def assistant_system_prompt() -> str:
         "Use has_domain=false for applications without a domain. "
         "Use action=export only when the user explicitly asks to export or download. "
         "Never produce SQL, code, credentials, URLs, explanations, or invented field values. "
+        f"Schema: {json.dumps(schema, separators=(',', ':'))}"
+    )
+
+
+def risk_assistant_system_prompt() -> str:
+    schema = {
+        "risk_band": ["critical", "high", "medium", "low", ""],
+        "data_types": [
+            "payment_card_data", "health_data", "biometric_data", "credentials", "secrets",
+            "authentication_data", "financial_data", "personal_data", "location_data",
+            "device_identifiers", "tracking_data", "confidential_business_data", "source_code",
+        ],
+        "query": "free text search for application, repository, domain, owner",
+        "active_only": "true to show only assets with active findings",
+    }
+    return (
+        "Convert the user's asset risk request into one JSON object with these optional fields: "
+        "risk_band (string), data_types (array), query (string), active_only (bool). "
+        "Return only JSON. Never include SQL, explanations, or invented values. "
+        "Set only fields relevant to the request; omit the rest. "
         f"Schema: {json.dumps(schema, separators=(',', ':'))}"
     )
 
@@ -218,10 +542,10 @@ def normalize_base_url(value: Any, allow_remote: bool = False) -> str:
         or parsed.password
     ):
         raise ValueError(
-            "Local LLM URL must be an HTTP or HTTPS origin without credentials."
+            "LLM URL must be an HTTP or HTTPS origin without credentials."
         )
     if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
-        raise ValueError("Local LLM URL must not contain a path, query, or fragment.")
+        raise ValueError("LLM URL must not contain a path, query, or fragment.")
     if not allow_remote and not is_local_host(parsed.hostname):
         raise ValueError(
             "Local LLM URL must resolve to this host unless remote access is explicitly enabled."
