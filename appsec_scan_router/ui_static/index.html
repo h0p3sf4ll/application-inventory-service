@@ -55,6 +55,24 @@
 
     <main class="shell" id="appShell" hidden>
       <header class="topbar">
+        <div class="nav-anchor" id="navAnchor">
+          <button class="nav-toggle" id="navToggle" type="button" aria-label="Navigation menu" aria-expanded="false" aria-controls="appNav">
+            <span class="hamburger-icon" aria-hidden="true"><span></span><span></span><span></span></span>
+            <span id="navToggleLabel">Dashboard</span>
+          </button>
+          <nav class="app-nav app-nav-dropdown" id="appNav" aria-label="Application pages" role="tablist" hidden>
+            <button class="tab-button active" type="button" data-view="dashboardView" role="tab" aria-controls="dashboardView" aria-selected="true">Dashboard</button>
+            <button class="tab-button" type="button" data-view="findingsView" role="tab" aria-controls="findingsView" aria-selected="false">Findings</button>
+            <button class="tab-button" type="button" data-view="riskProfilesView" role="tab" aria-controls="riskProfilesView" aria-selected="false">Asset risk</button>
+            <button class="tab-button" type="button" data-view="inventoryView" role="tab" aria-controls="inventoryView" aria-selected="false">Inventory</button>
+            <button class="tab-button" type="button" data-view="coverageView" role="tab" aria-controls="coverageView" aria-selected="false">Coverage</button>
+            <button class="tab-button" type="button" data-view="setupView" role="tab" aria-controls="setupView" aria-selected="false">Scan</button>
+            <button class="tab-button" type="button" data-view="runsView" role="tab" aria-controls="runsView" aria-selected="false">Runs</button>
+            <button class="tab-button" type="button" data-view="schedulesView" role="tab" aria-controls="schedulesView" aria-selected="false">Schedules</button>
+            <button class="tab-button" type="button" data-view="reportsView" role="tab" aria-controls="reportsView" aria-selected="false">Reports</button>
+            <button class="tab-button" type="button" data-view="databaseView" role="tab" aria-controls="databaseView" aria-selected="false">Configuration</button>
+          </nav>
+        </div>
         <div class="topbar-brand">
           <p class="eyebrow">Application security posture management</p>
           <h1>AppSec Atlas</h1>
@@ -67,19 +85,6 @@
           </div>
         </div>
       </header>
-
-      <nav class="app-nav app-sidebar-nav" aria-label="Application pages" role="tablist">
-        <button class="tab-button active" type="button" data-view="dashboardView" role="tab" aria-controls="dashboardView" aria-selected="true">Dashboard</button>
-        <button class="tab-button" type="button" data-view="findingsView" role="tab" aria-controls="findingsView" aria-selected="false">Findings</button>
-        <button class="tab-button" type="button" data-view="riskProfilesView" role="tab" aria-controls="riskProfilesView" aria-selected="false">Asset risk</button>
-        <button class="tab-button" type="button" data-view="inventoryView" role="tab" aria-controls="inventoryView" aria-selected="false">Inventory</button>
-        <button class="tab-button" type="button" data-view="coverageView" role="tab" aria-controls="coverageView" aria-selected="false">Coverage</button>
-        <button class="tab-button" type="button" data-view="setupView" role="tab" aria-controls="setupView" aria-selected="false">Scan</button>
-        <button class="tab-button" type="button" data-view="runsView" role="tab" aria-controls="runsView" aria-selected="false">Runs</button>
-        <button class="tab-button" type="button" data-view="schedulesView" role="tab" aria-controls="schedulesView" aria-selected="false">Schedules</button>
-        <button class="tab-button" type="button" data-view="reportsView" role="tab" aria-controls="reportsView" aria-selected="false">Reports</button>
-        <button class="tab-button" type="button" data-view="databaseView" role="tab" aria-controls="databaseView" aria-selected="false">Configuration</button>
-      </nav>
 
       <section class="layout">
         <form class="page-form" id="scanForm">
@@ -1308,6 +1313,6 @@
         <p class="empty-state">Loading logs…</p>
       </div>
     </dialog>
-    <script src="/static/app.js?v=33" type="module"></script>
+    <script src="/static/app.js?v=34" type="module"></script>
   </body>
 </html>

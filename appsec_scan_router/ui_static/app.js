@@ -120,6 +120,45 @@ const inventoryRecordTitle = document.querySelector("#inventoryRecordTitle");
 const inventoryRecordDetails = document.querySelector("#inventoryRecordDetails");
 const closeInventoryRecordButton = document.querySelector("#closeInventoryRecord");
 const tabButtons = document.querySelectorAll("[data-view]");
+const navToggle = document.querySelector("#navToggle");
+const navToggleLabel = document.querySelector("#navToggleLabel");
+const appNav = document.querySelector("#appNav");
+
+let navBackdrop = null;
+
+function openNav() {
+  appNav.hidden = false;
+  navToggle.setAttribute("aria-expanded", "true");
+  if (!navBackdrop) {
+    navBackdrop = document.createElement("div");
+    navBackdrop.className = "nav-backdrop";
+    navBackdrop.addEventListener("click", closeNav);
+    document.body.appendChild(navBackdrop);
+  }
+}
+
+function closeNav() {
+  appNav.hidden = true;
+  navToggle.setAttribute("aria-expanded", "false");
+  if (navBackdrop) {
+    navBackdrop.remove();
+    navBackdrop = null;
+  }
+}
+
+navToggle.addEventListener("click", () => {
+  if (appNav.hidden) {
+    openNav();
+  } else {
+    closeNav();
+  }
+});
+
+appNav.addEventListener("click", (e) => {
+  if (e.target.closest("[data-view]")) {
+    closeNav();
+  }
+});
 const createScheduleButton = document.querySelector("#createSchedule");
 const scheduleName = document.querySelector("#scheduleName");
 const scheduleFrequency = document.querySelector("#scheduleFrequency");
@@ -2903,6 +2942,9 @@ function setActiveView(viewId) {
     const active = button.dataset.view === viewId;
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", String(active));
+    if (active && navToggleLabel) {
+      navToggleLabel.textContent = button.textContent.trim();
+    }
   });
   aspmWorkspace.onViewActivated(viewId);
   if (viewId === "databaseView" && isLoggedIn()) {
