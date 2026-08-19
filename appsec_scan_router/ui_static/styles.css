@@ -250,13 +250,13 @@ button:not(:disabled):active {
 .topbar {
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: 210;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 18px;
-  overflow: hidden;
+  overflow: visible;
   padding: 14px 16px;
   background: rgb(9 16 23 / 96%);
   border: 1px solid var(--border);
