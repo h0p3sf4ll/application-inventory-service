@@ -1953,6 +1953,7 @@ button:focus-visible {
   color: var(--muted);
   font-size: 11px;
   white-space: nowrap;
+  vertical-align: middle;
 }
 
 .database-sort-row th {
