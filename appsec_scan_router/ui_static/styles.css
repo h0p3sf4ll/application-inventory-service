@@ -3574,31 +3574,43 @@ button.posture-kpi:focus-visible {
 }
 
 .finding-table {
-  min-width: 1440px;
+  min-width: 1480px;
 }
 
 .finding-table th:nth-child(1) {
-  width: 80px;
+  width: 70px;
 }
 
 .finding-table th:nth-child(2) {
-  width: 27%;
+  width: 280px;
 }
 
 .finding-table th:nth-child(3) {
-  width: 18%;
+  width: 210px;
 }
 
 .finding-table th:nth-child(4) {
-  width: 16%;
+  width: 190px;
 }
 
 .finding-table th:nth-child(5) {
-  width: 20%;
+  width: 260px;
+}
+
+.finding-table th:nth-child(6) {
+  width: 110px;
+}
+
+.finding-table th:nth-child(7) {
+  width: 100px;
+}
+
+.finding-table th:nth-child(8) {
+  width: 140px;
 }
 
 .finding-table th:nth-child(9) {
-  width: 110px;
+  width: 120px;
 }
 
 .finding-responsibility small {
