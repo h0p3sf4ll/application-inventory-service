@@ -3048,6 +3048,14 @@ button.posture-kpi:focus-visible {
   gap: 8px;
 }
 
+.connector-logs-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
 .connector-log-entry {
   padding: 10px 12px;
   background: var(--surface-muted);

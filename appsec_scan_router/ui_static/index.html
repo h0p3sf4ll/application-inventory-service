@@ -58,7 +58,7 @@
         <div class="nav-anchor" id="navAnchor">
           <button class="nav-toggle" id="navToggle" type="button" aria-label="Navigation menu" aria-expanded="false" aria-controls="appNav">
             <span class="hamburger-icon" aria-hidden="true"><span></span><span></span><span></span></span>
-            <span id="navToggleLabel">Dashboard</span>
+            <span id="navToggleLabel">Navigation</span>
           </button>
           <nav class="app-nav app-nav-dropdown" id="appNav" aria-label="Application pages" role="tablist" hidden>
             <button class="tab-button active" type="button" data-view="dashboardView" role="tab" aria-controls="dashboardView" aria-selected="true">Dashboard</button>
@@ -1315,7 +1315,10 @@
       <div class="connector-logs-body" id="connectorLogsBody" aria-live="polite">
         <p class="empty-state">Loading logs…</p>
       </div>
+      <div class="connector-logs-footer">
+        <button class="ghost compact-button" id="closeConnectorLogsFooter" type="button">Close</button>
+      </div>
     </dialog>
-    <script src="/static/app.js?v=35" type="module"></script>
+    <script src="/static/app.js?v=36" type="module"></script>
   </body>
 </html>

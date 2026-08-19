@@ -1,4 +1,4 @@
-import {AspmWorkspace} from "/static/aspm-ui.js?v=22";
+import {AspmWorkspace} from "/static/aspm-ui.js?v=23";
 
 const APPSEC_ATLAS_STORAGE_KEY = "appsec-atlas-ui";
 const LEGACY_STORAGE_KEY = "application-inventory-service-ui";
@@ -2943,7 +2943,7 @@ function setActiveView(viewId) {
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", String(active));
     if (active && navToggleLabel) {
-      navToggleLabel.textContent = button.textContent.trim();
+      // label stays fixed as "Navigation"
     }
   });
   aspmWorkspace.onViewActivated(viewId);

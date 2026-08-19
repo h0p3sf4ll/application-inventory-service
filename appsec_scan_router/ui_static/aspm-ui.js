@@ -158,6 +158,13 @@ export class AspmWorkspace {
       const d = document.getElementById("connectorLogsDialog");
       if (d) d.close();
     });
+    const closeLogsFooter = document.getElementById("closeConnectorLogsFooter");
+    if (closeLogsFooter) {
+      closeLogsFooter.addEventListener("click", () => {
+        const d = document.getElementById("connectorLogsDialog");
+        if (d) d.close();
+      });
+    }
     this.elements.saveConnectorSetup.addEventListener("click", () => this.saveConnectorSetup());
     this.elements.refreshAssetRisks.addEventListener("click", () => this.loadAssetRisks(this.state.assetRisks.offset, true));
     this.elements.searchAssetRisks.addEventListener("click", () => this.loadAssetRisks(0, true));
