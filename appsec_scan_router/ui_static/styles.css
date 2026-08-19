@@ -2613,6 +2613,17 @@ button:focus-visible {
   font-weight: 800;
 }
 
+.dashboard-section-label {
+  margin: 24px 0 10px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+}
+
 .posture-kpis,
 .coverage-kpis {
   display: grid;
@@ -2998,19 +3009,43 @@ button.posture-kpi:focus-visible {
 }
 
 .connector-logs-dialog {
-  width: min(560px, 92vw);
-  max-height: 70vh;
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(620px, calc(100vh - 48px));
+  overflow: auto;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.connector-logs-dialog::backdrop {
+  background: rgb(0 0 0 / 66%);
+}
+
+.connector-logs-heading {
   display: flex;
-  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.connector-logs-heading h3 {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.connector-logs-heading .eyebrow {
+  margin: 0 0 4px;
 }
 
 .connector-logs-body {
-  overflow-y: auto;
-  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 2px 0;
+  gap: 8px;
 }
 
 .connector-log-entry {

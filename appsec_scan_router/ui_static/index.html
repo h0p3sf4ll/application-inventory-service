@@ -93,13 +93,14 @@
               <div>
                 <p class="eyebrow">Executive overview</p>
                 <h2>Dashboard</h2>
-                <p>Risk, coverage, remediation pressure, and scanner operations across your application estate.</p>
+                <p>Risk posture, active operations, and scanner health across your application estate.</p>
               </div>
               <div class="aspm-heading-actions">
                 <span class="status-chip idle" id="postureStatus">Loading</span>
               </div>
             </div>
 
+            <p class="dashboard-section-label">Risk</p>
             <div class="posture-kpis" aria-label="Security posture summary">
               <button class="posture-kpi risk-critical" type="button" data-dashboard-action="critical">
                 <span>Critical findings</span>
@@ -133,6 +134,7 @@
               </button>
             </div>
 
+            <p class="dashboard-section-label">Operations</p>
             <div class="posture-workspace">
               <section class="posture-region" aria-labelledby="riskDistributionTitle">
                 <div class="subsection-heading">
@@ -160,11 +162,12 @@
               </section>
             </div>
 
+            <p class="dashboard-section-label">Scanner health</p>
             <section class="posture-region tool-posture-region" aria-labelledby="toolPostureTitle">
               <div class="subsection-heading">
                 <div>
-                  <h3 id="toolPostureTitle">Scanner operations</h3>
-                  <p>Latest completed or failed scanner operation and asset coverage.</p>
+                  <h3 id="toolPostureTitle">Scanner health</h3>
+                  <p>Connectivity status, asset coverage, and active findings per scanner.</p>
                 </div>
                 <button class="ghost compact-button" id="openFindingImport" type="button">Import findings</button>
               </div>
@@ -1304,8 +1307,8 @@
       </section>
     </main>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <dialog class="inventory-dialog connector-logs-dialog" id="connectorLogsDialog" aria-labelledby="connectorLogsTitle">
-      <div class="inventory-dialog-heading">
+    <dialog class="connector-logs-dialog" id="connectorLogsDialog" aria-labelledby="connectorLogsTitle">
+      <div class="connector-logs-heading">
         <div><p class="eyebrow" id="connectorLogsEyebrow">Scanner logs</p><h3 id="connectorLogsTitle">Connection history</h3></div>
         <button class="icon-button" id="closeConnectorLogs" type="button" aria-label="Close" title="Close">&times;</button>
       </div>
@@ -1313,6 +1316,6 @@
         <p class="empty-state">Loading logs…</p>
       </div>
     </dialog>
-    <script src="/static/app.js?v=34" type="module"></script>
+    <script src="/static/app.js?v=35" type="module"></script>
   </body>
 </html>

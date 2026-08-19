@@ -154,7 +154,10 @@ export class AspmWorkspace {
       }
     });
     this.elements.closeConnectorSetup.addEventListener("click", () => this.elements.connectorSetupDialog.close());
-    this.elements.closeConnectorLogs.addEventListener("click", () => this.elements.connectorLogsDialog.close());
+    this.elements.closeConnectorLogs.addEventListener("click", () => {
+      const d = document.getElementById("connectorLogsDialog");
+      if (d) d.close();
+    });
     this.elements.saveConnectorSetup.addEventListener("click", () => this.saveConnectorSetup());
     this.elements.refreshAssetRisks.addEventListener("click", () => this.loadAssetRisks(this.state.assetRisks.offset, true));
     this.elements.searchAssetRisks.addEventListener("click", () => this.loadAssetRisks(0, true));
@@ -432,11 +435,19 @@ export class AspmWorkspace {
   }
 
   async openConnectorLogs(toolKey, toolName) {
-    this.elements.connectorLogsEyebrow.textContent = "Scanner logs";
-    this.elements.connectorLogsTitle.textContent = toolName || "Connection history";
-    this.elements.connectorLogsBody.innerHTML = '<p class="empty-state">Loading logs…</p>';
-    if (!this.elements.connectorLogsDialog.open) {
-      this.elements.connectorLogsDialog.showModal();
+    const dialog = document.getElementById("connectorLogsDialog");
+    const eyebrow = document.getElementById("connectorLogsEyebrow");
+    const title = document.getElementById("connectorLogsTitle");
+    const body = document.getElementById("connectorLogsBody");
+    if (!dialog || !body) {
+      this.notify("Could not open logs dialog — please reload the page.");
+      return;
+    }
+    if (eyebrow) eyebrow.textContent = "Scanner logs";
+    if (title) title.textContent = toolName || "Connection history";
+    body.innerHTML = '<p class="empty-state">Loading logs…</p>';
+    if (!dialog.open) {
+      dialog.showModal();
     }
     try {
       const data = await this.postJson("/api/aspm/connectors/history", {
@@ -445,10 +456,10 @@ export class AspmWorkspace {
       });
       const syncs = (data.syncs || []).filter((s) => !toolKey || s.connector_key === toolKey);
       if (!syncs.length) {
-        this.elements.connectorLogsBody.innerHTML = '<p class="empty-state">No sync history found for this connector.</p>';
+        body.innerHTML = '<p class="empty-state">No sync history found for this connector.</p>';
         return;
       }
-      this.elements.connectorLogsBody.innerHTML = syncs.map((sync) => {
+      body.innerHTML = syncs.map((sync) => {
         const statusClass = sync.status === "failed" ? "status-failed"
           : sync.status === "completed" ? "status-succeeded"
           : "idle";
@@ -463,11 +474,11 @@ export class AspmWorkspace {
             ${duration ? `<small>${this.escapeHtml(duration)}</small>` : ""}
           </div>
           ${sync.error_message ? `<p class="connector-log-error">${this.escapeHtml(sync.error_message)}</p>` : ""}
-          <small>${this.number(sync.findings_imported || 0)} findings · ${this.number(sync.assets_covered || 0)} assets · ${this.escapeHtml(this.readable(sync.connector_key || ""))}</small>
+          <small>${this.number(sync.findings_imported || 0)} findings · ${this.number(sync.assets_covered || 0)} assets</small>
         </div>`;
       }).join("");
     } catch (error) {
-      this.elements.connectorLogsBody.innerHTML = `<p class="empty-state">${this.escapeHtml(error.message || "Logs could not be loaded.")}</p>`;
+      body.innerHTML = `<p class="empty-state">${this.escapeHtml(error.message || "Logs could not be loaded.")}</p>`;
     }
   }
 
