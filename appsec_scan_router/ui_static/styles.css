@@ -3524,16 +3524,30 @@ button.posture-kpi:focus-visible {
 }
 
 .asset-risk-table {
-  min-width: 1120px;
+  min-width: 1280px;
 }
 
-.asset-risk-table th:nth-child(1) {
+.asset-risk-table th:nth-child(1),
+.asset-risk-table td:nth-child(1) {
   width: 76px;
 }
 
 .asset-risk-table th:nth-child(2),
-.asset-risk-table th:nth-child(3) {
-  width: 20%;
+.asset-risk-table td:nth-child(2),
+.asset-risk-table th:nth-child(3),
+.asset-risk-table td:nth-child(3) {
+  width: 22%;
+}
+
+.asset-risk-table th:nth-child(4),
+.asset-risk-table td:nth-child(4),
+.asset-risk-table th:nth-child(5),
+.asset-risk-table td:nth-child(5),
+.asset-risk-table th:nth-child(6),
+.asset-risk-table td:nth-child(6),
+.asset-risk-table th:nth-child(7),
+.asset-risk-table td:nth-child(7) {
+  min-width: 148px;
 }
 
 .th-sort-row {
