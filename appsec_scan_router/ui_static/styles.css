@@ -3524,7 +3524,23 @@ button.posture-kpi:focus-visible {
 }
 
 .asset-risk-table {
-  min-width: 1280px;
+  min-width: 1320px;
+}
+
+/* Unify header text style — sortable and non-sortable columns match */
+.asset-risk-table th {
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Sort buttons are inline inside th so the help icon sits beside them */
+.asset-risk-table .database-sort-button {
+  display: inline-flex;
+  width: auto;
+  min-height: 0;
+  padding: 0 2px 0 0;
+  vertical-align: middle;
 }
 
 .asset-risk-table th:nth-child(1),
@@ -3536,31 +3552,24 @@ button.posture-kpi:focus-visible {
 .asset-risk-table td:nth-child(2),
 .asset-risk-table th:nth-child(3),
 .asset-risk-table td:nth-child(3) {
-  width: 22%;
+  width: 21%;
 }
 
 .asset-risk-table th:nth-child(4),
-.asset-risk-table td:nth-child(4),
+.asset-risk-table td:nth-child(4) {
+  min-width: 156px;
+}
+
 .asset-risk-table th:nth-child(5),
 .asset-risk-table td:nth-child(5),
 .asset-risk-table th:nth-child(6),
-.asset-risk-table td:nth-child(6),
+.asset-risk-table td:nth-child(6) {
+  min-width: 176px;
+}
+
 .asset-risk-table th:nth-child(7),
 .asset-risk-table td:nth-child(7) {
-  min-width: 148px;
-}
-
-.th-sort-row {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  gap: 2px;
-}
-
-.th-sort-row .database-sort-button {
-  flex: 1;
-  width: auto;
-  min-height: 28px;
+  min-width: 144px;
 }
 
 .table-subtext {
